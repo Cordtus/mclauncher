@@ -1,0 +1,12 @@
+# Replace mc-panel.lan with your LAN DNS
+mc-panel.lan {
+  @lan remote_ip 192.168.0.0/16 10.0.0.0/8
+  respond @lan 403 {"error":"LAN only"} {
+    header Content-Type application/json
+  }
+  reverse_proxy 127.0.0.1:8080 {
+    header_up X-Forwarded-For {remote}
+    header_up X-Real-IP {remote}
+    header_up X-Forwarded-Proto {scheme}
+  }
+}

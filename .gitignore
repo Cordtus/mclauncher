@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+pnpm-lock.yaml
+package-lock.json
+yarn.lock
+
+# Build output
+dist/
+build/
+apps/*/dist/
+apps/*/build/
+
+# Environment
+.env
+*.local
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Test
+coverage/
+.nyc_output/
+
+# Temp
+tmp/
+temp/
+*.tmp
+
+# AI/Tool Documentation (private)
+.claude/
+CLAUDE.md
+**/CLAUDE.md
+.cursor/
+.aider*

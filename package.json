@@ -1,0 +1,25 @@
+{
+  "name": "mc-lxd-manager",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/server",
+    "apps/web"
+  ],
+  "scripts": {
+    "dev": "pnpm -C apps/server dev",
+    "build": "pnpm -C apps/web build && pnpm -C apps/server build",
+    "start": "pnpm -C apps/server start",
+    "lint": "eslint . --ext .ts,.tsx",
+    "format": "prettier -w ."
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.4",
+    "eslint": "^9.12.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-import": "^2.29.1",
+    "prettier": "^3.3.3",
+    "typescript": "^5.6.3"
+  },
+  "packageManager": "pnpm@9.12.0"
+}
