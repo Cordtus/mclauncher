@@ -1,149 +1,148 @@
-# MC LXD Manager (Node + TypeScript)
+# MC LXD Manager
 
-LXD-native Minecraft panel (LAN-only). Single host, no DB, persistent LXD volumes, LXD proxy networking.
+Web-based management panel for Minecraft servers running in LXD containers.
 
-**No Docker** - runs natively with Node.js and systemd, shells out to `lxc` commands. Minecraft servers run inside LXD containers with systemd units.
+## Architecture
 
-## Quick Deploy (Automated)
+**Container-based deployment:**
+- **Management Container** - Runs web UI and API gateway (port 8080)
+- **Server Containers** - Each runs Minecraft + control agent (port 9090)
+- **Communication** - Management UI talks to control agents via HTTP
 
-On your LXD host, run the automated setup script:
+No Docker, no host services. Everything runs in LXD containers.
+
+## Features
+
+- Start/stop/restart servers
+- Real-time log viewing
+- Upload plugins and mods (drag & drop)
+- Upload and switch between worlds
+- Edit server.properties in browser
+- RCON command execution
+- Packwiz modpack sync
+- One-click LuckPerms installation
+- Snapshot backups
+- LAN-only access with token authentication
+
+## Quick Start
+
+On your LXD host:
 
 ```bash
-git clone https://github.com/YOUR_ORG/mc-lxd-manager.git
-cd mc-lxd-manager
-sudo ./scripts/setup-host.sh
+git clone https://github.com/Cordtus/mclauncher.git
+cd mclauncher
 ```
 
-This will:
-- Install Node.js, LXD, and dependencies
-- Initialize LXD (if needed)
-- Create the `mc` service user and add to `lxd` group
-- Build the application
-- Deploy to `/opt/mc-lxd-manager`
-- Install systemd service
-- Create environment file at `/etc/mc-lxd-manager.env`
-
-Then:
-1. Edit `/etc/mc-lxd-manager.env` and set a secure `ADMIN_TOKEN`
-2. Start the service: `sudo systemctl enable --now mc-lxd-manager`
-3. Access via Caddy or directly at `http://127.0.0.1:8080`
-
-## Manual Install (Development)
+### 1. Create Management Container
 
 ```bash
-git clone https://github.com/YOUR_ORG/mc-lxd-manager.git
-cd mc-lxd-manager
-npm install --workspaces   # or pnpm install
+sudo ./apps/scripts/create-management-container.sh mc-manager 8080
+```
+
+This creates the management container and outputs an admin token. Save this token!
+
+### 2. Create Minecraft Server(s)
+
+```bash
+sudo ./apps/scripts/create-mc-server.sh mc-server-1 paper 1.21.1 4096 2 25565
+```
+
+Parameters:
+- Container name
+- Edition (paper/vanilla)
+- Minecraft version
+- Memory (MB)
+- CPU cores
+- Public port
+- Optional: RCON port (default: 25575)
+- Optional: RCON password (auto-generated if omitted)
+- Optional: Manager container name (default: mc-manager)
+
+### 3. Access Web UI
+
+1. Navigate to `http://<host-ip>:8080`
+2. Open browser console and set your token:
+   ```js
+   localStorage.setItem('ADMIN_TOKEN', 'your-token-here');
+   ```
+3. Refresh the page
+
+## Management
+
+### View Container Status
+
+```bash
+# Management container
+lxc exec mc-manager -- systemctl status mc-manager
+lxc exec mc-manager -- journalctl -u mc-manager -f
+
+# Minecraft server
+lxc exec mc-server-1 -- systemctl status minecraft
+lxc exec mc-server-1 -- systemctl status mc-agent
+lxc exec mc-server-1 -- journalctl -u minecraft -f
+```
+
+### Stop/Start Containers
+
+```bash
+lxc stop mc-server-1
+lxc start mc-server-1
+```
+
+### Delete Server
+
+```bash
+# Unregister from management UI first (or via API)
+curl -X DELETE http://localhost:8080/api/servers/mc-server-1/unregister \
+  -H "Authorization: Bearer YOUR_TOKEN"
+
+# Then delete container
+lxc delete mc-server-1 --force
+```
+
+## Development
+
+```bash
+npm install --workspaces
 npm run build
 ```
 
-## Run (dev)
+### Project Structure
 
-```bash
-pnpm dev
-# open http://127.0.0.1:8080 (backend serves web dist when built)
+```
+apps/
+├── agent/          # Control agent (runs in each MC server container)
+├── server/         # Management backend (API gateway)
+├── web/            # React frontend
+└── scripts/        # Container creation scripts
 ```
 
-Open another terminal to run the web dev server separately if you like:
+## Security
 
-```bash
-pnpm -C apps/web dev
-```
+- Management backend binds to 0.0.0.0:8080 inside container
+- LXD proxy exposes port 8080 on host
+- CIDR filtering restricts access to LAN ranges
+- Admin token required for write operations
+- Control agents (port 9090) are NOT exposed outside containers
 
-## Run (prod)
+## Networking
 
-```bash
-cp .env.example .env
-# edit .env and/or systemd env file
-
-pnpm build
-HOST=127.0.0.1 PORT=8080 node apps/server/dist/index.js
-```
-
-## Manual Deploy with systemd
-
-```bash
-# Install prerequisites
-sudo apt-get update && sudo apt-get install -y nodejs npm lxd jq curl unzip
-
-# Initialize LXD
-sudo lxd init   # accept defaults or customize
-
-# Create service user with lxd group access
-sudo useradd -r -s /usr/sbin/nologin mc || true
-sudo usermod -aG lxd mc
-
-# Deploy application
-sudo mkdir -p /opt/mc-lxd-manager
-sudo rsync -a --delete . /opt/mc-lxd-manager/
-cd /opt/mc-lxd-manager
-sudo npm install --workspaces --omit=dev
-
-# Install systemd service
-sudo cp deploy/mc-lxd-manager.service /etc/systemd/system/
-
-# Create and edit environment file
-sudo cp .env.example /etc/mc-lxd-manager.env
-sudo nano /etc/mc-lxd-manager.env  # Set ADMIN_TOKEN!
-
-# Set ownership and start
-sudo chown -R mc:mc /opt/mc-lxd-manager
-sudo systemctl daemon-reload
-sudo systemctl enable --now mc-lxd-manager
-sudo systemctl status mc-lxd-manager
-```
-
-## Caddy Reverse Proxy (LAN-only)
-
-See `Caddyfile.example` for configuration. The panel binds to `127.0.0.1:8080` by default, so use Caddy (or nginx) to expose it on your LAN.
-
-Key settings:
-- Keep `HOST=127.0.0.1` in env file (never bind to public interface)
-- Set `TRUST_PROXY=true` (default) to read client IPs from `X-Forwarded-For`
-- Use `ALLOW_CIDRS` to restrict access to your LAN ranges
-- Block WAN access at your router/firewall
-
-## Browser Setup
-
-After accessing the web UI, set your admin token once in the browser console:
-
-```js
-localStorage.setItem('ADMIN_TOKEN', 'your-hex-token-here');
-```
-
-This token will be sent with all admin requests (create, upload, modify, delete).
-
-## Architecture Notes
-
-**No Docker** - this is a native deployment:
-- Panel runs as a Node.js systemd service on the host
-- Panel shells out to `lxc` CLI to manage containers
-- Each Minecraft server runs **inside its own LXD container** with a systemd unit
-- Containers are isolated; only exposed via LXD proxy devices (no LAN IP needed in container)
-
-**Storage & Networking:**
-- Each server gets an LXD storage volume `minecraft-<name>` mounted at `/opt/minecraft`
-- WAN exposure via LXD proxy: `listen:0.0.0.0:<public>` → `connect:127.0.0.1:25565` inside container
-- Worlds stored in `/opt/minecraft/worlds/` with symlink to active world at `/opt/minecraft/world`
-
-**Management Features:**
-- Mods/plugins: upload .jar files; for modpacks paste Packwiz pack.toml URL
-- RCON: send commands directly from the UI
-- LuckPerms: one-click install for permissions management
-- Backups: LXD snapshot + export to BACKUP_DIR tarball
-- Multi-world: upload .zip worlds, switch between them without data loss
+- Management UI: `host:8080` → `mc-manager:8080`
+- Minecraft servers: `host:25565+` → `mc-server-N:25565`
+- Control agents: Internal only (`mc-server-N:9090`)
 
 ## Troubleshooting
 
-Check service status:
-```bash
-sudo systemctl status mc-lxd-manager
-sudo journalctl -u mc-lxd-manager -f
-```
+**Server not appearing in UI:**
+- Check agent is running: `lxc exec mc-server-1 -- systemctl status mc-agent`
+- Check registration: `lxc exec mc-manager -- cat /opt/mc-lxd-manager/servers.json`
+- Check network: `lxc list` (verify container IPs)
 
-Verify `mc` user can access LXD:
-```bash
-sudo -u mc lxc list
-```
+**Cannot upload files:**
+- Verify admin token is set in browser localStorage
+- Check browser console for errors
 
-If permission denied, ensure `mc` is in `lxd` group and restart the service.
+**Minecraft won't start:**
+- Check logs: `lxc exec mc-server-1 -- journalctl -u minecraft -n 100`
+- Verify EULA: `lxc exec mc-server-1 -- cat /opt/minecraft/eula.txt`
+- Check memory limits: `lxc info mc-server-1`

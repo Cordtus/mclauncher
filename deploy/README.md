@@ -1,78 +1,145 @@
 # Deployment
 
-## Quick Setup (Automated)
+## Container-Based Architecture
 
-From the repository root on your LXD host:
+All components run inside LXD containers. Nothing runs directly on the host except LXD itself.
+
+## Prerequisites
+
+LXD must be installed and initialized on the host:
 
 ```bash
-sudo ../scripts/setup-host.sh
+sudo snap install lxd
+sudo lxd init  # accept defaults
 ```
 
-This handles all steps below automatically.
+## Deployment Steps
 
-## Manual Systemd Service Deployment
+### 1. Clone Repository on Host
 
-1. **Prerequisites**: Install Node.js, LXD, and dependencies
-   ```bash
-   sudo apt-get update && sudo apt-get install -y nodejs npm lxd jq curl unzip rsync
+```bash
+git clone https://github.com/Cordtus/mclauncher.git
+cd mclauncher
+```
+
+### 2. Create Management Container
+
+```bash
+sudo ./apps/scripts/create-management-container.sh [container_name] [public_port]
+```
+
+Defaults:
+- container_name: `mc-manager`
+- public_port: `8080`
+
+Example:
+```bash
+sudo ./apps/scripts/create-management-container.sh mc-manager 8080
+```
+
+Save the admin token printed at the end!
+
+### 3. Create Minecraft Servers
+
+```bash
+sudo ./apps/scripts/create-mc-server.sh NAME EDITION VERSION MEMORY CPU PORT
+```
+
+Example (Paper server with 4GB RAM):
+```bash
+sudo ./apps/scripts/create-mc-server.sh mc-survival paper 1.21.1 4096 2 25565
+```
+
+Example (Vanilla server with 2GB RAM):
+```bash
+sudo ./apps/scripts/create-mc-server.sh mc-creative vanilla 1.21.1 2048 1 25566
+```
+
+Servers are automatically registered with the management backend.
+
+### 4. Access Web UI
+
+1. Navigate to `http://<host-ip>:8080`
+2. Set admin token in browser console:
+   ```js
+   localStorage.setItem('ADMIN_TOKEN', 'your-token-from-step-2');
    ```
+3. Refresh page
 
-2. **Initialize LXD** (if not already done):
-   ```bash
-   sudo lxd init  # accept defaults or customize
-   ```
+## Architecture Details
 
-3. **Create service user with lxd group**:
-   ```bash
-   sudo useradd -r -s /usr/sbin/nologin mc || true
-   sudo usermod -aG lxd mc
-   ```
+**Management Container (`mc-manager`):**
+- Runs Node.js backend (API gateway) on port 8080
+- Serves React frontend (static files)
+- Maintains server registry in JSON file
+- Proxies requests to server control agents
 
-4. **Create environment file**:
-   ```bash
-   sudo cp ../.env.example /etc/mc-lxd-manager.env
-   sudo nano /etc/mc-lxd-manager.env  # IMPORTANT: Set ADMIN_TOKEN!
-   ```
+**Server Containers (`mc-server-*`):**
+- Runs Minecraft server on port 25565
+- Runs control agent on port 9090 (internal only)
+- Agent provides HTTP API for management operations
 
-5. **Build and deploy**:
-   ```bash
-   cd ..
-   npm install --workspaces
-   npm run build
-   sudo mkdir -p /opt/mc-lxd-manager
-   sudo rsync -a --delete . /opt/mc-lxd-manager/
-   cd /opt/mc-lxd-manager
-   sudo npm install --workspaces --omit=dev
-   ```
+**Networking:**
+- Management UI exposed on host via LXD proxy
+- Minecraft ports exposed on host via LXD proxy
+- Control agents accessible only within LXD network
 
-6. **Install and start service**:
-   ```bash
-   sudo cp deploy/mc-lxd-manager.service /etc/systemd/system/
-   sudo chown -R mc:mc /opt/mc-lxd-manager
-   sudo systemctl daemon-reload
-   sudo systemctl enable --now mc-lxd-manager
-   ```
+## Updates
 
-7. **Verify**:
-   ```bash
-   sudo systemctl status mc-lxd-manager
-   sudo journalctl -u mc-lxd-manager -f
-   ```
+To update the management container:
 
-8. **Test lxd access**:
-   ```bash
-   sudo -u mc lxc list  # should work without permission errors
-   ```
+```bash
+cd mclauncher
+git pull
+sudo ./apps/scripts/create-management-container.sh mc-manager 8080
+# This will recreate the container with latest code
+```
 
-## Caddy Reverse Proxy (LAN-only)
+To update a server's control agent:
 
-See `Caddyfile.example` in project root for LAN-only access configuration.
+```bash
+cd mclauncher
+git pull
 
-The service binds to `127.0.0.1:8080` by default. Use Caddy or nginx to expose it on your LAN while keeping `ALLOW_CIDRS` and firewall rules to restrict access.
+# Copy updated agent to server
+tar czf /tmp/agent.tar.gz -C apps/agent .
+lxc file push /tmp/agent.tar.gz mc-server-1/tmp/
+lxc exec mc-server-1 -- bash -c "
+  cd /opt/mc-agent
+  tar xzf /tmp/agent.tar.gz
+  npm install --omit=dev
+  npm run build
+  systemctl restart mc-agent
+"
+```
 
-## Important Notes
+## Firewall
 
-- The `mc` user MUST be in the `lxd` group (added via `SupplementaryGroups=lxd` in systemd unit)
-- This allows the service to run `lxc` commands to manage containers
-- NO Docker is used - this is a native Node.js deployment
-- Minecraft servers run inside LXD containers, not Docker containers
+If using a firewall on the host, allow ports:
+- 8080 (or your chosen management port)
+- 25565+ (one per Minecraft server)
+
+Example with ufw:
+```bash
+sudo ufw allow 8080/tcp
+sudo ufw allow 25565/tcp
+sudo ufw allow 25566/tcp
+# etc.
+```
+
+## Security Notes
+
+- Management backend uses CIDR filtering (default: 192.168.0.0/16, 10.0.0.0/8)
+- Admin token required for write operations
+- Control agents not exposed outside LXD network
+- Consider placing management UI behind reverse proxy (Caddy/nginx) for SSL
+
+## Backups
+
+Backup entire server container:
+```bash
+lxc snapshot mc-server-1 backup-$(date +%Y%m%d)
+lxc publish mc-server-1/backup-$(date +%Y%m%d) --alias=mc-server-1-backup
+```
+
+Or use the built-in backup feature in the web UI (creates tarball of /opt/minecraft).

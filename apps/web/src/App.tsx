@@ -7,6 +7,8 @@ type ServerRow = {
   public_port: number;
   memory_mb: number;
   cpu_limit: string;
+  edition: string;
+  mc_version: string;
 };
 
 /** Build headers with ADMIN_TOKEN from localStorage (if set). */
@@ -51,118 +53,46 @@ function UploadBox({
 /** Top-level app component. */
 export function App() {
   const [servers, setServers] = useState<ServerRow[]>([]);
-  const [createLog, setCreateLog] = useState("");
-  const [status, setStatus] = useState("");
 
   /** Refresh servers list from API. */
   async function refresh() {
-    const res = await fetch("/api/servers");
-    setServers(await res.json());
+    try {
+      const res = await fetch("/api/servers");
+      setServers(await res.json());
+    } catch (err) {
+      console.error("Failed to fetch servers:", err);
+    }
   }
 
   useEffect(() => {
     refresh();
+    // Auto-refresh every 10 seconds
+    const interval = setInterval(refresh, 10000);
+    return () => clearInterval(interval);
   }, []);
-
-  /** Create server submit handler. */
-  async function onCreateSubmit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    const fd = new FormData(e.currentTarget);
-    const payload = Object.fromEntries(fd.entries());
-    payload["memory_mb"] = Number(payload["memory_mb"] || 2048);
-    payload["public_port"] = Number(payload["public_port"] || 25565);
-    payload["rcon_port"] = Number(payload["rcon_port"] || 25575);
-    payload["eula"] = !!payload["eula"];
-    payload["rcon_enable"] = payload["rcon_enable"] === "true";
-    setStatus("");
-    setCreateLog("Creating...");
-    const res = await fetch("/api/servers", {
-      method: "POST",
-      headers: { ...authHeaders(), "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-    if (!res.ok) {
-      setCreateLog(await res.text());
-      return;
-    }
-    const data = await res.json();
-    setCreateLog(data.log || "Done");
-    setStatus("Done");
-    refresh();
-  }
 
   return (
     <div>
       <h1>MC LXD Manager</h1>
 
       <section className="card">
-        <h2>Create server</h2>
-        <form onSubmit={onCreateSubmit}>
-          <div className="row">
-            <div>
-              <label>Container name</label>
-              <input name="name" defaultValue="mc-1" required />
-            </div>
-            <div>
-              <label>Edition</label>
-              <select name="edition" defaultValue="paper">
-                <option value="paper">Paper</option>
-                <option value="vanilla">Vanilla</option>
-              </select>
-            </div>
-            <div>
-              <label>Version</label>
-              <input name="mc_version" defaultValue="1.21.1" />
-            </div>
-            <div>
-              <label>Memory (MB)</label>
-              <input name="memory_mb" type="number" defaultValue={2048} />
-            </div>
-            <div>
-              <label>CPU limit</label>
-              <input name="cpu_limit" placeholder="e.g. 2 or 50%" />
-            </div>
-            <div>
-              <label>Public port</label>
-              <input name="public_port" type="number" defaultValue={25565} />
-            </div>
-            <div>
-              <label>Enable RCON?</label>
-              <select name="rcon_enable" defaultValue="false">
-                <option value="false">No</option>
-                <option value="true">Yes</option>
-              </select>
-            </div>
-            <div>
-              <label>RCON port</label>
-              <input name="rcon_port" type="number" defaultValue={25575} />
-            </div>
-            <div>
-              <label>RCON password</label>
-              <input name="rcon_password" placeholder="optional" />
-            </div>
-          </div>
-          <label>
-            <input type="checkbox" name="eula" defaultChecked /> I accept the EULA
-          </label>
-          <div style={{ marginTop: ".75rem" }}>
-            <button type="submit">Create</button> <span>{status}</span>
-          </div>
-        </form>
-        <pre hidden={!createLog}>{createLog}</pre>
-      </section>
-
-      <section className="card">
         <h2>Servers</h2>
         <button onClick={refresh}>Refresh</button>
+
+        {servers.length === 0 && (
+          <p style={{ marginTop: "1rem", color: "#666" }}>
+            No servers registered. Create a server using the host setup script.
+          </p>
+        )}
+
         {servers.map((s) => (
           <div key={s.name} className="card">
             <h3>
               {s.name} <small>({s.status})</small>
             </h3>
             <div>
-              Port: {s.public_port} → 25565 (proxy) — Mem: {s.memory_mb}MB · CPU:{" "}
-              {s.cpu_limit || "—"}
+              Edition: {s.edition} {s.mc_version} · Port: {s.public_port} · Mem: {s.memory_mb}MB
+              {s.cpu_limit && ` · CPU: ${s.cpu_limit}`}
             </div>
 
             <div style={{ marginTop: ".5rem" }}>
@@ -171,36 +101,11 @@ export function App() {
               <button onClick={() => apiPOST(`/api/servers/${s.name}/restart`)}>Restart</button>
               <button onClick={() => showLogs(s.name)}>Logs</button>
               <button onClick={() => apiPOST(`/api/servers/${s.name}/backup`, true)}>
-                Snapshot & Export
+                Create Backup
               </button>
               <button onClick={() => apiPOST(`/api/servers/${s.name}/luckperms`, true)}>
                 Install LuckPerms
               </button>
-              <button
-                onClick={() => apiDELETE(`/api/servers/${s.name}`, true)}
-                style={{ background: "#fee" }}
-              >
-                Delete
-              </button>
-            </div>
-
-            <div style={{ marginTop: ".5rem" }}>
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  const fd = new FormData(e.currentTarget);
-                  apiPOST(`/api/servers/${s.name}/proxies`, true, {
-                    public_port: String(fd.get("pub") || ""),
-                    connect_port: String(fd.get("con") || "")
-                  });
-                }}
-              >
-                <b>Add proxy</b>: public{" "}
-                <input name="pub" type="number" defaultValue={8123} style={{ width: "6rem" }} /> →
-                connect{" "}
-                <input name="con" type="number" defaultValue={8123} style={{ width: "6rem" }} />
-                <button type="submit">Add</button>
-              </form>
             </div>
 
             <div className="row" style={{ marginTop: ".5rem" }}>
@@ -228,7 +133,7 @@ export function App() {
                   onUpload={(file) => uploadFile(`/api/servers/${s.name}/worlds/upload`, file)}
                 />
                 <div style={{ marginTop: ".25rem" }}>
-                  <button onClick={() => listWorlds(s.name)}>List worlds</button>
+                  <button onClick={() => listWorlds(s.name)}>List Worlds</button>
                   <span id={`worlds-${s.name}`}></span>
                 </div>
               </div>
@@ -255,7 +160,10 @@ export function App() {
               <pre id={`rconout-${s.name}`} hidden></pre>
             </details>
 
-            <div style={{ marginTop: ".25rem" }}>
+            <details style={{ marginTop: ".5rem" }}>
+              <summary>
+                <b>Packwiz</b> modpack sync
+              </summary>
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
@@ -263,11 +171,12 @@ export function App() {
                   apiPOST(`/api/servers/${s.name}/packwiz`, true, { url: String(fd.get("url")) });
                 }}
               >
-                <b>Packwiz URL</b>{" "}
-                <input name="url" placeholder="https://.../pack.toml" style={{ width: "24rem" }} />{" "}
-                <button type="submit">Sync</button>
+                <input name="url" placeholder="https://.../pack.toml" style={{ width: "100%" }} />
+                <button type="submit" style={{ marginTop: ".25rem" }}>
+                  Sync Modpack
+                </button>
               </form>
-            </div>
+            </details>
 
             <pre id={`log-${s.name}`} hidden></pre>
           </div>
@@ -283,17 +192,10 @@ async function apiPOST(url: string, auth = false, body?: Record<string, string>)
   let payload: BodyInit | undefined = undefined;
 
   if (body && Object.values(body).some((v) => v !== undefined)) {
-    // default to x-www-form-urlencoded because backend accepts it broadly
     headers["Content-Type"] = "application/x-www-form-urlencoded";
     payload = new URLSearchParams(body as Record<string, string>);
   }
   const r = await fetch(url, { method: "POST", headers, body: payload });
-  alert(await r.text());
-}
-
-/** Send DELETE with optional auth. */
-async function apiDELETE(url: string, auth = false) {
-  const r = await fetch(url, { method: "DELETE", headers: auth ? authHeaders() : {} });
   alert(await r.text());
 }
 
@@ -335,7 +237,9 @@ async function listWorlds(name: string) {
   const r = await fetch(`/api/servers/${name}/worlds`);
   const arr: string[] = await r.json();
   const el = document.getElementById(`worlds-${name}`)!;
-  el.innerHTML = arr.map((w) => `<button onclick="window._switchWorld('${name}','${w}')">${w}</button>`).join(" ");
+  el.innerHTML = arr
+    .map((w) => `<button onclick="window._switchWorld('${name}','${w}')">${w}</button>`)
+    .join(" ");
 }
 
 // expose switch handler globally for simplicity

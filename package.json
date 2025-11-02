@@ -3,12 +3,13 @@
   "private": true,
   "version": "0.1.0",
   "workspaces": [
+    "apps/agent",
     "apps/server",
     "apps/web"
   ],
   "scripts": {
     "dev": "pnpm -C apps/server dev",
-    "build": "pnpm -C apps/web build && pnpm -C apps/server build",
+    "build": "pnpm -C apps/web build && pnpm -C apps/server build && pnpm -C apps/agent build",
     "start": "pnpm -C apps/server start",
     "lint": "eslint . --ext .ts,.tsx",
     "format": "prettier -w ."
