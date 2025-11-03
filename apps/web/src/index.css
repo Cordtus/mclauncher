@@ -1,0 +1,98 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+
+    --card: 222.2 84% 6%;
+    --card-foreground: 210 40% 98%;
+
+    --popover: 222.2 84% 6%;
+    --popover-foreground: 210 40% 98%;
+
+    --primary: 217.2 91% 60%;
+    --primary-foreground: 222.2 47% 11%;
+
+    --secondary: 217.2 32.6% 17.9%;
+    --secondary-foreground: 210 40% 98%;
+
+    --muted: 217.2 32.6% 17.9%;
+    --muted-foreground: 215 20.2% 65.1%;
+
+    --accent: 217.2 32.6% 17.9%;
+    --accent-foreground: 210 40% 98%;
+
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 217.2 32.6% 17.9%;
+    --input: 217.2 32.6% 17.9%;
+    --ring: 224.3 76.3% 48%;
+
+    --success: 142 76% 36%;
+    --warning: 38 92% 50%;
+    --info: 199 89% 48%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+
+  h1 {
+    @apply text-3xl font-bold tracking-tight;
+  }
+
+  h2 {
+    @apply text-2xl font-semibold tracking-tight;
+  }
+
+  h3 {
+    @apply text-xl font-semibold tracking-tight;
+  }
+
+  h4 {
+    @apply text-lg font-semibold tracking-tight;
+  }
+
+  p {
+    @apply leading-7;
+  }
+
+  code {
+    @apply relative rounded bg-muted px-[0.3rem] py-[0.2rem] font-mono text-sm font-semibold;
+  }
+}
+
+@layer utilities {
+  .spacing-tight {
+    @apply space-y-2;
+  }
+
+  .spacing-normal {
+    @apply space-y-4;
+  }
+
+  .spacing-loose {
+    @apply space-y-6;
+  }
+
+  .status-running {
+    @apply text-green-500 font-medium;
+  }
+
+  .status-stopped {
+    @apply text-gray-500 font-medium;
+  }
+
+  .status-error {
+    @apply text-red-500 font-medium;
+  }
+}

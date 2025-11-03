@@ -17,6 +17,10 @@ import fs from "fs";
 import path from "path";
 import { spawnSync, spawn } from "child_process";
 import os from "os";
+import { VersionManager } from "./managers/version.js";
+import { WorldManager } from "./managers/world.js";
+import { PaperDownloader } from "./downloaders/paper.js";
+import { VanillaDownloader } from "./downloaders/vanilla.js";
 
 const PORT = Number(process.env.AGENT_PORT || 9090);
 const MC_DIR = process.env.MC_DIR || "/opt/minecraft";
@@ -29,6 +33,12 @@ app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true }));
 
 const upload = multer({ dest: os.tmpdir() });
+
+// Initialize managers
+const versionManager = new VersionManager(MC_DIR);
+const worldManager = new WorldManager(MC_DIR);
+const paperDownloader = new PaperDownloader();
+const vanillaDownloader = new VanillaDownloader();
 
 // Helper: run command synchronously
 function sh(cmd: string, args: string[]): string {
@@ -336,6 +346,176 @@ app.post("/backup", (_req, res) => {
     sh("systemctl", ["start", "minecraft"]);
 
     res.send(`Backup created: ${backupFile}`);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===== Version Management Endpoints =====
+
+// Get available Paper versions
+app.get("/versions/paper", async (_req, res) => {
+  try {
+    const versions = await paperDownloader.getAvailableVersions();
+    res.json({ versions });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get available Vanilla versions
+app.get("/versions/vanilla", async (_req, res) => {
+  try {
+    const releases = await vanillaDownloader.getAvailableReleases();
+    const manifest = await vanillaDownloader.getManifest();
+    res.json({
+      latest: manifest.latest,
+      releases,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get builds for Paper version
+app.get("/versions/paper/:version/builds", async (req, res) => {
+  try {
+    const buildNum = await paperDownloader.getLatestBuild(req.params.version);
+    const buildInfo = await paperDownloader.getBuildInfo(
+      req.params.version,
+      buildNum
+    );
+    res.json({ latestBuild: buildNum, buildInfo });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Change server version
+app.post("/version/change", async (req, res) => {
+  const { type, version, build } = req.body;
+
+  if (!["paper", "vanilla"].includes(type)) {
+    return res.status(400).send("Invalid type. Must be paper or vanilla");
+  }
+
+  if (!version) {
+    return res.status(400).send("Version is required");
+  }
+
+  try {
+    await versionManager.changeVersion(type, version, build);
+    res.json({
+      ok: true,
+      message: `Server updated to ${type} ${version}`,
+      type,
+      version,
+      build: type === "paper" ? build : null,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Switch server type (Paper ↔ Vanilla)
+app.post("/version/switch-type", async (req, res) => {
+  const { type, version, build } = req.body;
+
+  if (!["paper", "vanilla"].includes(type)) {
+    return res.status(400).send("Invalid type");
+  }
+
+  try {
+    await versionManager.switchServerType(type, version, build);
+    res.json({
+      ok: true,
+      message: `Switched to ${type} ${version}`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===== Enhanced World Management Endpoints =====
+
+// List worlds with details
+app.get("/worlds/list", async (_req, res) => {
+  try {
+    await worldManager.initialize();
+    const worlds = await worldManager.listWorlds();
+    res.json(worlds);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get current world
+app.get("/worlds/current", (_req, res) => {
+  try {
+    const current = worldManager.getCurrentWorld();
+    res.json({ current });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Switch to world
+app.post("/worlds/switch-to", async (req, res) => {
+  const { worldName } = req.body;
+  if (!worldName) return res.status(400).send("Missing worldName");
+
+  try {
+    await worldManager.switchWorld(worldName);
+    res.json({ ok: true, message: `Switched to world '${worldName}'` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete world
+app.delete("/worlds/:worldName", async (req, res) => {
+  try {
+    await worldManager.deleteWorld(req.params.worldName, false);
+    res.json({ ok: true, message: `World '${req.params.worldName}' deleted` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Backup world
+app.post("/worlds/:worldName/backup", async (req, res) => {
+  try {
+    const backupPath = await worldManager.backupWorld(req.params.worldName);
+    res.json({ ok: true, backupPath });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Import world
+app.post("/worlds/import", upload.single("file"), async (req, res) => {
+  const file = req.file;
+  if (!file) return res.status(400).send("Missing file");
+
+  try {
+    const worldName = await worldManager.importWorld(file.path, req.body.worldName);
+    fs.unlinkSync(file.path);
+    res.json({ ok: true, worldName, message: `World '${worldName}' imported` });
+  } catch (err: any) {
+    if (file) fs.unlinkSync(file.path);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Export world
+app.get("/worlds/:worldName/export", async (req, res) => {
+  try {
+    const outputPath = `/tmp/${req.params.worldName}-${Date.now()}.zip`;
+    await worldManager.exportWorld(req.params.worldName, outputPath);
+    res.download(outputPath, `${req.params.worldName}.zip`, (err) => {
+      fs.unlinkSync(outputPath);
+      if (err) console.error("Download error:", err);
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
