@@ -1,6 +1,29 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
+import {
+  Play,
+  Square,
+  RotateCw,
+  Upload,
+  Settings,
+  Globe,
+  RefreshCw,
+  Package,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
+import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 
-/** Server item from /api/servers */
 type ServerRow = {
   name: string;
   status: string;
@@ -11,7 +34,6 @@ type ServerRow = {
   mc_version: string;
 };
 
-/** Build headers with ADMIN_TOKEN from localStorage (if set). */
 function authHeaders(): HeadersInit {
   const h: Record<string, string> = {};
   const t = localStorage.getItem("ADMIN_TOKEN");
@@ -19,245 +41,360 @@ function authHeaders(): HeadersInit {
   return h;
 }
 
-/** Upload helper with drag & drop and file input. */
-function UploadBox({
-  label,
-  accept,
-  onUpload
-}: {
-  label: string;
-  accept: string;
-  onUpload: (file: File) => Promise<void>;
-}) {
-  /** Handle drop. */
-  const onDrop: React.DragEventHandler<HTMLDivElement> = async (e) => {
-    e.preventDefault();
-    const file = e.dataTransfer.files?.[0];
-    if (file) await onUpload(file);
-  };
-  return (
-    <div className="drop" onDragOver={(e) => e.preventDefault()} onDrop={onDrop}>
-      <small>{label}</small>
-      <input
-        type="file"
-        accept={accept}
-        onChange={async (e) => {
-          const file = e.currentTarget.files?.[0];
-          if (file) await onUpload(file);
-        }}
-      />
-    </div>
-  );
-}
-
-/** Top-level app component. */
 export function App() {
   const [servers, setServers] = useState<ServerRow[]>([]);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [selectedServer, setSelectedServer] = useState<string | null>(null);
+  const [message, setMessage] = useState<string>("");
 
-  /** Refresh servers list from API. */
+  // Version management state
+  const [versionType, setVersionType] = useState<"paper" | "vanilla">("paper");
+  const [newVersion, setNewVersion] = useState("");
+  const [isChangingVersion, setIsChangingVersion] = useState(false);
+
   async function refresh() {
+    setIsRefreshing(true);
     try {
       const res = await fetch("/api/servers");
       setServers(await res.json());
     } catch (err) {
-      console.error("Failed to fetch servers:", err);
+      setMessage("Failed to fetch servers");
+    } finally {
+      setIsRefreshing(false);
     }
   }
 
   useEffect(() => {
     refresh();
-    // Auto-refresh every 10 seconds
     const interval = setInterval(refresh, 10000);
     return () => clearInterval(interval);
   }, []);
 
+  const handleServerAction = async (serverName: string, action: string) => {
+    try {
+      const res = await fetch(`/api/servers/${serverName}/${action}`, {
+        method: "POST",
+        headers: authHeaders(),
+      });
+      const msg = await res.text();
+      setMessage(msg);
+      setTimeout(() => refresh(), 2000);
+    } catch (err) {
+      setMessage(`Failed to ${action} server`);
+    }
+  };
+
+  const handleFileUpload = async (
+    serverName: string,
+    type: string,
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const fd = new FormData();
+    fd.append("file", file);
+
+    try {
+      const res = await fetch(`/api/servers/${serverName}/${type}`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: fd,
+      });
+      const msg = await res.text();
+      setMessage(msg);
+    } catch (err) {
+      setMessage(`Failed to upload ${file.name}`);
+    }
+  };
+
+  const handleVersionChange = async (serverName: string) => {
+    if (!newVersion) {
+      setMessage("Please enter a version");
+      return;
+    }
+
+    setIsChangingVersion(true);
+    try {
+      const res = await fetch(`/api/servers/${serverName}/version/change`, {
+        method: "POST",
+        headers: { ...authHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: versionType,
+          version: newVersion,
+        }),
+      });
+      const data = await res.json();
+      setMessage(data.message || "Version changed successfully");
+      setNewVersion("");
+      setTimeout(() => refresh(), 3000);
+    } catch (err) {
+      setMessage("Failed to change version");
+    } finally {
+      setIsChangingVersion(false);
+    }
+  };
+
+  const getStatusColor = (status: string) => {
+    const statusLower = status.toLowerCase();
+    if (statusLower.includes("running")) return "default";
+    if (statusLower.includes("stopped")) return "secondary";
+    return "destructive";
+  };
+
   return (
-    <div>
-      <h1>MC LXD Manager</h1>
+    <div className="min-h-screen bg-background p-6">
+      <div className="max-w-7xl mx-auto space-y-6">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold tracking-tight">MC LXD Manager</h1>
+            <p className="text-muted-foreground mt-1">
+              Manage your Minecraft servers
+            </p>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="rounded-sm"
+            onClick={refresh}
+            disabled={isRefreshing}
+          >
+            <RefreshCw
+              className={`mr-2 h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`}
+            />
+            Refresh
+          </Button>
+        </div>
 
-      <section className="card">
-        <h2>Servers</h2>
-        <button onClick={refresh}>Refresh</button>
+        <Separator />
 
-        {servers.length === 0 && (
-          <p style={{ marginTop: "1rem", color: "#666" }}>
-            No servers registered. Create a server using the host setup script.
-          </p>
+        {/* Message Banner */}
+        {message && (
+          <Card className="rounded-sm border-l-4 border-l-primary">
+            <CardContent className="py-3">
+              <p className="text-sm">{message}</p>
+            </CardContent>
+          </Card>
         )}
 
-        {servers.map((s) => (
-          <div key={s.name} className="card">
-            <h3>
-              {s.name} <small>({s.status})</small>
-            </h3>
-            <div>
-              Edition: {s.edition} {s.mc_version} · Port: {s.public_port} · Mem: {s.memory_mb}MB
-              {s.cpu_limit && ` · CPU: ${s.cpu_limit}`}
-            </div>
+        {/* Server List */}
+        {servers.length === 0 ? (
+          <Card className="rounded-sm">
+            <CardContent className="py-12 text-center">
+              <p className="text-muted-foreground">
+                No servers registered. Run the setup script on your host to create servers.
+              </p>
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="grid gap-6">
+            {servers.map((server) => (
+              <Card key={server.name} className="rounded-sm">
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <CardTitle className="flex items-center gap-2">
+                        {server.name}
+                        <Badge
+                          variant={getStatusColor(server.status)}
+                          className="rounded-sm"
+                        >
+                          {server.status}
+                        </Badge>
+                      </CardTitle>
+                      <CardDescription className="mt-1">
+                        {server.edition} {server.mc_version} · Port {server.public_port} ·{" "}
+                        {server.memory_mb}MB RAM · {server.cpu_limit} CPU
+                      </CardDescription>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="rounded-sm h-9 w-9"
+                        onClick={() => handleServerAction(server.name, "start")}
+                        title="Start"
+                      >
+                        <Play className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="rounded-sm h-9 w-9"
+                        onClick={() => handleServerAction(server.name, "stop")}
+                        title="Stop"
+                      >
+                        <Square className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="rounded-sm h-9 w-9"
+                        onClick={() => handleServerAction(server.name, "restart")}
+                        title="Restart"
+                      >
+                        <RotateCw className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {/* Version Management */}
+                    <Dialog>
+                      <DialogTrigger asChild>
+                        <Button
+                          variant="outline"
+                          className="rounded-sm w-full"
+                          onClick={() => setSelectedServer(server.name)}
+                        >
+                          <Settings className="mr-2 h-4 w-4" />
+                          Change Version
+                        </Button>
+                      </DialogTrigger>
+                      <DialogContent className="rounded-sm">
+                        <DialogHeader>
+                          <DialogTitle>Change Server Version</DialogTitle>
+                          <DialogDescription>
+                            Update {server.name} to a different Minecraft version
+                          </DialogDescription>
+                        </DialogHeader>
+                        <div className="space-y-4">
+                          <div className="flex gap-2">
+                            <Button
+                              variant={versionType === "paper" ? "default" : "outline"}
+                              className="rounded-sm flex-1"
+                              onClick={() => setVersionType("paper")}
+                            >
+                              Paper
+                            </Button>
+                            <Button
+                              variant={versionType === "vanilla" ? "default" : "outline"}
+                              className="rounded-sm flex-1"
+                              onClick={() => setVersionType("vanilla")}
+                            >
+                              Vanilla
+                            </Button>
+                          </div>
+                          <Input
+                            placeholder="e.g., 1.21.3"
+                            value={newVersion}
+                            onChange={(e) => setNewVersion(e.target.value)}
+                            className="rounded-sm"
+                          />
+                        </div>
+                        <DialogFooter>
+                          <Button
+                            className="rounded-sm"
+                            onClick={() => handleVersionChange(server.name)}
+                            disabled={isChangingVersion}
+                          >
+                            {isChangingVersion ? "Changing..." : "Change Version"}
+                          </Button>
+                        </DialogFooter>
+                      </DialogContent>
+                    </Dialog>
 
-            <div style={{ marginTop: ".5rem" }}>
-              <button onClick={() => apiPOST(`/api/servers/${s.name}/start`)}>Start</button>
-              <button onClick={() => apiPOST(`/api/servers/${s.name}/stop`)}>Stop</button>
-              <button onClick={() => apiPOST(`/api/servers/${s.name}/restart`)}>Restart</button>
-              <button onClick={() => showLogs(s.name)}>Logs</button>
-              <button onClick={() => apiPOST(`/api/servers/${s.name}/backup`, true)}>
-                Create Backup
-              </button>
-              <button onClick={() => apiPOST(`/api/servers/${s.name}/luckperms`, true)}>
-                Install LuckPerms
-              </button>
-            </div>
+                    {/* Upload Plugin */}
+                    <div>
+                      <input
+                        type="file"
+                        accept=".jar"
+                        id={`plugin-${server.name}`}
+                        className="hidden"
+                        onChange={(e) =>
+                          handleFileUpload(server.name, "plugins", e)
+                        }
+                      />
+                      <label htmlFor={`plugin-${server.name}`}>
+                        <Button
+                          variant="outline"
+                          className="rounded-sm w-full"
+                          asChild
+                        >
+                          <span>
+                            <Package className="mr-2 h-4 w-4" />
+                            Upload Plugin
+                          </span>
+                        </Button>
+                      </label>
+                    </div>
 
-            <div className="row" style={{ marginTop: ".5rem" }}>
-              <div>
-                <b>Plugins</b>
-                <UploadBox
-                  label="Drag & drop .jar or click"
-                  accept=".jar"
-                  onUpload={(file) => uploadFile(`/api/servers/${s.name}/plugins`, file)}
-                />
-              </div>
-              <div>
-                <b>Mods</b>
-                <UploadBox
-                  label="Drag & drop .jar or click"
-                  accept=".jar"
-                  onUpload={(file) => uploadFile(`/api/servers/${s.name}/mods`, file)}
-                />
-              </div>
-              <div>
-                <b>World (.zip)</b>
-                <UploadBox
-                  label="Drag & drop world.zip or click"
-                  accept=".zip"
-                  onUpload={(file) => uploadFile(`/api/servers/${s.name}/worlds/upload`, file)}
-                />
-                <div style={{ marginTop: ".25rem" }}>
-                  <button onClick={() => listWorlds(s.name)}>List Worlds</button>
-                  <span id={`worlds-${s.name}`}></span>
-                </div>
-              </div>
-            </div>
+                    {/* Upload Mod */}
+                    <div>
+                      <input
+                        type="file"
+                        accept=".jar"
+                        id={`mod-${server.name}`}
+                        className="hidden"
+                        onChange={(e) => handleFileUpload(server.name, "mods", e)}
+                      />
+                      <label htmlFor={`mod-${server.name}`}>
+                        <Button
+                          variant="outline"
+                          className="rounded-sm w-full"
+                          asChild
+                        >
+                          <span>
+                            <Upload className="mr-2 h-4 w-4" />
+                            Upload Mod
+                          </span>
+                        </Button>
+                      </label>
+                    </div>
 
-            <details style={{ marginTop: ".5rem" }}>
-              <summary>
-                <b>server.properties</b> editor
-              </summary>
-              <textarea id={`sp-${s.name}`} style={{ width: "100%", height: 140 }} />
-              <div style={{ marginTop: ".25rem" }}>
-                <button onClick={() => loadProps(s.name)}>Load</button>
-                <button onClick={() => saveProps(s.name)}>Save & Restart</button>
-              </div>
-            </details>
+                    {/* Upload World */}
+                    <div>
+                      <input
+                        type="file"
+                        accept=".zip"
+                        id={`world-${server.name}`}
+                        className="hidden"
+                        onChange={(e) =>
+                          handleFileUpload(server.name, "worlds/upload", e)
+                        }
+                      />
+                      <label htmlFor={`world-${server.name}`}>
+                        <Button
+                          variant="outline"
+                          className="rounded-sm w-full"
+                          asChild
+                        >
+                          <span>
+                            <Globe className="mr-2 h-4 w-4" />
+                            Upload World
+                          </span>
+                        </Button>
+                      </label>
+                    </div>
 
-            <details style={{ marginTop: ".5rem" }}>
-              <summary>
-                <b>RCON</b> (send command)
-              </summary>
-              <input id={`rconpw-${s.name}`} type="password" placeholder="RCON password" />
-              <input id={`rconcmd-${s.name}`} placeholder="say Hello world" />
-              <button onClick={() => sendCmd(s.name)}>Send</button>
-              <pre id={`rconout-${s.name}`} hidden></pre>
-            </details>
+                    {/* Install LuckPerms */}
+                    <Button
+                      variant="outline"
+                      className="rounded-sm"
+                      onClick={() => handleServerAction(server.name, "luckperms")}
+                    >
+                      <Package className="mr-2 h-4 w-4" />
+                      Install LuckPerms
+                    </Button>
 
-            <details style={{ marginTop: ".5rem" }}>
-              <summary>
-                <b>Packwiz</b> modpack sync
-              </summary>
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  const fd = new FormData(e.currentTarget);
-                  apiPOST(`/api/servers/${s.name}/packwiz`, true, { url: String(fd.get("url")) });
-                }}
-              >
-                <input name="url" placeholder="https://.../pack.toml" style={{ width: "100%" }} />
-                <button type="submit" style={{ marginTop: ".25rem" }}>
-                  Sync Modpack
-                </button>
-              </form>
-            </details>
-
-            <pre id={`log-${s.name}`} hidden></pre>
+                    {/* Create Backup */}
+                    <Button
+                      variant="outline"
+                      className="rounded-sm"
+                      onClick={() => handleServerAction(server.name, "backup")}
+                    >
+                      <Upload className="mr-2 h-4 w-4" />
+                      Create Backup
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
           </div>
-        ))}
-      </section>
+        )}
+      </div>
     </div>
   );
-}
-
-/** Send POST with optional form or JSON body. */
-async function apiPOST(url: string, auth = false, body?: Record<string, string>) {
-  const headers: HeadersInit = auth ? authHeaders() : {};
-  let payload: BodyInit | undefined = undefined;
-
-  if (body && Object.values(body).some((v) => v !== undefined)) {
-    headers["Content-Type"] = "application/x-www-form-urlencoded";
-    payload = new URLSearchParams(body as Record<string, string>);
-  }
-  const r = await fetch(url, { method: "POST", headers, body: payload });
-  alert(await r.text());
-}
-
-async function showLogs(name: string) {
-  const el = document.getElementById(`log-${name}`)!;
-  el.toggleAttribute("hidden", false);
-  const r = await fetch(`/api/servers/${name}/logs`);
-  el.textContent = await r.text();
-}
-
-/** Upload arbitrary file to endpoint. */
-async function uploadFile(url: string, file: File) {
-  const fd = new FormData();
-  fd.append("file", file);
-  const r = await fetch(url, { method: "POST", headers: authHeaders(), body: fd });
-  alert(await r.text());
-}
-
-/** Load server.properties */
-async function loadProps(name: string) {
-  const r = await fetch(`/api/servers/${name}/config`);
-  (document.getElementById(`sp-${name}`) as HTMLTextAreaElement).value = await r.text();
-}
-
-/** Save server.properties and restart */
-async function saveProps(name: string) {
-  const content = (document.getElementById(`sp-${name}`) as HTMLTextAreaElement).value;
-  const body = new URLSearchParams({ content });
-  const r = await fetch(`/api/servers/${name}/config`, {
-    method: "POST",
-    headers: authHeaders(),
-    body
-  });
-  alert(await r.text());
-}
-
-/** List worlds and render switch buttons */
-async function listWorlds(name: string) {
-  const r = await fetch(`/api/servers/${name}/worlds`);
-  const arr: string[] = await r.json();
-  const el = document.getElementById(`worlds-${name}`)!;
-  el.innerHTML = arr
-    .map((w) => `<button onclick="window._switchWorld('${name}','${w}')">${w}</button>`)
-    .join(" ");
-}
-
-// expose switch handler globally for simplicity
-// @ts-ignore
-(window as any)._switchWorld = async (name: string, w: string) => {
-  await apiPOST(`/api/servers/${name}/worlds/switch`, true, { world_name: w });
-};
-
-/** Send RCON command */
-async function sendCmd(name: string) {
-  const pw = (document.getElementById(`rconpw-${name}`) as HTMLInputElement).value;
-  const cmd = (document.getElementById(`rconcmd-${name}`) as HTMLInputElement).value;
-  const out = document.getElementById(`rconout-${name}`)!;
-  const r = await fetch(`/api/servers/${name}/command`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: new URLSearchParams({ rcon_password: pw, command: cmd })
-  });
-  out.toggleAttribute("hidden", false);
-  out.textContent = await r.text();
 }
