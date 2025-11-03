@@ -8,6 +8,8 @@ import {
   Globe,
   RefreshCw,
   Package,
+  Copy,
+  Users,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -27,11 +29,25 @@ import {
 type ServerRow = {
   name: string;
   status: string;
+  local_ip: string;
+  local_port: number;
   public_port: number;
+  public_domain: string | null;
   memory_mb: number;
   cpu_limit: string;
   edition: string;
   mc_version: string;
+  minecraft: {
+    online: boolean;
+    players?: {
+      online: number;
+      max: number;
+      sample?: Array<{ name: string; id: string }>;
+    };
+    description?: string;
+    version?: string;
+    latency?: number;
+  } | null;
 };
 
 function authHeaders(): HeadersInit {
@@ -39,6 +55,10 @@ function authHeaders(): HeadersInit {
   const t = localStorage.getItem("ADMIN_TOKEN");
   if (t) h["Authorization"] = "Bearer " + t;
   return h;
+}
+
+function copyToClipboard(text: string) {
+  navigator.clipboard.writeText(text);
 }
 
 export function App() {
@@ -204,9 +224,62 @@ export function App() {
                         </Badge>
                       </CardTitle>
                       <CardDescription className="mt-1">
-                        {server.edition} {server.mc_version} · Port {server.public_port} ·{" "}
-                        {server.memory_mb}MB RAM · {server.cpu_limit} CPU
+                        {server.edition} {server.mc_version} · {server.memory_mb}MB RAM · {server.cpu_limit} CPU
                       </CardDescription>
+
+                      {/* Connection Info */}
+                      <div className="mt-3 space-y-1">
+                        <div className="flex items-center gap-2 text-sm">
+                          <Globe className="h-3.5 w-3.5 text-muted-foreground" />
+                          <span className="text-muted-foreground">Local:</span>
+                          <code className="bg-muted px-1.5 py-0.5 rounded text-xs">
+                            {server.local_ip}:{server.local_port}
+                          </code>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-5 w-5"
+                            onClick={() => copyToClipboard(`${server.local_ip}:${server.local_port}`)}
+                            title="Copy to clipboard"
+                          >
+                            <Copy className="h-3 w-3" />
+                          </Button>
+                        </div>
+                        {server.public_domain && (
+                          <div className="flex items-center gap-2 text-sm">
+                            <Globe className="h-3.5 w-3.5 text-muted-foreground" />
+                            <span className="text-muted-foreground">Public:</span>
+                            <code className="bg-muted px-1.5 py-0.5 rounded text-xs">
+                              {server.public_domain}:{server.public_port}
+                            </code>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-5 w-5"
+                              onClick={() => copyToClipboard(`${server.public_domain}:${server.public_port}`)}
+                              title="Copy to clipboard"
+                            >
+                              <Copy className="h-3 w-3" />
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Player Info */}
+                      {server.minecraft?.online && server.minecraft.players && (
+                        <div className="mt-2 flex items-center gap-2 text-sm">
+                          <Users className="h-3.5 w-3.5 text-muted-foreground" />
+                          <span className="text-muted-foreground">Players:</span>
+                          <Badge variant="secondary" className="rounded-sm text-xs">
+                            {server.minecraft.players.online}/{server.minecraft.players.max}
+                          </Badge>
+                          {server.minecraft.description && (
+                            <span className="text-xs text-muted-foreground ml-2">
+                              · {server.minecraft.description}
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
                     <div className="flex items-center gap-2">
                       <Button

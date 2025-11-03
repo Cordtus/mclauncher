@@ -8,9 +8,9 @@
     "apps/web"
   ],
   "scripts": {
-    "dev": "pnpm -C apps/server dev",
-    "build": "pnpm -C apps/web build && pnpm -C apps/server build && pnpm -C apps/agent build",
-    "start": "pnpm -C apps/server start",
+    "dev": "npm -C apps/server run dev",
+    "build": "npm -C apps/web run build && npm -C apps/server run build && npm -C apps/agent run build",
+    "start": "npm -C apps/server run start",
     "lint": "eslint . --ext .ts,.tsx",
     "format": "prettier -w ."
   },
@@ -21,6 +21,5 @@
     "eslint-plugin-import": "^2.29.1",
     "prettier": "^3.3.3",
     "typescript": "^5.6.3"
-  },
-  "packageManager": "pnpm@9.12.0"
+  }
 }

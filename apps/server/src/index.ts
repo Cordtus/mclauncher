@@ -24,7 +24,10 @@ const TRUST_PROXY = (process.env.TRUST_PROXY ?? "true").toLowerCase() === "true"
 interface ServerEntry {
   name: string;
   agent_url: string; // http://container-ip:9090
-  public_port: number;
+  local_ip?: string; // Container IP (e.g., 10.70.48.204)
+  local_port?: number; // Minecraft port (usually 25565)
+  public_port: number; // LXD proxy port on host
+  public_domain?: string; // Optional public domain (e.g., mc.yourdomain.com)
   memory_mb: number;
   cpu_limit?: string;
   edition: string;
@@ -123,29 +126,53 @@ app.get("/api/servers", async (_req, res) => {
   const results = [];
 
   for (const server of registry.servers) {
+    // Extract local IP from agent URL
+    const localIp = server.local_ip || server.agent_url.match(/https?:\/\/([^:]+)/)?.[1] || "";
+    const localPort = server.local_port || 25565;
+
     try {
       const statusRes = await proxyToAgent(server.agent_url, "/status");
       const status = await statusRes.json();
+
       results.push({
         name: server.name,
         status: status.active ? "Running" : "Stopped",
+
+        // Connection info
+        local_ip: localIp,
+        local_port: localPort,
         public_port: server.public_port,
+        public_domain: server.public_domain || null,
+
+        // Server info
         memory_mb: server.memory_mb,
         cpu_limit: server.cpu_limit || "",
         edition: server.edition,
         mc_version: server.mc_version,
         agent_url: server.agent_url,
+
+        // Minecraft status (players, MOTD, etc.)
+        minecraft: status.minecraft || null,
       });
     } catch {
       results.push({
         name: server.name,
         status: "Unreachable",
+
+        // Connection info
+        local_ip: localIp,
+        local_port: localPort,
         public_port: server.public_port,
+        public_domain: server.public_domain || null,
+
+        // Server info
         memory_mb: server.memory_mb,
         cpu_limit: server.cpu_limit || "",
         edition: server.edition,
         mc_version: server.mc_version,
         agent_url: server.agent_url,
+
+        minecraft: null,
       });
     }
   }
@@ -192,6 +219,29 @@ app.delete("/api/servers/:name/unregister", requireAdmin, (req, res) => {
   registry.servers.splice(index, 1);
   saveRegistry(registry);
   res.json({ ok: true, message: `Server ${name} unregistered` });
+});
+
+// Update server configuration
+app.patch("/api/servers/:name/config", requireAdmin, (req, res) => {
+  const { name } = req.params;
+  const { public_domain, local_port } = req.body;
+
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) {
+    return res.status(404).json({ error: "Server not found" });
+  }
+
+  // Update fields
+  if (public_domain !== undefined) {
+    server.public_domain = public_domain || undefined;
+  }
+  if (local_port !== undefined) {
+    server.local_port = Number(local_port);
+  }
+
+  saveRegistry(registry);
+  res.json({ ok: true, message: `Server ${name} configuration updated`, server });
 });
 
 // Proxy endpoints to server agents

@@ -21,9 +21,11 @@ import { VersionManager } from "./managers/version.js";
 import { WorldManager } from "./managers/world.js";
 import { PaperDownloader } from "./downloaders/paper.js";
 import { VanillaDownloader } from "./downloaders/vanilla.js";
+import { pingMinecraftServer } from "./utils/mcping.js";
 
 const PORT = Number(process.env.AGENT_PORT || 9090);
 const MC_DIR = process.env.MC_DIR || "/opt/minecraft";
+const MC_PORT = Number(process.env.MC_PORT || 25565);
 const WORLDS_HOME = path.join(MC_DIR, "worlds");
 const WORLD_LINK = path.join(MC_DIR, "world");
 const RCON_PORT = Number(process.env.RCON_PORT || 25575);
@@ -59,13 +61,26 @@ app.get("/health", (_req, res) => {
 });
 
 // Get server status
-app.get("/status", (_req, res) => {
+app.get("/status", async (_req, res) => {
   const status = shSafe("systemctl", ["is-active", "minecraft"]);
   const enabled = shSafe("systemctl", ["is-enabled", "minecraft"]);
+  const isActive = status.stdout.trim() === "active";
+
+  let mcStatus = null;
+  if (isActive) {
+    try {
+      mcStatus = await pingMinecraftServer("localhost", MC_PORT, 3000);
+    } catch (err) {
+      // Server might be starting up or not responding to pings
+      mcStatus = { online: false };
+    }
+  }
+
   res.json({
-    active: status.stdout.trim() === "active",
+    active: isActive,
     enabled: enabled.stdout.trim() === "enabled",
     status: status.stdout.trim(),
+    minecraft: mcStatus,
   });
 });
 
