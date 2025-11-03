@@ -48,3 +48,6 @@ CLAUDE.md
 **/CLAUDE.md
 .cursor/
 .aider*
+
+# Local setup scripts (host-specific)
+setup/
