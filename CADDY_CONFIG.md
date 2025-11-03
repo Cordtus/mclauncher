@@ -5,22 +5,26 @@ This guide covers configuring Caddy, LXD proxy devices, and firewall rules for b
 ## Current Setup
 
 - **LXD Host**: 192.168.0.170
-- **Caddy Server**: 10.70.48.100
+- **LXD Bridge Network**: 10.70.48.0/24
+- **Caddy Server**: 10.70.48.100 (on LXD bridge - can reach containers directly!)
 - **Management Container**: mc-manager (10.70.48.95:8080)
 - **Minecraft Server Container**: mc-server-1 (10.70.48.204:25565)
 
-## 1. LXD Proxy Devices
+## 1. LXD Proxy Devices (For LAN Access Only)
 
-### Management UI (Already Configured)
+**Note**: Caddy doesn't need these since it's on the same network as the containers.
+
+### Management UI - LAN Access (Optional)
 ```bash
-# Already exists - verifies current config
+# Only needed if you want LAN users to access via host IP (192.168.0.170:8585)
+# Already exists:
 lxc config device show mc-manager
 # Shows: listen: tcp:0.0.0.0:8585 → connect: tcp:127.0.0.1:8080
 ```
 
-### Minecraft Server Public Port
+### Minecraft Server - LAN Access (Optional)
 ```bash
-# Add proxy device for Minecraft server
+# Only needed if you want LAN users to connect via host IP (192.168.0.170:25565)
 lxc config device add mc-server-1 minecraft-proxy proxy \
   listen=tcp:0.0.0.0:25565 \
   connect=tcp:127.0.0.1:25565
@@ -29,9 +33,9 @@ lxc config device add mc-server-1 minecraft-proxy proxy \
 lxc config device show mc-server-1
 ```
 
-This exposes Minecraft on the **host's** port 25565.
-
 ## 2. Caddy Configuration
+
+Since Caddy is on the LXD bridge (10.70.48.100), it can reach containers directly!
 
 ### For Web UI (HTTP Reverse Proxy)
 
@@ -40,7 +44,8 @@ Add this to your Caddyfile:
 ```caddyfile
 # Management Web UI
 minecraft.yourdomain.com {
-    reverse_proxy http://192.168.0.170:8585
+    # Direct connection to management container
+    reverse_proxy http://10.70.48.95:8080
 
     # Optional: Add basic auth if you want extra security
     # basicauth {
@@ -51,85 +56,64 @@ minecraft.yourdomain.com {
 
 ### For Minecraft Server (TCP Proxy)
 
-**Minecraft requires TCP proxying, not HTTP.** You have two options:
+**Minecraft requires TCP proxying, not HTTP.** You need Caddy's layer4 module.
 
-#### Option A: Direct DNS to Host (Recommended)
-
-Point your domain's A record directly to your public IP, and configure port forwarding:
-
+#### Install Caddy with Layer4
 ```bash
-# On your router/firewall
-# Forward public:25565 → 192.168.0.170:25565 (LXD host)
+# On your Caddy container/server
+xcaddy build --with github.com/mholt/caddy-l4
 ```
 
-Then create a subdomain:
-```
-play.yourdomain.com → A record → your.public.ip
-```
-
-Players connect to: `play.yourdomain.com:25565`
-
-#### Option B: Caddy Layer4 Plugin (More Complex)
-
-If you want Caddy to handle Minecraft TCP traffic, you need the layer4 module.
-
-1. **Install Caddy with layer4:**
-```bash
-# Download custom build with layer4
-caddy version  # Check if layer4 is already included
-# If not, rebuild with: xcaddy build --with github.com/mholt/caddy-l4
-```
-
-2. **Add to Caddyfile:**
+#### Add to Your Caddyfile
 ```caddyfile
 {
     layer4 {
-        # Minecraft TCP proxy
+        # Minecraft TCP proxy - direct to container!
         :25565 {
             route {
                 proxy {
-                    upstream 192.168.0.170:25565
+                    upstream 10.70.48.204:25565
                 }
             }
         }
     }
 }
 
-# HTTP sites remain the same
+# HTTP sites
 minecraft.yourdomain.com {
-    reverse_proxy http://192.168.0.170:8585
+    reverse_proxy http://10.70.48.95:8080
 }
 ```
 
-**Note**: Layer4 requires Caddy to bind to port 25565, so your Caddy server would need to be on your public IP or handle port forwarding.
+#### Alternative: SRV Record (No Layer4 Needed)
 
-## 3. Firewall Rules (Host: 192.168.0.170)
+If you don't want to use layer4, use DNS SRV records to point directly to the container:
 
-### For LAN Access (Local Network)
+```
+_minecraft._tcp.play.yourdomain.com    SRV    0 5 25565 10.70.48.204
+```
+
+Players connect to `play.yourdomain.com` (Minecraft automatically queries SRV record).
+
+## 3. Firewall Rules
+
+**Good news!** Since Caddy is on the LXD bridge, it can already reach the containers. No special firewall rules needed on the host for Caddy.
+
+### LAN Access via Host IP (Optional)
+
+Only if you want LAN users to connect via `192.168.0.170`:
 
 ```bash
 # Allow from LAN to management UI
 sudo ufw allow from 192.168.0.0/16 to any port 8585 comment "MC Manager UI - LAN"
 
-# Allow from LAN to Minecraft
+# Allow from LAN to Minecraft (if using host proxy)
 sudo ufw allow from 192.168.0.0/16 to any port 25565 comment "Minecraft Server - LAN"
-
-# Verify rules
-sudo ufw status numbered
 ```
 
-### For Public Access via Caddy
+### Public Access
 
-```bash
-# Allow Caddy server to reach management UI
-sudo ufw allow from 10.70.48.100 to any port 8585 comment "Caddy to MC Manager"
-
-# Allow Caddy server (or public) to reach Minecraft
-sudo ufw allow from 10.70.48.100 to any port 25565 comment "Caddy to Minecraft"
-
-# OR if using router port forwarding directly:
-sudo ufw allow 25565/tcp comment "Minecraft Public"
-```
+If you're using layer4 in Caddy to proxy Minecraft, you'll handle this at your router/public firewall level (forward port 25565 to Caddy container).
 
 ### Verify Firewall Status
 ```bash
@@ -204,16 +188,26 @@ EOF'
 
 ## Summary
 
-**Recommended Setup:**
+**Simplified Setup (Caddy on LXD Bridge):**
 
-1. **LXD Proxy**: Host:25565 → mc-server-1:25565
-2. **Router**: Public:25565 → 192.168.0.170:25565
-3. **Caddy**: HTTPS reverse proxy for web UI only
-4. **DNS**:
-   - `minecraft.yourdomain.com` → Caddy IP (web UI)
-   - `play.yourdomain.com` → Public IP (Minecraft)
-5. **Firewall**: Allow LAN (192.168.0.0/16) + Caddy IP to both ports
+1. **Caddy Config**:
+   - Web UI: `reverse_proxy http://10.70.48.95:8080`
+   - Minecraft: Layer4 proxy to `10.70.48.204:25565` OR use SRV record
+
+2. **DNS**:
+   - `minecraft.yourdomain.com` → Your public IP (Caddy handles HTTPS)
+   - `play.yourdomain.com` → SRV record to `10.70.48.204:25565`
+     OR Layer4 proxy on Caddy
+
+3. **No Special Firewall Rules**: Caddy is already on the same network as containers!
+
+4. **Optional LAN Proxy**: Only if you want `192.168.0.170:8585` access
 
 This gives you:
-- **LAN users**: Connect to `192.168.0.170:25565` or web UI at `:8585`
-- **Public users**: Connect to `play.yourdomain.com:25565` or web UI at `https://minecraft.yourdomain.com`
+- **LAN users**:
+  - Web UI: `http://192.168.0.170:8585` (via LXD proxy) or `http://10.70.48.95:8080` (direct)
+  - Minecraft: `10.70.48.204:25565` (direct to container)
+
+- **Public users**:
+  - Web UI: `https://minecraft.yourdomain.com` (via Caddy)
+  - Minecraft: `play.yourdomain.com` (via Caddy layer4 or SRV record)
