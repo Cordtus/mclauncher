@@ -10,6 +10,8 @@ import {
   Package,
   Copy,
   Users,
+  HelpCircle,
+  Info,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -25,6 +27,12 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 type ServerRow = {
   name: string;
@@ -163,8 +171,9 @@ export function App() {
   };
 
   return (
-    <div className="min-h-screen bg-background p-6">
-      <div className="max-w-7xl mx-auto space-y-6">
+    <TooltipProvider>
+      <div className="min-h-screen bg-background p-6">
+        <div className="max-w-7xl mx-auto space-y-6">
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
@@ -173,18 +182,96 @@ export function App() {
               Manage your Minecraft servers
             </p>
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            className="rounded-sm"
-            onClick={refresh}
-            disabled={isRefreshing}
-          >
-            <RefreshCw
-              className={`mr-2 h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`}
-            />
-            Refresh
-          </Button>
+          <div className="flex gap-2">
+            <Dialog>
+              <DialogTrigger asChild>
+                <Button variant="outline" size="sm" className="rounded-sm">
+                  <HelpCircle className="mr-2 h-4 w-4" />
+                  Getting Started
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="rounded-sm max-w-2xl max-h-[80vh] overflow-y-auto">
+                <DialogHeader>
+                  <DialogTitle>Getting Started with MC LXD Manager</DialogTitle>
+                  <DialogDescription>
+                    How to use your Minecraft server
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4 text-sm">
+                  <div>
+                    <h3 className="font-semibold mb-2">1. Start the Minecraft Server</h3>
+                    <p className="text-muted-foreground">Click the Play button to start the Minecraft server process. The server will take 30-60 seconds to fully start.</p>
+                  </div>
+
+                  <div>
+                    <h3 className="font-semibold mb-2">2. Connect to Your Server</h3>
+                    <p className="text-muted-foreground mb-2">In Minecraft, go to Multiplayer → Add Server and use:</p>
+                    <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2">
+                      <li><strong>From LAN:</strong> Use the Local IP shown (e.g., 10.70.48.204:25565)</li>
+                      <li><strong>From Internet:</strong> Configure a public domain first</li>
+                    </ul>
+                  </div>
+
+                  <div>
+                    <h3 className="font-semibold mb-2">3. Upload Plugins</h3>
+                    <p className="text-muted-foreground mb-2">For Paper/Spigot servers only:</p>
+                    <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2">
+                      <li>Download .jar files from SpigotMC, Bukkit, or Modrinth</li>
+                      <li>Click "Upload Plugin" and select the .jar file</li>
+                      <li>Restart the server to load the plugin</li>
+                    </ul>
+                  </div>
+
+                  <div>
+                    <h3 className="font-semibold mb-2">4. Upload Mods</h3>
+                    <p className="text-muted-foreground mb-2">For modded servers (Forge/Fabric):</p>
+                    <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2">
+                      <li>Download .jar files from CurseForge or Modrinth</li>
+                      <li>Click "Upload Mod" and select the .jar file</li>
+                      <li>Players must have the same mods installed</li>
+                    </ul>
+                  </div>
+
+                  <div>
+                    <h3 className="font-semibold mb-2">5. Upload Worlds</h3>
+                    <p className="text-muted-foreground mb-2">Import existing Minecraft worlds:</p>
+                    <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2">
+                      <li>Compress your world folder into a .zip file</li>
+                      <li>The .zip should contain level.dat, region/, data/ folders</li>
+                      <li>Click "Upload World" and select the .zip</li>
+                      <li>Server will stop, extract world, and restart</li>
+                    </ul>
+                  </div>
+
+                  <div>
+                    <h3 className="font-semibold mb-2">6. Create a New World</h3>
+                    <p className="text-muted-foreground">A default world is created on first start. To customize, edit server.properties and restart.</p>
+                  </div>
+
+                  <div>
+                    <h3 className="font-semibold mb-2">File Format Examples</h3>
+                    <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2">
+                      <li><strong>Plugins:</strong> EssentialsX.jar, WorldEdit.jar</li>
+                      <li><strong>Mods:</strong> sodium-fabric-0.5.8.jar</li>
+                      <li><strong>Worlds:</strong> my-world.zip (contains level.dat inside)</li>
+                    </ul>
+                  </div>
+                </div>
+              </DialogContent>
+            </Dialog>
+            <Button
+              variant="outline"
+              size="sm"
+              className="rounded-sm"
+              onClick={refresh}
+              disabled={isRefreshing}
+            >
+              <RefreshCw
+                className={`mr-2 h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`}
+              />
+              Refresh
+            </Button>
+          </div>
         </div>
 
         <Separator />
@@ -370,77 +457,101 @@ export function App() {
                     </Dialog>
 
                     {/* Upload Plugin */}
-                    <div>
-                      <input
-                        type="file"
-                        accept=".jar"
-                        id={`plugin-${server.name}`}
-                        className="hidden"
-                        onChange={(e) =>
-                          handleFileUpload(server.name, "plugins", e)
-                        }
-                      />
-                      <label htmlFor={`plugin-${server.name}`}>
-                        <Button
-                          variant="outline"
-                          className="rounded-sm w-full"
-                          asChild
-                        >
-                          <span>
-                            <Package className="mr-2 h-4 w-4" />
-                            Upload Plugin
-                          </span>
-                        </Button>
-                      </label>
-                    </div>
+                    <Tooltip>
+                      <div>
+                        <input
+                          type="file"
+                          accept=".jar"
+                          id={`plugin-${server.name}`}
+                          className="hidden"
+                          onChange={(e) =>
+                            handleFileUpload(server.name, "plugins", e)
+                          }
+                        />
+                        <label htmlFor={`plugin-${server.name}`}>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant="outline"
+                              className="rounded-sm w-full"
+                              asChild
+                            >
+                              <span>
+                                <Package className="mr-2 h-4 w-4" />
+                                Upload Plugin
+                              </span>
+                            </Button>
+                          </TooltipTrigger>
+                        </label>
+                      </div>
+                      <TooltipContent className="max-w-xs">
+                        <p className="font-semibold mb-1">Upload Plugin (.jar)</p>
+                        <p className="text-xs">For Paper/Spigot only. Download from SpigotMC, Bukkit, or Modrinth. Restart server after upload.</p>
+                      </TooltipContent>
+                    </Tooltip>
 
                     {/* Upload Mod */}
-                    <div>
-                      <input
-                        type="file"
-                        accept=".jar"
-                        id={`mod-${server.name}`}
-                        className="hidden"
-                        onChange={(e) => handleFileUpload(server.name, "mods", e)}
-                      />
-                      <label htmlFor={`mod-${server.name}`}>
-                        <Button
-                          variant="outline"
-                          className="rounded-sm w-full"
-                          asChild
-                        >
-                          <span>
-                            <Upload className="mr-2 h-4 w-4" />
-                            Upload Mod
-                          </span>
-                        </Button>
-                      </label>
-                    </div>
+                    <Tooltip>
+                      <div>
+                        <input
+                          type="file"
+                          accept=".jar"
+                          id={`mod-${server.name}`}
+                          className="hidden"
+                          onChange={(e) => handleFileUpload(server.name, "mods", e)}
+                        />
+                        <label htmlFor={`mod-${server.name}`}>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant="outline"
+                              className="rounded-sm w-full"
+                              asChild
+                            >
+                              <span>
+                                <Upload className="mr-2 h-4 w-4" />
+                                Upload Mod
+                              </span>
+                            </Button>
+                          </TooltipTrigger>
+                        </label>
+                      </div>
+                      <TooltipContent className="max-w-xs">
+                        <p className="font-semibold mb-1">Upload Mod (.jar)</p>
+                        <p className="text-xs">For Forge/Fabric servers. Download from CurseForge or Modrinth. Players must have matching mods.</p>
+                      </TooltipContent>
+                    </Tooltip>
 
                     {/* Upload World */}
-                    <div>
-                      <input
-                        type="file"
-                        accept=".zip"
-                        id={`world-${server.name}`}
-                        className="hidden"
-                        onChange={(e) =>
-                          handleFileUpload(server.name, "worlds/upload", e)
-                        }
-                      />
-                      <label htmlFor={`world-${server.name}`}>
-                        <Button
-                          variant="outline"
-                          className="rounded-sm w-full"
-                          asChild
-                        >
-                          <span>
-                            <Globe className="mr-2 h-4 w-4" />
-                            Upload World
-                          </span>
-                        </Button>
-                      </label>
-                    </div>
+                    <Tooltip>
+                      <div>
+                        <input
+                          type="file"
+                          accept=".zip"
+                          id={`world-${server.name}`}
+                          className="hidden"
+                          onChange={(e) =>
+                            handleFileUpload(server.name, "worlds/upload", e)
+                          }
+                        />
+                        <label htmlFor={`world-${server.name}`}>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant="outline"
+                              className="rounded-sm w-full"
+                              asChild
+                            >
+                              <span>
+                                <Globe className="mr-2 h-4 w-4" />
+                                Upload World
+                              </span>
+                            </Button>
+                          </TooltipTrigger>
+                        </label>
+                      </div>
+                      <TooltipContent className="max-w-xs">
+                        <p className="font-semibold mb-1">Upload World (.zip)</p>
+                        <p className="text-xs">Compress your world folder. Must contain level.dat, region/, and data/ folders. Server will restart.</p>
+                      </TooltipContent>
+                    </Tooltip>
 
                     {/* Install LuckPerms */}
                     <Button
@@ -467,7 +578,8 @@ export function App() {
             ))}
           </div>
         )}
+        </div>
       </div>
-    </div>
+    </TooltipProvider>
   );
 }
