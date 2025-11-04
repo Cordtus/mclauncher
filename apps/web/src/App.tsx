@@ -343,27 +343,30 @@ export function App() {
                   </div>
 
                   <div>
-                    <h3 className="font-semibold mb-2">3. Upload Plugins</h3>
-                    <p className="text-muted-foreground mb-2">For Paper/Spigot servers only:</p>
-                    <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2">
-                      <li>Download .jar files from SpigotMC, Bukkit, or Modrinth</li>
-                      <li>Click "Upload Plugin" and select the .jar file</li>
-                      <li>Restart the server to load the plugin</li>
-                    </ul>
+                    <h3 className="font-semibold mb-2">3. Add Plugins or Mods</h3>
+                    <p className="text-muted-foreground mb-2">The upload button shown depends on your server type:</p>
+                    <div className="ml-2 space-y-3">
+                      <div>
+                        <p className="font-medium text-sm">🔌 Plugins (Paper/Purpur/Spigot):</p>
+                        <ul className="list-disc list-inside space-y-1 text-muted-foreground text-sm ml-2">
+                          <li>Download .jar files from SpigotMC, Bukkit, or Modrinth</li>
+                          <li>Click "Upload Plugin" and select the .jar file</li>
+                          <li>Restart the server to load the plugin</li>
+                        </ul>
+                      </div>
+                      <div>
+                        <p className="font-medium text-sm">📦 Mods (Forge/NeoForge/Fabric):</p>
+                        <ul className="list-disc list-inside space-y-1 text-muted-foreground text-sm ml-2">
+                          <li>Download .jar files from CurseForge or Modrinth</li>
+                          <li>Click "Upload Mod" and select the .jar file</li>
+                          <li>Players must have the same mods installed</li>
+                        </ul>
+                      </div>
+                    </div>
                   </div>
 
                   <div>
-                    <h3 className="font-semibold mb-2">4. Upload Mods</h3>
-                    <p className="text-muted-foreground mb-2">For modded servers (Forge/Fabric):</p>
-                    <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2">
-                      <li>Download .jar files from CurseForge or Modrinth</li>
-                      <li>Click "Upload Mod" and select the .jar file</li>
-                      <li>Players must have the same mods installed</li>
-                    </ul>
-                  </div>
-
-                  <div>
-                    <h3 className="font-semibold mb-2">5. Upload Worlds</h3>
+                    <h3 className="font-semibold mb-2">4. Upload Worlds</h3>
                     <p className="text-muted-foreground mb-2">Import existing Minecraft worlds:</p>
                     <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2">
                       <li>Compress your world folder into a .zip file</li>
@@ -374,7 +377,7 @@ export function App() {
                   </div>
 
                   <div>
-                    <h3 className="font-semibold mb-2">6. Create a New World</h3>
+                    <h3 className="font-semibold mb-2">5. Create a New World</h3>
                     <p className="text-muted-foreground">A default world is created on first start. To customize, edit server.properties and restart.</p>
                   </div>
 
@@ -631,69 +634,73 @@ export function App() {
                       </DialogContent>
                     </Dialog>
 
-                    {/* Upload Plugin */}
-                    <Tooltip>
-                      <div>
-                        <input
-                          type="file"
-                          accept=".jar"
-                          id={`plugin-${server.name}`}
-                          className="hidden"
-                          onChange={(e) =>
-                            handleFileUpload(server.name, "plugins", e)
-                          }
-                        />
-                        <label htmlFor={`plugin-${server.name}`}>
-                          <TooltipTrigger asChild>
-                            <Button
-                              variant="outline"
-                              className="rounded-sm w-full hover:bg-purple-500/10 hover:border-purple-500 transition-all"
-                              asChild
-                            >
-                              <span>
-                                <Package className="mr-2 h-4 w-4" />
-                                🔌 Upload Plugin
-                              </span>
-                            </Button>
-                          </TooltipTrigger>
-                        </label>
-                      </div>
-                      <TooltipContent className="max-w-xs">
-                        <p className="font-semibold mb-1">Upload Plugin (.jar)</p>
-                        <p className="text-xs">For Paper/Spigot only. Download from SpigotMC, Bukkit, or Modrinth. Restart server after upload.</p>
-                      </TooltipContent>
-                    </Tooltip>
+                    {/* Upload Plugin - Only for Paper/Purpur/Spigot */}
+                    {['paper', 'purpur', 'spigot'].includes(server.edition.toLowerCase()) && (
+                      <Tooltip>
+                        <div>
+                          <input
+                            type="file"
+                            accept=".jar"
+                            id={`plugin-${server.name}`}
+                            className="hidden"
+                            onChange={(e) =>
+                              handleFileUpload(server.name, "plugins", e)
+                            }
+                          />
+                          <label htmlFor={`plugin-${server.name}`}>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="outline"
+                                className="rounded-sm w-full hover:bg-purple-500/10 hover:border-purple-500 transition-all"
+                                asChild
+                              >
+                                <span>
+                                  <Package className="mr-2 h-4 w-4" />
+                                  🔌 Upload Plugin
+                                </span>
+                              </Button>
+                            </TooltipTrigger>
+                          </label>
+                        </div>
+                        <TooltipContent className="max-w-xs">
+                          <p className="font-semibold mb-1">Upload Plugin (.jar)</p>
+                          <p className="text-xs">Download from SpigotMC, Bukkit, or Modrinth. Restart server after upload.</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    )}
 
-                    {/* Upload Mod */}
-                    <Tooltip>
-                      <div>
-                        <input
-                          type="file"
-                          accept=".jar"
-                          id={`mod-${server.name}`}
-                          className="hidden"
-                          onChange={(e) => handleFileUpload(server.name, "mods", e)}
-                        />
-                        <label htmlFor={`mod-${server.name}`}>
-                          <TooltipTrigger asChild>
-                            <Button
-                              variant="outline"
-                              className="rounded-sm w-full hover:bg-orange-500/10 hover:border-orange-500 transition-all"
-                              asChild
-                            >
-                              <span>
-                                <Upload className="mr-2 h-4 w-4" />
-                                📦 Upload Mod
-                              </span>
-                            </Button>
-                          </TooltipTrigger>
-                        </label>
-                      </div>
-                      <TooltipContent className="max-w-xs">
-                        <p className="font-semibold mb-1">Upload Mod (.jar)</p>
-                        <p className="text-xs">For Forge/Fabric servers. Download from CurseForge or Modrinth. Players must have matching mods.</p>
-                      </TooltipContent>
-                    </Tooltip>
+                    {/* Upload Mod - Only for Forge/NeoForge/Fabric */}
+                    {['forge', 'neoforge', 'fabric'].includes(server.edition.toLowerCase()) && (
+                      <Tooltip>
+                        <div>
+                          <input
+                            type="file"
+                            accept=".jar"
+                            id={`mod-${server.name}`}
+                            className="hidden"
+                            onChange={(e) => handleFileUpload(server.name, "mods", e)}
+                          />
+                          <label htmlFor={`mod-${server.name}`}>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="outline"
+                                className="rounded-sm w-full hover:bg-orange-500/10 hover:border-orange-500 transition-all"
+                                asChild
+                              >
+                                <span>
+                                  <Upload className="mr-2 h-4 w-4" />
+                                  📦 Upload Mod
+                                </span>
+                              </Button>
+                            </TooltipTrigger>
+                          </label>
+                        </div>
+                        <TooltipContent className="max-w-xs">
+                          <p className="font-semibold mb-1">Upload Mod (.jar)</p>
+                          <p className="text-xs">Download from CurseForge or Modrinth. Players must have matching mods.</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    )}
 
                     {/* Upload World */}
                     <Tooltip>
