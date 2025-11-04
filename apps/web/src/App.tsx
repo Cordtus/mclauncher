@@ -15,7 +15,9 @@ import {
   ChevronDown,
   ChevronUp,
   Terminal,
+  Package2,
 } from "lucide-react";
+import { ModBrowser } from "@/components/ModBrowser";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -852,7 +854,7 @@ export function App() {
                   </div>
                 </CardHeader>
                 <CardContent>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                     {/* Version Management */}
                     <Dialog>
                       <DialogTrigger asChild>
@@ -943,37 +945,69 @@ export function App() {
                       </Tooltip>
                     )}
 
-                    {/* Upload Mod - Only for Forge/NeoForge/Fabric */}
+                    {/* Mod Management - Only for Forge/NeoForge/Fabric */}
                     {['forge', 'neoforge', 'fabric'].includes(server.edition.toLowerCase()) && (
-                      <Tooltip>
-                        <div>
-                          <input
-                            type="file"
-                            accept=".jar"
-                            id={`mod-${server.name}`}
-                            className="hidden"
-                            onChange={(e) => handleFileUpload(server.name, "mods", e)}
-                          />
-                          <label htmlFor={`mod-${server.name}`}>
-                            <TooltipTrigger asChild>
-                              <Button
-                                variant="outline"
-                                className="rounded-sm w-full hover:bg-orange-500/10 hover:border-orange-500 transition-all"
-                                asChild
-                              >
-                                <span>
-                                  <Upload className="mr-2 h-4 w-4" />
-                                  📦 Upload Mod
-                                </span>
-                              </Button>
-                            </TooltipTrigger>
-                          </label>
-                        </div>
-                        <TooltipContent className="max-w-xs">
-                          <p className="font-semibold mb-1">Upload Mod (.jar)</p>
-                          <p className="text-xs">Download from CurseForge or Modrinth. Players must have matching mods.</p>
-                        </TooltipContent>
-                      </Tooltip>
+                      <>
+                        <Dialog>
+                          <DialogTrigger asChild>
+                            <Button
+                              variant="outline"
+                              className="rounded-sm hover:bg-purple-500/10 hover:border-purple-500 transition-all"
+                            >
+                              <Package2 className="mr-2 h-4 w-4" />
+                              Browse Mods
+                            </Button>
+                          </DialogTrigger>
+                          <DialogContent className="rounded-sm max-w-5xl max-h-[90vh]">
+                            <DialogHeader>
+                              <DialogTitle>Mod Browser</DialogTitle>
+                              <DialogDescription>
+                                Search and install mods from Modrinth
+                              </DialogDescription>
+                            </DialogHeader>
+                            <ModBrowser
+                              serverName={server.name}
+                              mcVersion={server.mc_version}
+                              loader={server.edition.toLowerCase() as 'forge' | 'fabric' | 'neoforge'}
+                              serverMemoryMB={server.memory_mb}
+                              onInstall={() => {
+                                setMessage(`Mod installed. Restart ${server.name} to load the mod.`);
+                                refresh();
+                              }}
+                            />
+                          </DialogContent>
+                        </Dialog>
+
+                        <Tooltip>
+                          <div>
+                            <input
+                              type="file"
+                              accept=".jar"
+                              id={`mod-${server.name}`}
+                              className="hidden"
+                              onChange={(e) => handleFileUpload(server.name, "mods", e)}
+                            />
+                            <label htmlFor={`mod-${server.name}`}>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  variant="outline"
+                                  className="rounded-sm w-full hover:bg-orange-500/10 hover:border-orange-500 transition-all"
+                                  asChild
+                                >
+                                  <span>
+                                    <Upload className="mr-2 h-4 w-4" />
+                                    Upload Mod
+                                  </span>
+                                </Button>
+                              </TooltipTrigger>
+                            </label>
+                          </div>
+                          <TooltipContent className="max-w-xs">
+                            <p className="font-semibold mb-1">Upload Mod (.jar)</p>
+                            <p className="text-xs">Download from CurseForge or Modrinth. Players must have matching mods.</p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </>
                     )}
 
                     {/* Upload World */}
