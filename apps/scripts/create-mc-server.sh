@@ -12,8 +12,8 @@ EDITION="${2:-paper}"           # paper or vanilla
 MC_VERSION="${3:-1.21.1}"
 MEMORY_MB="${4:-2048}"
 CPU_LIMIT="${5:-2}"
-PUBLIC_PORT="${6:-25565}"
-RCON_PORT="${7:-25575}"
+PUBLIC_PORT="${6:-34567}"        # Non-standard port to avoid botnet scans
+RCON_PORT="${7:-34568}"
 RCON_PASSWORD="${8:-$(openssl rand -hex 16)}"
 MANAGER_CONTAINER="${9:-mc-manager}"
 
