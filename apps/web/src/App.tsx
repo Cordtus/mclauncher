@@ -224,9 +224,9 @@ export function App() {
       const response = await fetch(`/api/servers/${servers[0].name}/logs`);
       const logText = await response.text();
 
-      // Get last 10 lines
+      // Get last 50 lines for scrolling
       const lines = logText.trim().split('\n');
-      const lastLines = lines.slice(-10).join('\n');
+      const lastLines = lines.slice(-50).join('\n');
       setLogs(lastLines);
     } catch (err) {
       console.error('Failed to fetch logs:', err);
@@ -1497,7 +1497,7 @@ export function App() {
             </CardHeader>
             {showLogs && (
               <CardContent className="pt-0">
-                <div className="bg-black/90 rounded p-3 font-mono text-xs text-green-400 h-32 overflow-y-auto border border-green-500/20">
+                <div className="bg-black/90 rounded p-3 font-mono text-xs text-green-400 h-24 overflow-y-auto border border-green-500/20">
                   {logs ? (
                     <pre className="whitespace-pre-wrap">{logs}</pre>
                   ) : (
@@ -1505,7 +1505,7 @@ export function App() {
                   )}
                 </div>
                 <div className="flex items-center justify-between mt-2 text-xs text-muted-foreground">
-                  <span>Auto-refreshes every 5 seconds • Last 10 lines</span>
+                  <span>Auto-refreshes every 5 seconds • Showing recent logs</span>
                   <Button
                     variant="ghost"
                     size="sm"
