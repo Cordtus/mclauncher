@@ -22,6 +22,8 @@ import { WorldManager } from "./managers/world.js";
 import { PaperDownloader } from "./downloaders/paper.js";
 import { VanillaDownloader } from "./downloaders/vanilla.js";
 import { pingMinecraftServer } from "./utils/mcping.js";
+import { extractModMetadata, extractModIcon } from "./services/jar-metadata.js";
+import { parseConfigFile, updateConfigFile, listConfigFiles, detectFormat } from "./services/config-parser.js";
 
 const PORT = Number(process.env.AGENT_PORT || 9090);
 const MC_DIR = process.env.MC_DIR || "/opt/minecraft";
@@ -191,6 +193,270 @@ app.post("/mods", upload.single("file"), (req, res) => {
     fs.unlinkSync(file.path);
     sh("chown", ["-R", "mc:mc", path.join(MC_DIR, "mods")]);
     res.send(`Mod ${file.originalname} uploaded. Restart server to load.`);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// List installed mods with metadata
+app.get("/mods/list", async (_req, res) => {
+  try {
+    const modsDir = path.join(MC_DIR, "mods");
+    if (!fs.existsSync(modsDir)) {
+      return res.json({ mods: [] });
+    }
+
+    const files = fs.readdirSync(modsDir);
+    const mods = [];
+
+    for (const file of files) {
+      if (!file.endsWith(".jar") && !file.endsWith(".jar.disabled")) {
+        continue;
+      }
+
+      const filePath = path.join(modsDir, file);
+      const enabled = file.endsWith(".jar");
+      const metadata = await extractModMetadata(filePath);
+
+      if (metadata) {
+        mods.push({
+          fileName: file,
+          modId: metadata.modId,
+          name: metadata.name,
+          version: metadata.version,
+          description: metadata.description,
+          authors: metadata.authors,
+          loader: metadata.loader,
+          enabled,
+        });
+      } else {
+        // Fallback for mods without proper metadata
+        mods.push({
+          fileName: file,
+          modId: file.replace(/\.jar(\.disabled)?$/, ''),
+          name: file.replace(/\.jar(\.disabled)?$/, ''),
+          version: 'unknown',
+          enabled,
+        });
+      }
+    }
+
+    res.json({ mods });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get mod metadata
+app.get("/mods/:fileName/metadata", async (req, res) => {
+  try {
+    const { fileName } = req.params;
+    const filePath = path.join(MC_DIR, "mods", fileName);
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: "Mod not found" });
+    }
+
+    const metadata = await extractModMetadata(filePath);
+    if (!metadata) {
+      return res.status(404).json({ error: "Could not extract metadata" });
+    }
+
+    res.json(metadata);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get mod icon
+app.get("/mods/:fileName/icon", async (req, res) => {
+  try {
+    const { fileName } = req.params;
+    const filePath = path.join(MC_DIR, "mods", fileName);
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: "Mod not found" });
+    }
+
+    const icon = await extractModIcon(filePath);
+    if (!icon) {
+      return res.status(404).json({ error: "Icon not found" });
+    }
+
+    res.contentType('image/png').send(icon);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Enable/disable mod
+app.patch("/mods/:fileName/toggle", (req, res) => {
+  try {
+    const { fileName } = req.params;
+    const { enabled } = req.body;
+
+    const modsDir = path.join(MC_DIR, "mods");
+    const currentPath = path.join(modsDir, fileName);
+
+    if (!fs.existsSync(currentPath)) {
+      return res.status(404).json({ error: "Mod not found" });
+    }
+
+    let newPath: string;
+    if (enabled && fileName.endsWith(".disabled")) {
+      // Enable: remove .disabled extension
+      newPath = path.join(modsDir, fileName.replace(/\.disabled$/, ''));
+    } else if (!enabled && !fileName.endsWith(".disabled")) {
+      // Disable: add .disabled extension
+      newPath = currentPath + ".disabled";
+    } else {
+      return res.json({ ok: true, message: "Already in desired state" });
+    }
+
+    fs.renameSync(currentPath, newPath);
+    res.json({ ok: true, message: enabled ? "Mod enabled" : "Mod disabled", newFileName: path.basename(newPath) });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete mod
+app.delete("/mods/:fileName", async (req, res) => {
+  try {
+    const { fileName } = req.params;
+    const { removeConfigs } = req.query;
+
+    const modsDir = path.join(MC_DIR, "mods");
+    const filePath = path.join(modsDir, fileName);
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: "Mod not found" });
+    }
+
+    fs.unlinkSync(filePath);
+
+    // Optionally remove config files
+    if (removeConfigs === 'true') {
+      const metadata = await extractModMetadata(filePath);
+      if (metadata) {
+        const configDir = path.join(MC_DIR, "config");
+        const modConfigDir = path.join(configDir, metadata.modId);
+        const modConfigFile = path.join(configDir, `${metadata.modId}.toml`);
+
+        if (fs.existsSync(modConfigDir)) {
+          fs.rmSync(modConfigDir, { recursive: true, force: true });
+        }
+        if (fs.existsSync(modConfigFile)) {
+          fs.unlinkSync(modConfigFile);
+        }
+      }
+    }
+
+    res.json({ ok: true, message: "Mod removed" });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// List config files for a mod
+app.get("/mods/:modId/configs", async (req, res) => {
+  try {
+    const { modId } = req.params;
+    const configDir = path.join(MC_DIR, "config");
+
+    if (!fs.existsSync(configDir)) {
+      return res.json({ configs: [] });
+    }
+
+    const allConfigs = await listConfigFiles(configDir);
+    const modConfigs = allConfigs.filter(f =>
+      f.includes(modId) || path.dirname(f).endsWith(modId)
+    );
+
+    res.json({ configs: modConfigs });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get config file content
+app.get("/mods/:modId/config/:fileName", async (req, res) => {
+  try {
+    const { modId, fileName } = req.params;
+    const configDir = path.join(MC_DIR, "config");
+
+    // Try different possible paths
+    const possiblePaths = [
+      path.join(configDir, fileName),
+      path.join(configDir, modId, fileName),
+      path.join(configDir, `${modId}.toml`),
+      path.join(configDir, `${modId}.json`),
+    ];
+
+    let filePath: string | null = null;
+    for (const p of possiblePaths) {
+      if (fs.existsSync(p)) {
+        filePath = p;
+        break;
+      }
+    }
+
+    if (!filePath) {
+      return res.status(404).json({ error: "Config file not found" });
+    }
+
+    const parsed = await parseConfigFile(filePath);
+    res.json(parsed);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update config file
+app.post("/mods/:modId/config/:fileName", async (req, res) => {
+  try {
+    const { modId, fileName } = req.params;
+    const { updates } = req.body;
+
+    if (!updates || typeof updates !== 'object') {
+      return res.status(400).json({ error: "Missing updates object" });
+    }
+
+    const configDir = path.join(MC_DIR, "config");
+
+    // Try different possible paths
+    const possiblePaths = [
+      path.join(configDir, fileName),
+      path.join(configDir, modId, fileName),
+      path.join(configDir, `${modId}.toml`),
+      path.join(configDir, `${modId}.json`),
+    ];
+
+    let filePath: string | null = null;
+    for (const p of possiblePaths) {
+      if (fs.existsSync(p)) {
+        filePath = p;
+        break;
+      }
+    }
+
+    if (!filePath) {
+      return res.status(404).json({ error: "Config file not found" });
+    }
+
+    // Backup original
+    const backupPath = `${filePath}.backup`;
+    fs.copyFileSync(filePath, backupPath);
+
+    try {
+      await updateConfigFile(filePath, updates);
+      sh("chown", ["-R", "mc:mc", configDir]);
+      res.json({ ok: true, message: "Config updated" });
+    } catch (err) {
+      // Restore backup on failure
+      fs.copyFileSync(backupPath, filePath);
+      throw err;
+    }
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
