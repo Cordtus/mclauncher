@@ -310,6 +310,36 @@ app.get("/api/servers/:name/logs", async (req, res) => {
   }
 });
 
+// Check if public connection is accessible
+app.get("/api/servers/:name/check-public", async (req, res) => {
+  const { name } = req.params;
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).send("Server not found");
+
+  if (!server.public_domain) {
+    return res.json({ accessible: false, reason: "No public domain configured" });
+  }
+
+  try {
+    // Try to connect to the public domain on the Minecraft port
+    // Use a simple TCP connection check (could also use mcsrvstat.us API)
+    const publicUrl = `https://api.mcsrvstat.us/3/${server.public_domain}:${server.public_port}`;
+    const response = await fetch(publicUrl, { signal: AbortSignal.timeout(5000) });
+    const data = await response.json();
+
+    return res.json({
+      accessible: data.online === true,
+      info: data
+    });
+  } catch (err: any) {
+    return res.json({
+      accessible: false,
+      reason: err.message
+    });
+  }
+});
+
 // Get config
 app.get("/api/servers/:name/config", async (req, res) => {
   const { name } = req.params;

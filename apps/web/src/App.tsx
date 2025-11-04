@@ -96,41 +96,127 @@ export function App() {
   const [newVersion, setNewVersion] = useState("");
   const [isChangingVersion, setIsChangingVersion] = useState(false);
 
-  // Server configuration state
-  const [serverSettings, setServerSettings] = useState({
-    // Server Properties
-    motd: "A Minecraft Server",
-    maxPlayers: 20,
-    gamemode: "survival",
-    difficulty: "normal",
-    pvp: true,
-    spawnProtection: 16,
-    viewDistance: 10,
-    onlineMode: true,
-    allowFlight: false,
+  // Server configuration state (persisted in localStorage)
+  const [serverSettings, setServerSettings] = useState(() => {
+    const saved = localStorage.getItem('mc-server-settings');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        console.error('Failed to parse saved settings', e);
+      }
+    }
+    return {
+      // Server Properties
+      motd: "A Minecraft Server",
+      maxPlayers: 20,
+      gamemode: "survival",
+      difficulty: "normal",
+      pvp: true,
+      spawnProtection: 16,
+      viewDistance: 10,
+      onlineMode: true,
+      allowFlight: false,
 
-    // Plugins to install
-    plugins: {
-      luckperms: false,
-      essentialsx: false,
-      vault: false,
-      worldedit: false,
-    },
+      // Security
+      serverPassword: "",
+      enforceWhitelist: false,
+      whitelist: [] as string[],
+      newWhitelistPlayer: "",
 
-    // Operators
-    operators: [] as string[],
-    newOperator: "",
+      // Plugins to install
+      plugins: {
+        luckperms: false,
+        essentialsx: false,
+        vault: false,
+        worldedit: false,
+      },
+
+      // Operators
+      operators: [] as string[],
+      newOperator: "",
+    };
   });
+
+  // Connection status tracking
+  const [connectionStatus, setConnectionStatus] = useState({
+    local: { status: 'checking' as 'online' | 'offline' | 'checking', lastChecked: null as Date | null },
+    public: { status: 'checking' as 'online' | 'offline' | 'checking', lastChecked: null as Date | null }
+  });
+
+  // Save settings to localStorage whenever they change
+  useEffect(() => {
+    localStorage.setItem('mc-server-settings', JSON.stringify(serverSettings));
+  }, [serverSettings]);
 
   async function refresh() {
     setIsRefreshing(true);
     try {
       const res = await fetch("/api/servers");
-      setServers(await res.json());
+      const serverData = await res.json();
+      setServers(serverData);
+
+      // Check connection status for first server
+      if (serverData.length > 0) {
+        checkConnectionStatus(serverData[0]);
+      }
     } catch (err) {
       setMessage("Failed to fetch servers");
     } finally {
       setIsRefreshing(false);
+    }
+  }
+
+  // Check if local and public connections are accessible
+  async function checkConnectionStatus(server: ServerRow) {
+    // Check local connection
+    try {
+      const localCheck = await fetch(`http://${server.local_ip}:${server.local_port}`, {
+        method: 'HEAD',
+        mode: 'no-cors', // Minecraft server won't respond to HTTP properly
+        signal: AbortSignal.timeout(3000)
+      });
+      setConnectionStatus(prev => ({
+        ...prev,
+        local: { status: 'online', lastChecked: new Date() }
+      }));
+    } catch (err) {
+      // For Minecraft servers, no-cors will always "fail" but if server is online, it responds
+      // We rely on the minecraft status from the agent instead
+      if (server.minecraft?.online) {
+        setConnectionStatus(prev => ({
+          ...prev,
+          local: { status: 'online', lastChecked: new Date() }
+        }));
+      } else {
+        setConnectionStatus(prev => ({
+          ...prev,
+          local: { status: 'offline', lastChecked: new Date() }
+        }));
+      }
+    }
+
+    // Check public connection (if public domain is set)
+    if (server.public_domain) {
+      try {
+        // Use a public ping service or our own backend endpoint
+        const publicCheck = await fetch(`/api/servers/${server.name}/check-public`, {
+          signal: AbortSignal.timeout(5000)
+        });
+        const result = await publicCheck.json();
+        setConnectionStatus(prev => ({
+          ...prev,
+          public: {
+            status: result.accessible ? 'online' : 'offline',
+            lastChecked: new Date()
+          }
+        }));
+      } catch (err) {
+        setConnectionStatus(prev => ({
+          ...prev,
+          public: { status: 'offline', lastChecked: new Date() }
+        }));
+      }
     }
   }
 
@@ -359,41 +445,86 @@ export function App() {
                       </CardDescription>
 
                       {/* Connection Info */}
-                      <div className="mt-3 space-y-1">
-                        <div className="flex items-center gap-2 text-sm">
-                          <Globe className="h-3.5 w-3.5 text-muted-foreground" />
-                          <span className="text-muted-foreground">Local:</span>
-                          <code className="bg-muted px-1.5 py-0.5 rounded text-xs">
-                            {server.local_ip}:{server.local_port}
-                          </code>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-5 w-5"
-                            onClick={() => copyToClipboard(`${server.local_ip}:${server.local_port}`)}
-                            title="Copy to clipboard"
-                          >
-                            <Copy className="h-3 w-3" />
-                          </Button>
-                        </div>
-                        {server.public_domain && (
-                          <div className="flex items-center gap-2 text-sm">
-                            <Globe className="h-3.5 w-3.5 text-muted-foreground" />
-                            <span className="text-muted-foreground">Public:</span>
-                            <code className="bg-muted px-1.5 py-0.5 rounded text-xs">
-                              {server.public_domain}:{server.public_port}
+                      <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+                        {/* Local Connection */}
+                        <div className="border rounded-lg p-3 bg-card">
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-2">
+                              <Globe className="h-4 w-4 text-muted-foreground" />
+                              <span className="text-sm font-semibold">🏠 Local Network</span>
+                            </div>
+                            {connectionStatus.local.status === 'online' && (
+                              <Badge className="bg-green-500 hover:bg-green-600">✓ ONLINE</Badge>
+                            )}
+                            {connectionStatus.local.status === 'offline' && (
+                              <Badge variant="destructive">✗ OFFLINE</Badge>
+                            )}
+                            {connectionStatus.local.status === 'checking' && (
+                              <Badge variant="outline">⟳ CHECKING</Badge>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <code className="bg-muted px-2 py-1 rounded text-xs flex-1">
+                              {server.local_ip}:{server.local_port}
                             </code>
                             <Button
                               variant="ghost"
                               size="icon"
-                              className="h-5 w-5"
-                              onClick={() => copyToClipboard(`${server.public_domain}:${server.public_port}`)}
+                              className="h-7 w-7"
+                              onClick={() => copyToClipboard(`${server.local_ip}:${server.local_port}`)}
                               title="Copy to clipboard"
                             >
-                              <Copy className="h-3 w-3" />
+                              <Copy className="h-3.5 w-3.5" />
                             </Button>
                           </div>
-                        )}
+                          <p className="text-xs text-muted-foreground mt-1">For players on the same WiFi</p>
+                        </div>
+
+                        {/* Public Connection */}
+                        <div className="border rounded-lg p-3 bg-card">
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-2">
+                              <Globe className="h-4 w-4 text-muted-foreground" />
+                              <span className="text-sm font-semibold">🌍 Public Internet</span>
+                            </div>
+                            {server.public_domain ? (
+                              <>
+                                {connectionStatus.public.status === 'online' && (
+                                  <Badge className="bg-green-500 hover:bg-green-600">✓ ONLINE</Badge>
+                                )}
+                                {connectionStatus.public.status === 'offline' && (
+                                  <Badge variant="destructive">✗ OFFLINE</Badge>
+                                )}
+                                {connectionStatus.public.status === 'checking' && (
+                                  <Badge variant="outline">⟳ CHECKING</Badge>
+                                )}
+                              </>
+                            ) : (
+                              <Badge variant="outline">Not configured</Badge>
+                            )}
+                          </div>
+                          {server.public_domain ? (
+                            <>
+                              <div className="flex items-center gap-2">
+                                <code className="bg-muted px-2 py-1 rounded text-xs flex-1">
+                                  {server.public_domain}:{server.public_port}
+                                </code>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-7 w-7"
+                                  onClick={() => copyToClipboard(`${server.public_domain}:${server.public_port}`)}
+                                  title="Copy to clipboard"
+                                >
+                                  <Copy className="h-3.5 w-3.5" />
+                                </Button>
+                              </div>
+                              <p className="text-xs text-muted-foreground mt-1">For friends anywhere</p>
+                            </>
+                          ) : (
+                            <p className="text-xs text-muted-foreground">Set up in Server Settings</p>
+                          )}
+                        </div>
                       </div>
 
                       {/* Player Info */}
@@ -617,9 +748,10 @@ export function App() {
                         </DialogHeader>
 
                         <Tabs defaultValue="properties" className="w-full">
-                          <TabsList className="grid w-full grid-cols-4">
+                          <TabsList className="grid w-full grid-cols-5">
                             <TabsTrigger value="properties">Properties</TabsTrigger>
                             <TabsTrigger value="gameplay">Gameplay</TabsTrigger>
+                            <TabsTrigger value="security">Security</TabsTrigger>
                             <TabsTrigger value="plugins">Plugins</TabsTrigger>
                             <TabsTrigger value="admins">Admins</TabsTrigger>
                           </TabsList>
@@ -749,6 +881,132 @@ export function App() {
                                   className="rounded-sm"
                                 />
                                 <p className="text-xs text-muted-foreground mt-1">Radius around spawn where non-ops can't build</p>
+                              </div>
+                            </div>
+                          </TabsContent>
+
+                          {/* Security Tab */}
+                          <TabsContent value="security" className="space-y-4">
+                            <div className="space-y-4">
+                              <div>
+                                <Label htmlFor="serverPassword">Server Password (Optional)</Label>
+                                <Input
+                                  id="serverPassword"
+                                  type="password"
+                                  value={serverSettings.serverPassword}
+                                  onChange={(e) => setServerSettings({...serverSettings, serverPassword: e.target.value})}
+                                  placeholder="Leave blank for no password"
+                                  className="rounded-sm"
+                                />
+                                <p className="text-xs text-muted-foreground mt-1">
+                                  Players must enter this password to join
+                                </p>
+                              </div>
+
+                              <Separator />
+
+                              <div>
+                                <div className="flex items-center space-x-2 mb-3">
+                                  <Checkbox
+                                    id="enforceWhitelist"
+                                    checked={serverSettings.enforceWhitelist}
+                                    onCheckedChange={(checked) => setServerSettings({
+                                      ...serverSettings,
+                                      enforceWhitelist: !!checked
+                                    })}
+                                  />
+                                  <Label htmlFor="enforceWhitelist" className="cursor-pointer">
+                                    Enable Whitelist (Only approved players can join)
+                                  </Label>
+                                </div>
+
+                                {serverSettings.enforceWhitelist && (
+                                  <div className="space-y-3 pl-6">
+                                    <div>
+                                      <Label>Whitelisted Players</Label>
+                                      <p className="text-xs text-muted-foreground mb-2">
+                                        Only these players can join when whitelist is enabled
+                                      </p>
+                                      <div className="flex gap-2">
+                                        <Input
+                                          placeholder="Enter Minecraft username"
+                                          value={serverSettings.newWhitelistPlayer}
+                                          onChange={(e) => setServerSettings({
+                                            ...serverSettings,
+                                            newWhitelistPlayer: e.target.value
+                                          })}
+                                          onKeyDown={(e) => {
+                                            if (e.key === 'Enter' && serverSettings.newWhitelistPlayer.trim()) {
+                                              setServerSettings({
+                                                ...serverSettings,
+                                                whitelist: [...serverSettings.whitelist, serverSettings.newWhitelistPlayer.trim()],
+                                                newWhitelistPlayer: ""
+                                              });
+                                            }
+                                          }}
+                                          className="rounded-sm"
+                                        />
+                                        <Button
+                                          type="button"
+                                          variant="outline"
+                                          className="rounded-sm"
+                                          onClick={() => {
+                                            if (serverSettings.newWhitelistPlayer.trim()) {
+                                              setServerSettings({
+                                                ...serverSettings,
+                                                whitelist: [...serverSettings.whitelist, serverSettings.newWhitelistPlayer.trim()],
+                                                newWhitelistPlayer: ""
+                                              });
+                                            }
+                                          }}
+                                        >
+                                          Add
+                                        </Button>
+                                      </div>
+                                    </div>
+
+                                    {serverSettings.whitelist.length > 0 && (
+                                      <div className="space-y-2">
+                                        <Label>Whitelisted:</Label>
+                                        <div className="space-y-1">
+                                          {serverSettings.whitelist.map((player, idx) => (
+                                            <div key={idx} className="flex items-center justify-between p-2 bg-muted rounded-sm">
+                                              <span className="flex items-center gap-2">
+                                                <Users className="h-4 w-4" />
+                                                {player}
+                                              </span>
+                                              <Button
+                                                variant="ghost"
+                                                size="sm"
+                                                className="h-6 px-2"
+                                                onClick={() => {
+                                                  setServerSettings({
+                                                    ...serverSettings,
+                                                    whitelist: serverSettings.whitelist.filter((_, i) => i !== idx)
+                                                  });
+                                                }}
+                                              >
+                                                Remove
+                                              </Button>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+
+                              <Separator />
+
+                              <div className="bg-muted/50 p-3 rounded-lg">
+                                <p className="text-sm font-semibold mb-1">💡 Security Tips</p>
+                                <ul className="text-xs text-muted-foreground space-y-1">
+                                  <li>• Use whitelist for private servers with friends</li>
+                                  <li>• Keep Online Mode ON to prevent fake accounts</li>
+                                  <li>• Only give OP to people you trust completely</li>
+                                  <li>• Server password is extra protection (optional)</li>
+                                </ul>
                               </div>
                             </div>
                           </TabsContent>
