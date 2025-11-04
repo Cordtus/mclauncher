@@ -168,11 +168,6 @@ export function App() {
     };
   });
 
-  // Connection status tracking
-  const [connectionStatus, setConnectionStatus] = useState({
-    local: { status: 'checking' as 'online' | 'offline' | 'checking', lastChecked: null as Date | null },
-    public: { status: 'checking' as 'online' | 'offline' | 'checking', lastChecked: null as Date | null }
-  });
 
   // Save settings to localStorage whenever they change
   useEffect(() => {
@@ -212,54 +207,10 @@ export function App() {
       const res = await fetch("/api/servers");
       const serverData = await res.json();
       setServers(serverData);
-
-      // Check connection status for first server
-      if (serverData.length > 0) {
-        checkConnectionStatus(serverData[0]);
-      }
     } catch (err) {
       setMessage("Failed to fetch servers");
     } finally {
       setIsRefreshing(false);
-    }
-  }
-
-  // Check if local and public connections are accessible
-  async function checkConnectionStatus(server: ServerRow) {
-    // Check local connection - use server status from agent
-    if (server.minecraft?.online) {
-      setConnectionStatus(prev => ({
-        ...prev,
-        local: { status: 'online', lastChecked: new Date() }
-      }));
-    } else {
-      setConnectionStatus(prev => ({
-        ...prev,
-        local: { status: 'offline', lastChecked: new Date() }
-      }));
-    }
-
-    // Check public connection (if public domain is set)
-    if (server.public_domain) {
-      try {
-        // Use a public ping service or our own backend endpoint
-        const publicCheck = await fetch(`/api/servers/${server.name}/check-public`, {
-          signal: AbortSignal.timeout(5000)
-        });
-        const result = await publicCheck.json();
-        setConnectionStatus(prev => ({
-          ...prev,
-          public: {
-            status: result.accessible ? 'online' : 'offline',
-            lastChecked: new Date()
-          }
-        }));
-      } catch (err) {
-        setConnectionStatus(prev => ({
-          ...prev,
-          public: { status: 'offline', lastChecked: new Date() }
-        }));
-      }
     }
   }
 
@@ -413,9 +364,10 @@ export function App() {
                         <h3 className="font-semibold mb-1">Connecting to Your Server</h3>
                         <p className="text-muted-foreground mb-2">In Minecraft, select Multiplayer → Add Server:</p>
                         <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
-                          <li><strong>Local Network:</strong> Use the IP shown in the "Local Network" card (players on same WiFi)</li>
-                          <li><strong>Public Internet:</strong> Use the public domain once configured in Network settings</li>
-                          <li>Use the copy button to quickly copy the address</li>
+                          <li><strong>Local Network:</strong> Use the IP:PORT shown in the "Local Network" card (players on same WiFi)</li>
+                          <li><strong>Public Internet:</strong> Use the public domain:PORT once configured in Network settings</li>
+                          <li><strong>Important:</strong> The server uses a non-standard port (not 25565) for security</li>
+                          <li>Use the copy button to quickly copy the full address including port</li>
                         </ul>
                       </div>
                     </div>
@@ -720,102 +672,99 @@ export function App() {
                       </CardDescription>
 
                       {/* Connection Info */}
-                      <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
                         {/* Local Connection */}
-                        <div className="border rounded-lg p-3 bg-card">
-                          <div className="flex items-center justify-between mb-2">
+                        <div className="border-2 rounded-lg p-4 bg-card">
+                          <div className="flex items-center justify-between mb-3">
                             <div className="flex items-center gap-2">
-                              <Globe className="h-4 w-4 text-muted-foreground" />
-                              <span className="text-sm font-semibold">Local Network</span>
+                              <Globe className="h-5 w-5 text-muted-foreground" />
+                              <span className="text-base font-bold">Local Network</span>
                             </div>
-                            {connectionStatus.local.status === 'online' && (
-                              <Badge className="bg-green-500 hover:bg-green-600">✓ ONLINE</Badge>
-                            )}
-                            {connectionStatus.local.status === 'offline' && (
-                              <Badge variant="destructive">✗ OFFLINE</Badge>
-                            )}
-                            {connectionStatus.local.status === 'checking' && (
-                              <Badge variant="outline">⟳ CHECKING</Badge>
+                            {server.minecraft?.online ? (
+                              <Badge className="bg-green-500 hover:bg-green-600 text-sm font-bold px-3 py-1">✓ RUNNING</Badge>
+                            ) : (
+                              <Badge variant="destructive" className="text-sm font-bold px-3 py-1">✗ STOPPED</Badge>
                             )}
                           </div>
-                          <div className="flex items-center gap-2">
-                            <code className="bg-muted px-2 py-1 rounded text-xs flex-1">
-                              {server.host_ip || server.local_ip}:{server.local_port}
+                          <div className="flex items-center gap-2 mb-2">
+                            <code className="bg-black/80 text-green-400 px-4 py-3 rounded text-lg font-bold flex-1 text-center border-2 border-green-500/30">
+                              {server.host_ip || server.local_ip}:{server.public_port}
                             </code>
                             <Button
                               variant="ghost"
                               size="icon"
-                              className="h-7 w-7"
-                              onClick={() => copyToClipboard(`${server.host_ip || server.local_ip}:${server.local_port}`)}
+                              className="h-10 w-10"
+                              onClick={() => copyToClipboard(`${server.host_ip || server.local_ip}:${server.public_port}`)}
                               title="Copy to clipboard"
                             >
-                              <Copy className="h-3.5 w-3.5" />
+                              <Copy className="h-5 w-5" />
                             </Button>
                           </div>
-                          <p className="text-xs text-muted-foreground mt-1">
+                          <p className="text-sm font-semibold text-center">
                             {server.host_ip
                               ? "For players on the same WiFi"
-                              : "⚠️ Set Host IP in Network settings for local access"}
+                              : "⚠️ Set Host IP in Network settings"}
                           </p>
                         </div>
 
                         {/* Public Connection */}
-                        <div className="border rounded-lg p-3 bg-card">
-                          <div className="flex items-center justify-between mb-2">
+                        <div className="border-2 rounded-lg p-4 bg-card">
+                          <div className="flex items-center justify-between mb-3">
                             <div className="flex items-center gap-2">
-                              <Globe className="h-4 w-4 text-muted-foreground" />
-                              <span className="text-sm font-semibold">🌍 Public Internet</span>
+                              <Globe className="h-5 w-5 text-muted-foreground" />
+                              <span className="text-base font-bold">Public Internet</span>
                             </div>
                             {server.public_domain ? (
-                              <>
-                                {connectionStatus.public.status === 'online' && (
-                                  <Badge className="bg-green-500 hover:bg-green-600">✓ ONLINE</Badge>
-                                )}
-                                {connectionStatus.public.status === 'offline' && (
-                                  <Badge variant="destructive">✗ OFFLINE</Badge>
-                                )}
-                                {connectionStatus.public.status === 'checking' && (
-                                  <Badge variant="outline">⟳ CHECKING</Badge>
-                                )}
-                              </>
+                              server.minecraft?.online ? (
+                                <Badge className="bg-green-500 hover:bg-green-600 text-sm font-bold px-3 py-1">✓ RUNNING</Badge>
+                              ) : (
+                                <Badge variant="destructive" className="text-sm font-bold px-3 py-1">✗ STOPPED</Badge>
+                              )
                             ) : (
-                              <Badge variant="outline">Not configured</Badge>
+                              <Badge variant="outline" className="text-sm font-bold px-3 py-1">Not configured</Badge>
                             )}
                           </div>
                           {server.public_domain ? (
                             <>
-                              <div className="flex items-center gap-2">
-                                <code className="bg-muted px-2 py-1 rounded text-xs flex-1">
+                              <div className="flex items-center gap-2 mb-2">
+                                <code className="bg-black/80 text-cyan-400 px-4 py-3 rounded text-lg font-bold flex-1 text-center border-2 border-cyan-500/30">
                                   {server.public_domain}:{server.public_port}
                                 </code>
                                 <Button
                                   variant="ghost"
                                   size="icon"
-                                  className="h-7 w-7"
+                                  className="h-10 w-10"
                                   onClick={() => copyToClipboard(`${server.public_domain}:${server.public_port}`)}
                                   title="Copy to clipboard"
                                 >
-                                  <Copy className="h-3.5 w-3.5" />
+                                  <Copy className="h-5 w-5" />
                                 </Button>
                               </div>
-                              <p className="text-xs text-muted-foreground mt-1">For friends anywhere</p>
+                              <p className="text-sm font-semibold text-center">For friends anywhere (requires port forwarding)</p>
                             </>
                           ) : (
-                            <p className="text-xs text-muted-foreground">Set up in Server Settings</p>
+                            <>
+                              <div className="flex items-center gap-2 mb-2">
+                                <code className="bg-muted px-4 py-3 rounded text-base font-semibold flex-1 text-center opacity-50">
+                                  Not configured
+                                </code>
+                              </div>
+                              <p className="text-sm font-semibold text-center">Configure in Network settings</p>
+                            </>
                           )}
                         </div>
                       </div>
 
                       {/* Player Info */}
                       {server.minecraft?.online && server.minecraft.players && (
-                        <div className="mt-2 flex items-center gap-2 text-sm">
-                          <Users className="h-3.5 w-3.5 text-muted-foreground" />
-                          <span className="text-muted-foreground">Players:</span>
-                          <Badge variant="secondary" className="rounded-sm text-xs">
+                        <div className="mt-3 flex items-center gap-3 text-base">
+                          <Users className="h-5 w-5 text-muted-foreground" />
+                          <span className="font-semibold text-muted-foreground">Players:</span>
+                          <Badge variant="secondary" className="rounded-sm text-sm font-bold px-3 py-1">
                             {server.minecraft.players.online}/{server.minecraft.players.max}
                           </Badge>
                           {server.minecraft.description && (
-                            <span className="text-xs text-muted-foreground ml-2">
+                            <span className="text-sm text-muted-foreground ml-2 font-medium">
                               · {server.minecraft.description}
                             </span>
                           )}
@@ -1112,7 +1061,7 @@ export function App() {
                               <div className="bg-muted/50 p-3 rounded-lg">
                                 <p className="text-sm font-semibold mb-1">How to set up public access:</p>
                                 <ol className="text-xs text-muted-foreground space-y-1 list-decimal ml-4">
-                                  <li>Configure port forwarding on your router: External port 25565 → {server.host_ip || 'your LXD host'}:25565</li>
+                                  <li>Configure port forwarding on your router: External port {server.public_port} → {server.host_ip || 'your LXD host'}:{server.public_port}</li>
                                   <li>Set up DNS A record pointing to your public IP address</li>
                                   <li>Enter your domain name above</li>
                                   <li>Public connection status will update automatically</li>
