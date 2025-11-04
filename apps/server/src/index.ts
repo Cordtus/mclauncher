@@ -531,6 +531,187 @@ app.post("/api/servers/:name/backup", requireAdmin, async (req, res) => {
   }
 });
 
+// ============================================================================
+// MOD MANAGEMENT ENDPOINTS (Modrinth API Integration)
+// ============================================================================
+
+import * as modrinth from './services/modrinth.js';
+
+// Search for mods
+app.get("/api/mods/search", async (req, res) => {
+  try {
+    const {
+      query = '',
+      mcVersion,
+      loader,
+      category,
+      limit,
+      offset,
+      sort
+    } = req.query;
+
+    const results = await modrinth.searchMods({
+      query: query as string,
+      mcVersion: mcVersion as string | undefined,
+      loader: loader as 'forge' | 'fabric' | 'neoforge' | undefined,
+      category: category as string | undefined,
+      limit: limit ? parseInt(limit as string) : undefined,
+      offset: offset ? parseInt(offset as string) : undefined,
+      sort: sort as any
+    });
+
+    res.json(results);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get mod details
+app.get("/api/mods/:projectId", async (req, res) => {
+  try {
+    const { projectId } = req.params;
+    const mod = await modrinth.getModDetails(projectId);
+    res.json(mod);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get mod versions
+app.get("/api/mods/:projectId/versions", async (req, res) => {
+  try {
+    const { projectId } = req.params;
+    const { mcVersion, loader } = req.query;
+
+    const versions = await modrinth.getModVersions(
+      projectId,
+      mcVersion as string | undefined,
+      loader as string | undefined
+    );
+
+    res.json(versions);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Check mod compatibility
+app.post("/api/mods/check-compatibility", async (req, res) => {
+  try {
+    const { mod, serverMemoryMB, installedMods, currentMemoryUsage } = req.body;
+
+    // Estimate resource impact
+    const compatibility = modrinth.estimateResourceImpact(mod);
+
+    // Check conflicts
+    const conflicts = modrinth.checkModConflicts(
+      mod.project_id,
+      mod.categories,
+      installedMods || []
+    );
+
+    // Check resource availability
+    const resourceCheck = modrinth.checkResourceAvailability(
+      serverMemoryMB || 8192,
+      compatibility,
+      currentMemoryUsage || 0
+    );
+
+    res.json({
+      ...compatibility,
+      conflicts,
+      resourceAvailable: resourceCheck.sufficient,
+      resourceWarning: resourceCheck.warning
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Install a mod (download and upload to server)
+app.post("/api/servers/:name/mods/install", requireAdmin, async (req, res) => {
+  try {
+    const { name } = req.params;
+    const { downloadUrl, fileName, projectId, versionId } = req.body;
+
+    const registry = loadRegistry();
+    const server = registry.servers.find((s) => s.name === name);
+    if (!server) return res.status(404).send("Server not found");
+
+    // Download the mod from Modrinth
+    const modData = await modrinth.downloadMod(downloadUrl);
+
+    // Create form data to upload to the server
+    const FormData = (await import('form-data')).default;
+    const form = new FormData();
+    form.append('file', modData, fileName);
+
+    // Upload to the server's mods folder via agent
+    const uploadResponse = await fetch(`${server.agent_url}/mods/upload`, {
+      method: 'POST',
+      body: form as any,
+      headers: form.getHeaders()
+    });
+
+    if (!uploadResponse.ok) {
+      throw new Error('Failed to upload mod to server');
+    }
+
+    res.json({
+      success: true,
+      message: `Mod ${fileName} installed successfully`,
+      projectId,
+      versionId
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// List installed mods
+app.get("/api/servers/:name/mods/installed", async (req, res) => {
+  try {
+    const { name } = req.params;
+    const registry = loadRegistry();
+    const server = registry.servers.find((s) => s.name === name);
+    if (!server) return res.status(404).send("Server not found");
+
+    // Get list of installed mods from agent
+    const response = await fetch(`${server.agent_url}/mods/list`);
+    if (!response.ok) {
+      throw new Error('Failed to fetch installed mods');
+    }
+
+    const mods = await response.json();
+    res.json(mods);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Remove a mod
+app.delete("/api/servers/:name/mods/:fileName", requireAdmin, async (req, res) => {
+  try {
+    const { name, fileName } = req.params;
+    const registry = loadRegistry();
+    const server = registry.servers.find((s) => s.name === name);
+    if (!server) return res.status(404).send("Server not found");
+
+    // Delete mod via agent
+    const response = await fetch(`${server.agent_url}/mods/${fileName}`, {
+      method: 'DELETE'
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to remove mod');
+    }
+
+    res.json({ success: true, message: `Mod ${fileName} removed` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.listen(PORT, HOST, () => {
   console.log(`Management backend listening on http://${HOST}:${PORT}`);
 });
