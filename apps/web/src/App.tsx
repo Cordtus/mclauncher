@@ -591,58 +591,6 @@ export function App() {
           </Card>
         )}
 
-        {/* Console Log Panel */}
-        {servers.length > 0 && (
-          <Card className="rounded-sm border-amber-500/20">
-            <CardHeader className="pb-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Terminal className="h-4 w-4 text-amber-500" />
-                  <CardTitle className="text-base">Server Console</CardTitle>
-                  {isLoadingLogs && (
-                    <RefreshCw className="h-3 w-3 animate-spin text-muted-foreground" />
-                  )}
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setShowLogs(!showLogs)}
-                  className="h-6 w-6 p-0"
-                >
-                  {showLogs ? (
-                    <ChevronUp className="h-4 w-4" />
-                  ) : (
-                    <ChevronDown className="h-4 w-4" />
-                  )}
-                </Button>
-              </div>
-            </CardHeader>
-            {showLogs && (
-              <CardContent className="pt-0">
-                <div className="bg-black/90 rounded p-3 font-mono text-xs text-green-400 h-32 overflow-y-auto border border-green-500/20">
-                  {logs ? (
-                    <pre className="whitespace-pre-wrap">{logs}</pre>
-                  ) : (
-                    <span className="text-muted-foreground italic">No logs available...</span>
-                  )}
-                </div>
-                <div className="flex items-center justify-between mt-2 text-xs text-muted-foreground">
-                  <span>Auto-refreshes every 5 seconds • Last 10 lines</span>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => fetchLogs()}
-                    className="h-6 text-xs"
-                  >
-                    <RefreshCw className="h-3 w-3 mr-1" />
-                    Refresh Now
-                  </Button>
-                </div>
-              </CardContent>
-            )}
-          </Card>
-        )}
-
         {/* Server List */}
         {servers.length === 0 ? (
           <Card className="rounded-sm">
@@ -1519,6 +1467,58 @@ export function App() {
               </Card>
             ))}
           </div>
+        )}
+
+        {/* Console Log Panel */}
+        {servers.length > 0 && (
+          <Card className="rounded-sm border-amber-500/20">
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Terminal className="h-4 w-4 text-amber-500" />
+                  <CardTitle className="text-base">Server Console</CardTitle>
+                  {isLoadingLogs && (
+                    <RefreshCw className="h-3 w-3 animate-spin text-muted-foreground" />
+                  )}
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowLogs(!showLogs)}
+                  className="h-6 w-6 p-0"
+                >
+                  {showLogs ? (
+                    <ChevronUp className="h-4 w-4" />
+                  ) : (
+                    <ChevronDown className="h-4 w-4" />
+                  )}
+                </Button>
+              </div>
+            </CardHeader>
+            {showLogs && (
+              <CardContent className="pt-0">
+                <div className="bg-black/90 rounded p-3 font-mono text-xs text-green-400 h-32 overflow-y-auto border border-green-500/20">
+                  {logs ? (
+                    <pre className="whitespace-pre-wrap">{logs}</pre>
+                  ) : (
+                    <span className="text-muted-foreground italic">No logs available...</span>
+                  )}
+                </div>
+                <div className="flex items-center justify-between mt-2 text-xs text-muted-foreground">
+                  <span>Auto-refreshes every 5 seconds • Last 10 lines</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => fetchLogs()}
+                    className="h-6 text-xs"
+                  >
+                    <RefreshCw className="h-3 w-3 mr-1" />
+                    Refresh Now
+                  </Button>
+                </div>
+              </CardContent>
+            )}
+          </Card>
         )}
         </div>
       </div>
