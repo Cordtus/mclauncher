@@ -33,6 +33,22 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
+import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 
 type ServerRow = {
   name: string;
@@ -79,6 +95,32 @@ export function App() {
   const [versionType, setVersionType] = useState<"paper" | "vanilla">("paper");
   const [newVersion, setNewVersion] = useState("");
   const [isChangingVersion, setIsChangingVersion] = useState(false);
+
+  // Server configuration state
+  const [serverSettings, setServerSettings] = useState({
+    // Server Properties
+    motd: "A Minecraft Server",
+    maxPlayers: 20,
+    gamemode: "survival",
+    difficulty: "normal",
+    pvp: true,
+    spawnProtection: 16,
+    viewDistance: 10,
+    onlineMode: true,
+    allowFlight: false,
+
+    // Plugins to install
+    plugins: {
+      luckperms: false,
+      essentialsx: false,
+      vault: false,
+      worldedit: false,
+    },
+
+    // Operators
+    operators: [] as string[],
+    newOperator: "",
+  });
 
   async function refresh() {
     setIsRefreshing(true);
@@ -177,24 +219,26 @@ export function App() {
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-bold tracking-tight">MC LXD Manager</h1>
+            <h1 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-green-400 to-emerald-600 bg-clip-text text-transparent">
+              🎮 Minecraft Server Control
+            </h1>
             <p className="text-muted-foreground mt-1">
-              Manage your Minecraft servers
+              Build, play, and manage your worlds! ⚔️
             </p>
           </div>
           <div className="flex gap-2">
             <Dialog>
               <DialogTrigger asChild>
-                <Button variant="outline" size="sm" className="rounded-sm">
+                <Button variant="outline" size="sm" className="rounded-sm hover:bg-green-500/10 hover:border-green-500 transition-all">
                   <HelpCircle className="mr-2 h-4 w-4" />
-                  Getting Started
+                  🎓 Getting Started
                 </Button>
               </DialogTrigger>
               <DialogContent className="rounded-sm max-w-2xl max-h-[80vh] overflow-y-auto">
                 <DialogHeader>
-                  <DialogTitle>Getting Started with MC LXD Manager</DialogTitle>
+                  <DialogTitle>🎯 Let's Get Started!</DialogTitle>
                   <DialogDescription>
-                    How to use your Minecraft server
+                    Everything you need to know to run your awesome server 🚀
                   </DialogDescription>
                 </DialogHeader>
                 <div className="space-y-4 text-sm">
@@ -406,11 +450,11 @@ export function App() {
                       <DialogTrigger asChild>
                         <Button
                           variant="outline"
-                          className="rounded-sm w-full"
+                          className="rounded-sm w-full hover:bg-blue-500/10 hover:border-blue-500 transition-all"
                           onClick={() => setSelectedServer(server.name)}
                         >
                           <Settings className="mr-2 h-4 w-4" />
-                          Change Version
+                          ⚙️ Change Version
                         </Button>
                       </DialogTrigger>
                       <DialogContent className="rounded-sm">
@@ -472,12 +516,12 @@ export function App() {
                           <TooltipTrigger asChild>
                             <Button
                               variant="outline"
-                              className="rounded-sm w-full"
+                              className="rounded-sm w-full hover:bg-purple-500/10 hover:border-purple-500 transition-all"
                               asChild
                             >
                               <span>
                                 <Package className="mr-2 h-4 w-4" />
-                                Upload Plugin
+                                🔌 Upload Plugin
                               </span>
                             </Button>
                           </TooltipTrigger>
@@ -503,12 +547,12 @@ export function App() {
                           <TooltipTrigger asChild>
                             <Button
                               variant="outline"
-                              className="rounded-sm w-full"
+                              className="rounded-sm w-full hover:bg-orange-500/10 hover:border-orange-500 transition-all"
                               asChild
                             >
                               <span>
                                 <Upload className="mr-2 h-4 w-4" />
-                                Upload Mod
+                                📦 Upload Mod
                               </span>
                             </Button>
                           </TooltipTrigger>
@@ -536,12 +580,12 @@ export function App() {
                           <TooltipTrigger asChild>
                             <Button
                               variant="outline"
-                              className="rounded-sm w-full"
+                              className="rounded-sm w-full hover:bg-cyan-500/10 hover:border-cyan-500 transition-all"
                               asChild
                             >
                               <span>
                                 <Globe className="mr-2 h-4 w-4" />
-                                Upload World
+                                🌍 Upload World
                               </span>
                             </Button>
                           </TooltipTrigger>
@@ -553,24 +597,334 @@ export function App() {
                       </TooltipContent>
                     </Tooltip>
 
-                    {/* Install LuckPerms */}
-                    <Button
-                      variant="outline"
-                      className="rounded-sm"
-                      onClick={() => handleServerAction(server.name, "luckperms")}
-                    >
-                      <Package className="mr-2 h-4 w-4" />
-                      Install LuckPerms
-                    </Button>
+                    {/* Server Settings */}
+                    <Dialog>
+                      <DialogTrigger asChild>
+                        <Button
+                          variant="outline"
+                          className="rounded-sm hover:bg-blue-500/10 hover:border-blue-500 transition-all"
+                        >
+                          <Settings className="mr-2 h-4 w-4" />
+                          ⚙️ Server Settings
+                        </Button>
+                      </DialogTrigger>
+                      <DialogContent className="rounded-sm max-w-3xl max-h-[85vh] overflow-y-auto">
+                        <DialogHeader>
+                          <DialogTitle>⚙️ Server Configuration</DialogTitle>
+                          <DialogDescription>
+                            Configure server properties, plugins, and admins
+                          </DialogDescription>
+                        </DialogHeader>
+
+                        <Tabs defaultValue="properties" className="w-full">
+                          <TabsList className="grid w-full grid-cols-4">
+                            <TabsTrigger value="properties">Properties</TabsTrigger>
+                            <TabsTrigger value="gameplay">Gameplay</TabsTrigger>
+                            <TabsTrigger value="plugins">Plugins</TabsTrigger>
+                            <TabsTrigger value="admins">Admins</TabsTrigger>
+                          </TabsList>
+
+                          {/* Server Properties Tab */}
+                          <TabsContent value="properties" className="space-y-4">
+                            <div className="space-y-3">
+                              <div>
+                                <Label htmlFor="motd">Server Description (MOTD)</Label>
+                                <Textarea
+                                  id="motd"
+                                  value={serverSettings.motd}
+                                  onChange={(e) => setServerSettings({...serverSettings, motd: e.target.value})}
+                                  placeholder="A Minecraft Server"
+                                  className="rounded-sm"
+                                />
+                                <p className="text-xs text-muted-foreground mt-1">Shown in the server list</p>
+                              </div>
+
+                              <div>
+                                <Label htmlFor="maxPlayers">Max Players</Label>
+                                <Input
+                                  id="maxPlayers"
+                                  type="number"
+                                  value={serverSettings.maxPlayers}
+                                  onChange={(e) => setServerSettings({...serverSettings, maxPlayers: parseInt(e.target.value)})}
+                                  className="rounded-sm"
+                                />
+                              </div>
+
+                              <div>
+                                <Label htmlFor="viewDistance">View Distance (chunks)</Label>
+                                <Input
+                                  id="viewDistance"
+                                  type="number"
+                                  min="3"
+                                  max="32"
+                                  value={serverSettings.viewDistance}
+                                  onChange={(e) => setServerSettings({...serverSettings, viewDistance: parseInt(e.target.value)})}
+                                  className="rounded-sm"
+                                />
+                                <p className="text-xs text-muted-foreground mt-1">Lower = better performance</p>
+                              </div>
+
+                              <div className="flex items-center space-x-2">
+                                <Checkbox
+                                  id="onlineMode"
+                                  checked={serverSettings.onlineMode}
+                                  onCheckedChange={(checked) => setServerSettings({...serverSettings, onlineMode: !!checked})}
+                                />
+                                <Label htmlFor="onlineMode" className="cursor-pointer">
+                                  Online Mode (Minecraft account required)
+                                </Label>
+                              </div>
+                            </div>
+                          </TabsContent>
+
+                          {/* Gameplay Tab */}
+                          <TabsContent value="gameplay" className="space-y-4">
+                            <div className="space-y-3">
+                              <div>
+                                <Label htmlFor="gamemode">Default Game Mode</Label>
+                                <Select
+                                  value={serverSettings.gamemode}
+                                  onValueChange={(value) => setServerSettings({...serverSettings, gamemode: value})}
+                                >
+                                  <SelectTrigger className="rounded-sm">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="survival">Survival</SelectItem>
+                                    <SelectItem value="creative">Creative</SelectItem>
+                                    <SelectItem value="adventure">Adventure</SelectItem>
+                                    <SelectItem value="spectator">Spectator</SelectItem>
+                                  </SelectContent>
+                                </Select>
+                              </div>
+
+                              <div>
+                                <Label htmlFor="difficulty">Difficulty</Label>
+                                <Select
+                                  value={serverSettings.difficulty}
+                                  onValueChange={(value) => setServerSettings({...serverSettings, difficulty: value})}
+                                >
+                                  <SelectTrigger className="rounded-sm">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="peaceful">Peaceful</SelectItem>
+                                    <SelectItem value="easy">Easy</SelectItem>
+                                    <SelectItem value="normal">Normal</SelectItem>
+                                    <SelectItem value="hard">Hard</SelectItem>
+                                  </SelectContent>
+                                </Select>
+                              </div>
+
+                              <div className="flex items-center space-x-2">
+                                <Checkbox
+                                  id="pvp"
+                                  checked={serverSettings.pvp}
+                                  onCheckedChange={(checked) => setServerSettings({...serverSettings, pvp: !!checked})}
+                                />
+                                <Label htmlFor="pvp" className="cursor-pointer">
+                                  Enable PvP (Player vs Player)
+                                </Label>
+                              </div>
+
+                              <div className="flex items-center space-x-2">
+                                <Checkbox
+                                  id="allowFlight"
+                                  checked={serverSettings.allowFlight}
+                                  onCheckedChange={(checked) => setServerSettings({...serverSettings, allowFlight: !!checked})}
+                                />
+                                <Label htmlFor="allowFlight" className="cursor-pointer">
+                                  Allow Flight
+                                </Label>
+                              </div>
+
+                              <div>
+                                <Label htmlFor="spawnProtection">Spawn Protection (blocks)</Label>
+                                <Input
+                                  id="spawnProtection"
+                                  type="number"
+                                  min="0"
+                                  value={serverSettings.spawnProtection}
+                                  onChange={(e) => setServerSettings({...serverSettings, spawnProtection: parseInt(e.target.value)})}
+                                  className="rounded-sm"
+                                />
+                                <p className="text-xs text-muted-foreground mt-1">Radius around spawn where non-ops can't build</p>
+                              </div>
+                            </div>
+                          </TabsContent>
+
+                          {/* Plugins Tab */}
+                          <TabsContent value="plugins" className="space-y-4">
+                            <p className="text-sm text-muted-foreground">
+                              Select plugins to install automatically (Paper/Spigot only)
+                            </p>
+                            <div className="space-y-3">
+                              <div className="flex items-center space-x-2">
+                                <Checkbox
+                                  id="plugin-luckperms"
+                                  checked={serverSettings.plugins.luckperms}
+                                  onCheckedChange={(checked) => setServerSettings({
+                                    ...serverSettings,
+                                    plugins: {...serverSettings.plugins, luckperms: !!checked}
+                                  })}
+                                />
+                                <Label htmlFor="plugin-luckperms" className="cursor-pointer">
+                                  <span className="font-semibold">LuckPerms</span>
+                                  <span className="text-xs text-muted-foreground ml-2">- Advanced permissions plugin</span>
+                                </Label>
+                              </div>
+
+                              <div className="flex items-center space-x-2">
+                                <Checkbox
+                                  id="plugin-essentialsx"
+                                  checked={serverSettings.plugins.essentialsx}
+                                  onCheckedChange={(checked) => setServerSettings({
+                                    ...serverSettings,
+                                    plugins: {...serverSettings.plugins, essentialsx: !!checked}
+                                  })}
+                                />
+                                <Label htmlFor="plugin-essentialsx" className="cursor-pointer">
+                                  <span className="font-semibold">EssentialsX</span>
+                                  <span className="text-xs text-muted-foreground ml-2">- Essential commands & features</span>
+                                </Label>
+                              </div>
+
+                              <div className="flex items-center space-x-2">
+                                <Checkbox
+                                  id="plugin-vault"
+                                  checked={serverSettings.plugins.vault}
+                                  onCheckedChange={(checked) => setServerSettings({
+                                    ...serverSettings,
+                                    plugins: {...serverSettings.plugins, vault: !!checked}
+                                  })}
+                                />
+                                <Label htmlFor="plugin-vault" className="cursor-pointer">
+                                  <span className="font-semibold">Vault</span>
+                                  <span className="text-xs text-muted-foreground ml-2">- Economy & permissions API</span>
+                                </Label>
+                              </div>
+
+                              <div className="flex items-center space-x-2">
+                                <Checkbox
+                                  id="plugin-worldedit"
+                                  checked={serverSettings.plugins.worldedit}
+                                  onCheckedChange={(checked) => setServerSettings({
+                                    ...serverSettings,
+                                    plugins: {...serverSettings.plugins, worldedit: !!checked}
+                                  })}
+                                />
+                                <Label htmlFor="plugin-worldedit" className="cursor-pointer">
+                                  <span className="font-semibold">WorldEdit</span>
+                                  <span className="text-xs text-muted-foreground ml-2">- In-game world editor</span>
+                                </Label>
+                              </div>
+                            </div>
+                          </TabsContent>
+
+                          {/* Admins Tab */}
+                          <TabsContent value="admins" className="space-y-4">
+                            <div className="space-y-3">
+                              <div>
+                                <Label>Server Operators (Admins)</Label>
+                                <p className="text-xs text-muted-foreground mb-2">
+                                  Operators have full permissions and can use all commands
+                                </p>
+                                <div className="flex gap-2">
+                                  <Input
+                                    placeholder="Enter Minecraft username"
+                                    value={serverSettings.newOperator}
+                                    onChange={(e) => setServerSettings({...serverSettings, newOperator: e.target.value})}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter' && serverSettings.newOperator.trim()) {
+                                        setServerSettings({
+                                          ...serverSettings,
+                                          operators: [...serverSettings.operators, serverSettings.newOperator.trim()],
+                                          newOperator: ""
+                                        });
+                                      }
+                                    }}
+                                    className="rounded-sm"
+                                  />
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    className="rounded-sm"
+                                    onClick={() => {
+                                      if (serverSettings.newOperator.trim()) {
+                                        setServerSettings({
+                                          ...serverSettings,
+                                          operators: [...serverSettings.operators, serverSettings.newOperator.trim()],
+                                          newOperator: ""
+                                        });
+                                      }
+                                    }}
+                                  >
+                                    Add
+                                  </Button>
+                                </div>
+                              </div>
+
+                              {serverSettings.operators.length > 0 && (
+                                <div className="space-y-2">
+                                  <Label>Current Operators:</Label>
+                                  <div className="space-y-1">
+                                    {serverSettings.operators.map((op, idx) => (
+                                      <div key={idx} className="flex items-center justify-between p-2 bg-muted rounded-sm">
+                                        <span className="flex items-center gap-2">
+                                          <Users className="h-4 w-4" />
+                                          {op}
+                                        </span>
+                                        <Button
+                                          variant="ghost"
+                                          size="sm"
+                                          className="h-6 px-2"
+                                          onClick={() => {
+                                            setServerSettings({
+                                              ...serverSettings,
+                                              operators: serverSettings.operators.filter((_, i) => i !== idx)
+                                            });
+                                          }}
+                                        >
+                                          Remove
+                                        </Button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </TabsContent>
+                        </Tabs>
+
+                        <DialogFooter>
+                          <Button
+                            variant="outline"
+                            className="rounded-sm"
+                            onClick={() => {/* TODO: Save settings */}}
+                          >
+                            Cancel
+                          </Button>
+                          <Button
+                            className="rounded-sm"
+                            onClick={() => {
+                              // TODO: Apply settings to server
+                              console.log("Applying settings:", serverSettings);
+                            }}
+                          >
+                            💾 Save & Apply
+                          </Button>
+                        </DialogFooter>
+                      </DialogContent>
+                    </Dialog>
 
                     {/* Create Backup */}
                     <Button
                       variant="outline"
-                      className="rounded-sm"
+                      className="rounded-sm hover:bg-amber-500/10 hover:border-amber-500 transition-all"
                       onClick={() => handleServerAction(server.name, "backup")}
                     >
                       <Upload className="mr-2 h-4 w-4" />
-                      Create Backup
+                      💾 Create Backup
                     </Button>
                   </div>
                 </CardContent>
