@@ -693,12 +693,14 @@ app.get("/api/servers/:name/mods/installed", async (req, res) => {
 app.delete("/api/servers/:name/mods/:fileName", requireAdmin, async (req, res) => {
   try {
     const { name, fileName } = req.params;
+    const { removeConfigs } = req.query;
     const registry = loadRegistry();
     const server = registry.servers.find((s) => s.name === name);
     if (!server) return res.status(404).send("Server not found");
 
     // Delete mod via agent
-    const response = await fetch(`${server.agent_url}/mods/${fileName}`, {
+    const url = `${server.agent_url}/mods/${fileName}${removeConfigs ? '?removeConfigs=true' : ''}`;
+    const response = await fetch(url, {
       method: 'DELETE'
     });
 
@@ -707,6 +709,138 @@ app.delete("/api/servers/:name/mods/:fileName", requireAdmin, async (req, res) =
     }
 
     res.json({ success: true, message: `Mod ${fileName} removed` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get mod metadata
+app.get("/api/servers/:name/mods/:fileName/metadata", async (req, res) => {
+  try {
+    const { name, fileName } = req.params;
+    const registry = loadRegistry();
+    const server = registry.servers.find((s) => s.name === name);
+    if (!server) return res.status(404).send("Server not found");
+
+    const response = await fetch(`${server.agent_url}/mods/${fileName}/metadata`);
+    if (!response.ok) {
+      throw new Error('Failed to get mod metadata');
+    }
+
+    const metadata = await response.json();
+    res.json(metadata);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get mod icon
+app.get("/api/servers/:name/mods/:fileName/icon", async (req, res) => {
+  try {
+    const { name, fileName } = req.params;
+    const registry = loadRegistry();
+    const server = registry.servers.find((s) => s.name === name);
+    if (!server) return res.status(404).send("Server not found");
+
+    const response = await fetch(`${server.agent_url}/mods/${fileName}/icon`);
+    if (!response.ok) {
+      return res.status(404).send("Icon not found");
+    }
+
+    const buffer = await response.arrayBuffer();
+    res.contentType('image/png').send(Buffer.from(buffer));
+  } catch (err: any) {
+    res.status(404).send("Icon not found");
+  }
+});
+
+// Enable/disable mod
+app.patch("/api/servers/:name/mods/:fileName/toggle", requireAdmin, async (req, res) => {
+  try {
+    const { name, fileName } = req.params;
+    const { enabled } = req.body;
+    const registry = loadRegistry();
+    const server = registry.servers.find((s) => s.name === name);
+    if (!server) return res.status(404).send("Server not found");
+
+    const response = await fetch(`${server.agent_url}/mods/${fileName}/toggle`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled })
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to toggle mod');
+    }
+
+    const result = await response.json();
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// List mod config files
+app.get("/api/servers/:name/mods/:modId/configs", async (req, res) => {
+  try {
+    const { name, modId } = req.params;
+    const registry = loadRegistry();
+    const server = registry.servers.find((s) => s.name === name);
+    if (!server) return res.status(404).send("Server not found");
+
+    const response = await fetch(`${server.agent_url}/mods/${modId}/configs`);
+    if (!response.ok) {
+      throw new Error('Failed to list config files');
+    }
+
+    const configs = await response.json();
+    res.json(configs);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get mod config file
+app.get("/api/servers/:name/mods/:modId/config/:fileName", async (req, res) => {
+  try {
+    const { name, modId, fileName } = req.params;
+    const registry = loadRegistry();
+    const server = registry.servers.find((s) => s.name === name);
+    if (!server) return res.status(404).send("Server not found");
+
+    const response = await fetch(`${server.agent_url}/mods/${modId}/config/${fileName}`);
+    if (!response.ok) {
+      throw new Error('Failed to get config file');
+    }
+
+    const config = await response.json();
+    res.json(config);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update mod config file
+app.post("/api/servers/:name/mods/:modId/config/:fileName", requireAdmin, async (req, res) => {
+  try {
+    const { name, modId, fileName } = req.params;
+    const { updates } = req.body;
+    const registry = loadRegistry();
+    const server = registry.servers.find((s) => s.name === name);
+    if (!server) return res.status(404).send("Server not found");
+
+    const response = await fetch(`${server.agent_url}/mods/${modId}/config/${fileName}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ updates })
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to update config file');
+    }
+
+    const result = await response.json();
+    res.json(result);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

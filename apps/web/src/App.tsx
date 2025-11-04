@@ -18,6 +18,7 @@ import {
   Package2,
 } from "lucide-react";
 import { ModBrowser } from "@/components/ModBrowser";
+import { ModsManagementPanel } from "@/components/ModsManagementPanel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -1012,13 +1013,16 @@ export function App() {
                         </DialogHeader>
 
                         <Tabs defaultValue="properties" className="w-full">
-                          <TabsList className="grid w-full grid-cols-6">
+                          <TabsList className={`grid w-full ${['forge', 'neoforge', 'fabric'].includes(server.edition.toLowerCase()) ? 'grid-cols-7' : 'grid-cols-6'}`}>
                             <TabsTrigger value="network">Network</TabsTrigger>
                             <TabsTrigger value="properties">Properties</TabsTrigger>
                             <TabsTrigger value="gameplay">Gameplay</TabsTrigger>
                             <TabsTrigger value="security">Security</TabsTrigger>
                             <TabsTrigger value="plugins">Plugins</TabsTrigger>
                             <TabsTrigger value="admins">Admins</TabsTrigger>
+                            {['forge', 'neoforge', 'fabric'].includes(server.edition.toLowerCase()) && (
+                              <TabsTrigger value="mods">Mods</TabsTrigger>
+                            )}
                           </TabsList>
 
                           {/* Network Tab */}
@@ -1466,6 +1470,18 @@ export function App() {
                               )}
                             </div>
                           </TabsContent>
+
+                          {/* Mods Tab - Only for Forge/NeoForge/Fabric */}
+                          {['forge', 'neoforge', 'fabric'].includes(server.edition.toLowerCase()) && (
+                            <TabsContent value="mods">
+                              <ModsManagementPanel
+                                serverName={server.name}
+                                mcVersion={server.mc_version}
+                                loader={server.edition.toLowerCase() as 'forge' | 'fabric' | 'neoforge'}
+                                serverMemoryMB={server.memory_mb}
+                              />
+                            </TabsContent>
+                          )}
                         </Tabs>
 
                         <DialogFooter>
