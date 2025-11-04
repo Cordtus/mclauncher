@@ -182,7 +182,7 @@ function objectToSections(obj: any, comments: Record<string, string>, prefix = '
 /**
  * Detect field type from value
  */
-function detectFieldType(value: any): ConfigField['type'] {
+export function detectFieldType(value: any): ConfigField['type'] {
   if (typeof value === 'boolean') return 'boolean';
   if (typeof value === 'number') return 'number';
   if (typeof value === 'string') return 'string';
@@ -195,7 +195,7 @@ function detectFieldType(value: any): ConfigField['type'] {
  * Extract constraints from comment text
  * Example: "Range: 1 ~ 1000" or "Range: 0.5 ~ 5.0"
  */
-function extractConstraints(comment?: string): ConfigField['constraints'] | undefined {
+export function extractConstraints(comment?: string): ConfigField['constraints'] | undefined {
   if (!comment) return undefined;
 
   const constraints: ConfigField['constraints'] = {};
@@ -219,7 +219,7 @@ function extractConstraints(comment?: string): ConfigField['constraints'] | unde
 /**
  * Check if value is a plain object (not array, not null)
  */
-function isPlainObject(value: any): boolean {
+export function isPlainObject(value: any): boolean {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
