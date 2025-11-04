@@ -12,6 +12,9 @@ import {
   Users,
   HelpCircle,
   Info,
+  ChevronDown,
+  ChevronUp,
+  Terminal,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -106,6 +109,9 @@ function copyToClipboard(text: string) {
 export function App() {
   const [servers, setServers] = useState<ServerRow[]>([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [logs, setLogs] = useState<string>("");
+  const [showLogs, setShowLogs] = useState(true);
+  const [isLoadingLogs, setIsLoadingLogs] = useState(false);
   const [selectedServer, setSelectedServer] = useState<string | null>(null);
   const [message, setMessage] = useState<string>("");
 
@@ -255,11 +261,38 @@ export function App() {
     }
   }
 
+  // Fetch logs for the first server
+  async function fetchLogs() {
+    if (servers.length === 0) return;
+
+    setIsLoadingLogs(true);
+    try {
+      const response = await fetch(`/api/servers/${servers[0].name}/logs`);
+      const logText = await response.text();
+
+      // Get last 10 lines
+      const lines = logText.trim().split('\n');
+      const lastLines = lines.slice(-10).join('\n');
+      setLogs(lastLines);
+    } catch (err) {
+      console.error('Failed to fetch logs:', err);
+    } finally {
+      setIsLoadingLogs(false);
+    }
+  }
+
   useEffect(() => {
     refresh();
     const interval = setInterval(refresh, 10000);
     return () => clearInterval(interval);
   }, []);
+
+  // Auto-refresh logs every 5 seconds
+  useEffect(() => {
+    fetchLogs();
+    const interval = setInterval(fetchLogs, 5000);
+    return () => clearInterval(interval);
+  }, [servers]);
 
   const handleServerAction = async (serverName: string, action: string) => {
     try {
@@ -355,78 +388,225 @@ export function App() {
               <DialogTrigger asChild>
                 <Button variant="outline" size="sm" className="rounded-sm hover:bg-green-500/10 hover:border-green-500 transition-all">
                   <HelpCircle className="mr-2 h-4 w-4" />
-                  🎓 Getting Started
+                  Getting Started
                 </Button>
               </DialogTrigger>
-              <DialogContent className="rounded-sm max-w-2xl max-h-[80vh] overflow-y-auto">
+              <DialogContent className="rounded-sm max-w-3xl max-h-[85vh] overflow-y-auto">
                 <DialogHeader>
-                  <DialogTitle>🎯 Let's Get Started!</DialogTitle>
+                  <DialogTitle>User Documentation</DialogTitle>
                   <DialogDescription>
-                    Everything you need to know to run your awesome server 🚀
+                    Complete guide to managing your Minecraft server
                   </DialogDescription>
                 </DialogHeader>
-                <div className="space-y-4 text-sm">
-                  <div>
-                    <h3 className="font-semibold mb-2">1. Start the Minecraft Server</h3>
-                    <p className="text-muted-foreground">Click the Play button to start the Minecraft server process. The server will take 30-60 seconds to fully start.</p>
-                  </div>
+                <div className="space-y-6 text-sm">
 
-                  <div>
-                    <h3 className="font-semibold mb-2">2. Connect to Your Server</h3>
-                    <p className="text-muted-foreground mb-2">In Minecraft, go to Multiplayer → Add Server and use:</p>
-                    <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2">
-                      <li><strong>From LAN:</strong> Use the Local IP shown (e.g., 10.70.48.204:25565)</li>
-                      <li><strong>From Internet:</strong> Configure a public domain first</li>
-                    </ul>
-                  </div>
-
-                  <div>
-                    <h3 className="font-semibold mb-2">3. Add Plugins or Mods</h3>
-                    <p className="text-muted-foreground mb-2">The upload button shown depends on your server type:</p>
-                    <div className="ml-2 space-y-3">
+                  <section>
+                    <h2 className="text-lg font-bold mb-3 border-b pb-2">Quick Start</h2>
+                    <div className="space-y-3">
                       <div>
-                        <p className="font-medium text-sm">Plugins (Paper/Purpur/Spigot):</p>
-                        <ul className="list-disc list-inside space-y-1 text-muted-foreground text-sm ml-2">
-                          <li>Download .jar files from SpigotMC, Bukkit, or Modrinth</li>
-                          <li>Click "Upload Plugin" and select the .jar file</li>
-                          <li>Restart the server to load the plugin</li>
-                        </ul>
+                        <h3 className="font-semibold mb-1">Starting Your Server</h3>
+                        <p className="text-muted-foreground">Click the Play button (▶) to start the server. Initial startup takes 30-60 seconds. The status badge will change to "Running" and show green "ONLINE" when ready.</p>
                       </div>
                       <div>
-                        <p className="font-medium text-sm">Mods (Forge/NeoForge/Fabric):</p>
-                        <ul className="list-disc list-inside space-y-1 text-muted-foreground text-sm ml-2">
-                          <li>Download .jar files from CurseForge or Modrinth</li>
-                          <li>Click "Upload Mod" and select the .jar file</li>
-                          <li>Players must have the same mods installed</li>
+                        <h3 className="font-semibold mb-1">Connecting to Your Server</h3>
+                        <p className="text-muted-foreground mb-2">In Minecraft, select Multiplayer → Add Server:</p>
+                        <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
+                          <li><strong>Local Network:</strong> Use the IP shown in the "Local Network" card (players on same WiFi)</li>
+                          <li><strong>Public Internet:</strong> Use the public domain once configured in Network settings</li>
+                          <li>Use the copy button to quickly copy the address</li>
                         </ul>
                       </div>
                     </div>
-                  </div>
+                  </section>
 
-                  <div>
-                    <h3 className="font-semibold mb-2">4. Upload Worlds</h3>
-                    <p className="text-muted-foreground mb-2">Import existing Minecraft worlds:</p>
-                    <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2">
-                      <li>Compress your world folder into a .zip file</li>
-                      <li>The .zip should contain level.dat, region/, data/ folders</li>
-                      <li>Click "Upload World" and select the .zip</li>
-                      <li>Server will stop, extract world, and restart</li>
+                  <section>
+                    <h2 className="text-lg font-bold mb-3 border-b pb-2">Server Controls</h2>
+                    <div className="space-y-2">
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <div><strong>Play (▶):</strong> Start the server</div>
+                        <div><strong>Stop (■):</strong> Gracefully stop the server</div>
+                        <div><strong>Restart (↻):</strong> Stop and start the server</div>
+                        <div><strong>Refresh (⟳):</strong> Update server status</div>
+                      </div>
+                    </div>
+                  </section>
+
+                  <section>
+                    <h2 className="text-lg font-bold mb-3 border-b pb-2">Server Settings</h2>
+                    <p className="text-muted-foreground mb-3">Click "Server Settings" to configure your server before launch. Settings are saved automatically.</p>
+
+                    <div className="space-y-3">
+                      <div>
+                        <h3 className="font-semibold mb-1">Network Tab</h3>
+                        <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
+                          <li><strong>Host IP:</strong> Set to your LXD host's local IP (e.g., 192.168.0.170) for local network access</li>
+                          <li><strong>Public Domain:</strong> Set your public domain name for internet access (optional)</li>
+                        </ul>
+                      </div>
+
+                      <div>
+                        <h3 className="font-semibold mb-1">Properties Tab</h3>
+                        <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
+                          <li><strong>MOTD:</strong> Message shown in server list</li>
+                          <li><strong>Max Players:</strong> Maximum concurrent players allowed</li>
+                          <li><strong>View Distance:</strong> How far players can see (lower = better performance)</li>
+                          <li><strong>Online Mode:</strong> Requires Minecraft account authentication (recommended)</li>
+                        </ul>
+                      </div>
+
+                      <div>
+                        <h3 className="font-semibold mb-1">Gameplay Tab</h3>
+                        <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
+                          <li><strong>Game Mode:</strong> Survival, Creative, Adventure, or Spectator</li>
+                          <li><strong>Difficulty:</strong> Peaceful, Easy, Normal, or Hard</li>
+                          <li><strong>PVP:</strong> Enable/disable player vs player combat</li>
+                          <li><strong>Allow Flight:</strong> Allow flying in survival mode</li>
+                          <li><strong>Spawn Protection:</strong> Blocks around spawn that only ops can modify</li>
+                        </ul>
+                      </div>
+
+                      <div>
+                        <h3 className="font-semibold mb-1">Security Tab</h3>
+                        <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
+                          <li><strong>Server Password:</strong> Optional password players must enter to join</li>
+                          <li><strong>Whitelist:</strong> Only allow approved players (recommended for private servers)</li>
+                          <li>Add players by username, remove them with the X button</li>
+                        </ul>
+                      </div>
+
+                      <div>
+                        <h3 className="font-semibold mb-1">Plugins Tab</h3>
+                        <p className="text-muted-foreground text-xs">Select popular plugins to install. Server must be restarted after installation.</p>
+                      </div>
+
+                      <div>
+                        <h3 className="font-semibold mb-1">Admins Tab</h3>
+                        <p className="text-muted-foreground text-xs">Add server operators (admins) who can use all commands. Only give OP to trusted players.</p>
+                      </div>
+                    </div>
+                  </section>
+
+                  <section>
+                    <h2 className="text-lg font-bold mb-3 border-b pb-2">Upload Content</h2>
+
+                    <div className="space-y-3">
+                      <div>
+                        <h3 className="font-semibold mb-1">Plugins (Paper/Purpur/Spigot only)</h3>
+                        <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
+                          <li>Download .jar files from SpigotMC, Bukkit, or Modrinth</li>
+                          <li>Click "Upload Plugin" and select the .jar file</li>
+                          <li>Restart server to load the plugin</li>
+                          <li>Popular plugins: EssentialsX, WorldEdit, LuckPerms, Vault</li>
+                        </ul>
+                      </div>
+
+                      <div>
+                        <h3 className="font-semibold mb-1">Mods (Forge/NeoForge/Fabric only)</h3>
+                        <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
+                          <li>Download .jar files from CurseForge or Modrinth</li>
+                          <li>Click "Upload Mod" and select the .jar file</li>
+                          <li>Players MUST have the same mods installed to join</li>
+                          <li>Restart server after adding mods</li>
+                        </ul>
+                      </div>
+
+                      <div>
+                        <h3 className="font-semibold mb-1">Worlds</h3>
+                        <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
+                          <li>Compress your world folder into a .zip file</li>
+                          <li>The .zip must contain level.dat, region/, data/ folders</li>
+                          <li>Click "Upload World" and select the .zip file</li>
+                          <li>Server will stop, replace the world, and restart automatically</li>
+                        </ul>
+                      </div>
+                    </div>
+                  </section>
+
+                  <section>
+                    <h2 className="text-lg font-bold mb-3 border-b pb-2">Console Panel</h2>
+                    <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
+                      <li>Shows the last 10 lines of server logs in real-time</li>
+                      <li>Auto-refreshes every 5 seconds</li>
+                      <li>Click the chevron to collapse/expand</li>
+                      <li>Use for debugging connection issues or plugin errors</li>
+                      <li>Click "Refresh Now" for immediate update</li>
                     </ul>
-                  </div>
+                  </section>
 
-                  <div>
-                    <h3 className="font-semibold mb-2">5. Create a New World</h3>
-                    <p className="text-muted-foreground">A default world is created on first start. To customize, edit server.properties and restart.</p>
-                  </div>
+                  <section>
+                    <h2 className="text-lg font-bold mb-3 border-b pb-2">Connection Status</h2>
+                    <div className="space-y-2">
+                      <div>
+                        <h3 className="font-semibold mb-1">Status Badges</h3>
+                        <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
+                          <li><strong className="text-green-500">✓ ONLINE:</strong> Server is accessible</li>
+                          <li><strong className="text-red-500">✗ OFFLINE:</strong> Server is not reachable</li>
+                          <li><strong>⟳ CHECKING:</strong> Verifying connection status</li>
+                        </ul>
+                      </div>
+                      <div>
+                        <h3 className="font-semibold mb-1">Local Network</h3>
+                        <p className="text-muted-foreground text-xs">Shows status for players on the same WiFi network. Set Host IP in Network settings first.</p>
+                      </div>
+                      <div>
+                        <h3 className="font-semibold mb-1">Public Internet</h3>
+                        <p className="text-muted-foreground text-xs">Shows status for players connecting from the internet. Requires public domain and port forwarding.</p>
+                      </div>
+                    </div>
+                  </section>
 
-                  <div>
-                    <h3 className="font-semibold mb-2">File Format Examples</h3>
-                    <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2">
-                      <li><strong>Plugins:</strong> EssentialsX.jar, WorldEdit.jar</li>
-                      <li><strong>Mods:</strong> sodium-fabric-0.5.8.jar</li>
-                      <li><strong>Worlds:</strong> my-world.zip (contains level.dat inside)</li>
+                  <section>
+                    <h2 className="text-lg font-bold mb-3 border-b pb-2">Troubleshooting</h2>
+                    <div className="space-y-2">
+                      <div>
+                        <h3 className="font-semibold mb-1">Server won't start</h3>
+                        <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
+                          <li>Check the Console panel for error messages</li>
+                          <li>Click "View Logs" for full server logs</li>
+                          <li>Ensure enough memory is allocated (8GB recommended)</li>
+                        </ul>
+                      </div>
+                      <div>
+                        <h3 className="font-semibold mb-1">Can't connect locally</h3>
+                        <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
+                          <li>Set Host IP in Server Settings → Network tab</li>
+                          <li>Verify server status shows "Running"</li>
+                          <li>Check Local Network shows "ONLINE"</li>
+                          <li>Make sure you're on the same WiFi network</li>
+                        </ul>
+                      </div>
+                      <div>
+                        <h3 className="font-semibold mb-1">Can't connect from internet</h3>
+                        <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
+                          <li>Configure port forwarding on your router (port 25565)</li>
+                          <li>Set up DNS A record pointing to your public IP</li>
+                          <li>Add public domain in Server Settings → Network tab</li>
+                          <li>Wait for DNS propagation (can take up to 24 hours)</li>
+                        </ul>
+                      </div>
+                      <div>
+                        <h3 className="font-semibold mb-1">Plugin/Mod not working</h3>
+                        <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
+                          <li>Ensure plugin is compatible with your server version</li>
+                          <li>Restart server after uploading</li>
+                          <li>Check Console panel for plugin errors</li>
+                          <li>For mods: players must have the exact same mods installed</li>
+                        </ul>
+                      </div>
+                    </div>
+                  </section>
+
+                  <section className="bg-muted/50 p-3 rounded-lg">
+                    <h2 className="text-sm font-bold mb-2">Important Notes</h2>
+                    <ul className="list-disc list-inside space-y-1 text-xs text-muted-foreground">
+                      <li>Always back up your world before major changes</li>
+                      <li>Settings are saved automatically when you change them</li>
+                      <li>Keep Online Mode ON to prevent unauthorized access</li>
+                      <li>Only give operator status to people you completely trust</li>
+                      <li>Monitor the Console panel for errors and warnings</li>
                     </ul>
-                  </div>
+                  </section>
+
                 </div>
               </DialogContent>
             </Dialog>
@@ -453,6 +633,58 @@ export function App() {
             <CardContent className="py-3">
               <p className="text-sm">{message}</p>
             </CardContent>
+          </Card>
+        )}
+
+        {/* Console Log Panel */}
+        {servers.length > 0 && (
+          <Card className="rounded-sm border-amber-500/20">
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Terminal className="h-4 w-4 text-amber-500" />
+                  <CardTitle className="text-base">Server Console</CardTitle>
+                  {isLoadingLogs && (
+                    <RefreshCw className="h-3 w-3 animate-spin text-muted-foreground" />
+                  )}
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowLogs(!showLogs)}
+                  className="h-6 w-6 p-0"
+                >
+                  {showLogs ? (
+                    <ChevronUp className="h-4 w-4" />
+                  ) : (
+                    <ChevronDown className="h-4 w-4" />
+                  )}
+                </Button>
+              </div>
+            </CardHeader>
+            {showLogs && (
+              <CardContent className="pt-0">
+                <div className="bg-black/90 rounded p-3 font-mono text-xs text-green-400 h-32 overflow-y-auto border border-green-500/20">
+                  {logs ? (
+                    <pre className="whitespace-pre-wrap">{logs}</pre>
+                  ) : (
+                    <span className="text-muted-foreground italic">No logs available...</span>
+                  )}
+                </div>
+                <div className="flex items-center justify-between mt-2 text-xs text-muted-foreground">
+                  <span>Auto-refreshes every 5 seconds • Last 10 lines</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => fetchLogs()}
+                    className="h-6 text-xs"
+                  >
+                    <RefreshCw className="h-3 w-3 mr-1" />
+                    Refresh Now
+                  </Button>
+                </div>
+              </CardContent>
+            )}
           </Card>
         )}
 
