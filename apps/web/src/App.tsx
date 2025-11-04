@@ -82,7 +82,24 @@ function authHeaders(): HeadersInit {
 }
 
 function copyToClipboard(text: string) {
-  navigator.clipboard.writeText(text);
+  // Use Clipboard API if available (HTTPS), otherwise use fallback (HTTP)
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).catch(err => console.error('Clipboard API failed:', err));
+  } else {
+    // Fallback for HTTP or older browsers
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    try {
+      document.execCommand('copy');
+    } catch (err) {
+      console.error('Copy fallback failed:', err);
+    }
+    document.body.removeChild(textarea);
+  }
 }
 
 export function App() {
@@ -107,6 +124,9 @@ export function App() {
       }
     }
     return {
+      // Network
+      publicDomain: "",
+
       // Server Properties
       motd: "A Minecraft Server",
       maxPlayers: 20,
@@ -149,6 +169,32 @@ export function App() {
     localStorage.setItem('mc-server-settings', JSON.stringify(serverSettings));
   }, [serverSettings]);
 
+  // Load public domain from server registry when servers are loaded
+  useEffect(() => {
+    if (servers.length > 0 && servers[0].public_domain) {
+      setServerSettings(prev => ({
+        ...prev,
+        publicDomain: servers[0].public_domain || ""
+      }));
+    }
+  }, [servers]);
+
+  // Save public domain to backend when it changes
+  async function savePublicDomain(serverName: string, domain: string) {
+    try {
+      const response = await fetch(`/api/servers/${serverName}/config`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ public_domain: domain || null })
+      });
+      if (response.ok) {
+        await refresh(); // Refresh to get updated server data
+      }
+    } catch (err) {
+      console.error('Failed to save public domain:', err);
+    }
+  }
+
   async function refresh() {
     setIsRefreshing(true);
     try {
@@ -169,31 +215,17 @@ export function App() {
 
   // Check if local and public connections are accessible
   async function checkConnectionStatus(server: ServerRow) {
-    // Check local connection
-    try {
-      const localCheck = await fetch(`http://${server.local_ip}:${server.local_port}`, {
-        method: 'HEAD',
-        mode: 'no-cors', // Minecraft server won't respond to HTTP properly
-        signal: AbortSignal.timeout(3000)
-      });
+    // Check local connection - use server status from agent
+    if (server.minecraft?.online) {
       setConnectionStatus(prev => ({
         ...prev,
         local: { status: 'online', lastChecked: new Date() }
       }));
-    } catch (err) {
-      // For Minecraft servers, no-cors will always "fail" but if server is online, it responds
-      // We rely on the minecraft status from the agent instead
-      if (server.minecraft?.online) {
-        setConnectionStatus(prev => ({
-          ...prev,
-          local: { status: 'online', lastChecked: new Date() }
-        }));
-      } else {
-        setConnectionStatus(prev => ({
-          ...prev,
-          local: { status: 'offline', lastChecked: new Date() }
-        }));
-      }
+    } else {
+      setConnectionStatus(prev => ({
+        ...prev,
+        local: { status: 'offline', lastChecked: new Date() }
+      }));
     }
 
     // Check public connection (if public domain is set)
@@ -755,13 +787,47 @@ export function App() {
                         </DialogHeader>
 
                         <Tabs defaultValue="properties" className="w-full">
-                          <TabsList className="grid w-full grid-cols-5">
+                          <TabsList className="grid w-full grid-cols-6">
+                            <TabsTrigger value="network">Network</TabsTrigger>
                             <TabsTrigger value="properties">Properties</TabsTrigger>
                             <TabsTrigger value="gameplay">Gameplay</TabsTrigger>
                             <TabsTrigger value="security">Security</TabsTrigger>
                             <TabsTrigger value="plugins">Plugins</TabsTrigger>
                             <TabsTrigger value="admins">Admins</TabsTrigger>
                           </TabsList>
+
+                          {/* Network Tab */}
+                          <TabsContent value="network" className="space-y-4">
+                            <div className="space-y-4">
+                              <div>
+                                <Label htmlFor="publicDomain">Public Domain (Optional)</Label>
+                                <Input
+                                  id="publicDomain"
+                                  type="text"
+                                  value={serverSettings.publicDomain}
+                                  onChange={(e) => setServerSettings({...serverSettings, publicDomain: e.target.value})}
+                                  onBlur={(e) => savePublicDomain(server.name, e.target.value)}
+                                  placeholder="mc.yourdomain.com"
+                                  className="rounded-sm"
+                                />
+                                <p className="text-xs text-muted-foreground mt-1">
+                                  Set your public domain name to enable public connection monitoring and display the correct connection info
+                                </p>
+                              </div>
+
+                              <Separator />
+
+                              <div className="bg-muted/50 p-3 rounded-lg">
+                                <p className="text-sm font-semibold mb-1">How to set up public access:</p>
+                                <ol className="text-xs text-muted-foreground space-y-1 list-decimal ml-4">
+                                  <li>Configure port forwarding on your router: External port 25565 → {server.local_ip}:25565</li>
+                                  <li>Set up DNS A record pointing to your public IP address</li>
+                                  <li>Enter your domain name above (e.g., mc.basementnodes.ca)</li>
+                                  <li>Public connection status will update automatically</li>
+                                </ol>
+                              </div>
+                            </div>
+                          </TabsContent>
 
                           {/* Server Properties Tab */}
                           <TabsContent value="properties" className="space-y-4">
