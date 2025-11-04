@@ -846,9 +846,9 @@ export function App() {
                               <div className="bg-muted/50 p-3 rounded-lg">
                                 <p className="text-sm font-semibold mb-1">How to set up public access:</p>
                                 <ol className="text-xs text-muted-foreground space-y-1 list-decimal ml-4">
-                                  <li>Configure port forwarding on your router: External port 25565 → {server.local_ip}:25565</li>
+                                  <li>Configure port forwarding on your router: External port 25565 → {server.host_ip || 'your LXD host'}:25565</li>
                                   <li>Set up DNS A record pointing to your public IP address</li>
-                                  <li>Enter your domain name above (e.g., mc.basementnodes.ca)</li>
+                                  <li>Enter your domain name above</li>
                                   <li>Public connection status will update automatically</li>
                                 </ol>
                               </div>
