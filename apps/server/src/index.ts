@@ -26,6 +26,7 @@ interface ServerEntry {
   agent_url: string; // http://container-ip:9090
   local_ip?: string; // Container IP (e.g., 10.70.48.204)
   local_port?: number; // Minecraft port (usually 25565)
+  host_ip?: string; // LXD host IP for local network connections (e.g., 192.168.0.170)
   public_port: number; // LXD proxy port on host
   public_domain?: string; // Optional public domain (e.g., mc.yourdomain.com)
   memory_mb: number;
@@ -224,7 +225,7 @@ app.delete("/api/servers/:name/unregister", requireAdmin, (req, res) => {
 // Update server configuration
 app.patch("/api/servers/:name/config", requireAdmin, (req, res) => {
   const { name } = req.params;
-  const { public_domain, local_port } = req.body;
+  const { public_domain, local_port, host_ip } = req.body;
 
   const registry = loadRegistry();
   const server = registry.servers.find((s) => s.name === name);
@@ -238,6 +239,9 @@ app.patch("/api/servers/:name/config", requireAdmin, (req, res) => {
   }
   if (local_port !== undefined) {
     server.local_port = Number(local_port);
+  }
+  if (host_ip !== undefined) {
+    server.host_ip = host_ip || undefined;
   }
 
   saveRegistry(registry);

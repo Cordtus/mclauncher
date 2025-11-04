@@ -55,6 +55,7 @@ type ServerRow = {
   status: string;
   local_ip: string;
   local_port: number;
+  host_ip?: string; // LXD host IP for local network connections
   public_port: number;
   public_domain: string | null;
   memory_mb: number;
@@ -125,6 +126,7 @@ export function App() {
     }
     return {
       // Network
+      hostIp: "",
       publicDomain: "",
 
       // Server Properties
@@ -169,29 +171,30 @@ export function App() {
     localStorage.setItem('mc-server-settings', JSON.stringify(serverSettings));
   }, [serverSettings]);
 
-  // Load public domain from server registry when servers are loaded
+  // Load network settings from server registry when servers are loaded
   useEffect(() => {
-    if (servers.length > 0 && servers[0].public_domain) {
+    if (servers.length > 0) {
       setServerSettings(prev => ({
         ...prev,
+        hostIp: servers[0].host_ip || "",
         publicDomain: servers[0].public_domain || ""
       }));
     }
   }, [servers]);
 
-  // Save public domain to backend when it changes
-  async function savePublicDomain(serverName: string, domain: string) {
+  // Save network settings to backend when they change
+  async function saveNetworkConfig(serverName: string, field: string, value: string) {
     try {
       const response = await fetch(`/api/servers/${serverName}/config`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ public_domain: domain || null })
+        body: JSON.stringify({ [field]: value || null })
       });
       if (response.ok) {
         await refresh(); // Refresh to get updated server data
       }
     } catch (err) {
-      console.error('Failed to save public domain:', err);
+      console.error(`Failed to save ${field}:`, err);
     }
   }
 
@@ -336,13 +339,16 @@ export function App() {
         <div className="max-w-7xl mx-auto space-y-6">
         {/* Header */}
         <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-green-400 to-emerald-600 bg-clip-text text-transparent">
-              🎮 Minecraft Server Control
-            </h1>
-            <p className="text-muted-foreground mt-1">
-              Build, play, and manage your worlds! ⚔️
-            </p>
+          <div className="flex items-center gap-4">
+            <img src="/mc-logo.svg" alt="Minecraft Server" className="h-10" />
+            <div>
+              <h1 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-green-400 to-emerald-600 bg-clip-text text-transparent">
+                Minecraft Server Control
+              </h1>
+              <p className="text-muted-foreground mt-1">
+                Build, play, and manage your worlds
+              </p>
+            </div>
           </div>
           <div className="flex gap-2">
             <Dialog>
@@ -379,7 +385,7 @@ export function App() {
                     <p className="text-muted-foreground mb-2">The upload button shown depends on your server type:</p>
                     <div className="ml-2 space-y-3">
                       <div>
-                        <p className="font-medium text-sm">🔌 Plugins (Paper/Purpur/Spigot):</p>
+                        <p className="font-medium text-sm">Plugins (Paper/Purpur/Spigot):</p>
                         <ul className="list-disc list-inside space-y-1 text-muted-foreground text-sm ml-2">
                           <li>Download .jar files from SpigotMC, Bukkit, or Modrinth</li>
                           <li>Click "Upload Plugin" and select the .jar file</li>
@@ -387,7 +393,7 @@ export function App() {
                         </ul>
                       </div>
                       <div>
-                        <p className="font-medium text-sm">📦 Mods (Forge/NeoForge/Fabric):</p>
+                        <p className="font-medium text-sm">Mods (Forge/NeoForge/Fabric):</p>
                         <ul className="list-disc list-inside space-y-1 text-muted-foreground text-sm ml-2">
                           <li>Download .jar files from CurseForge or Modrinth</li>
                           <li>Click "Upload Mod" and select the .jar file</li>
@@ -486,7 +492,7 @@ export function App() {
                           <div className="flex items-center justify-between mb-2">
                             <div className="flex items-center gap-2">
                               <Globe className="h-4 w-4 text-muted-foreground" />
-                              <span className="text-sm font-semibold">🏠 Local Network</span>
+                              <span className="text-sm font-semibold">Local Network</span>
                             </div>
                             {connectionStatus.local.status === 'online' && (
                               <Badge className="bg-green-500 hover:bg-green-600">✓ ONLINE</Badge>
@@ -500,19 +506,23 @@ export function App() {
                           </div>
                           <div className="flex items-center gap-2">
                             <code className="bg-muted px-2 py-1 rounded text-xs flex-1">
-                              {server.local_ip}:{server.local_port}
+                              {server.host_ip || server.local_ip}:{server.local_port}
                             </code>
                             <Button
                               variant="ghost"
                               size="icon"
                               className="h-7 w-7"
-                              onClick={() => copyToClipboard(`${server.local_ip}:${server.local_port}`)}
+                              onClick={() => copyToClipboard(`${server.host_ip || server.local_ip}:${server.local_port}`)}
                               title="Copy to clipboard"
                             >
                               <Copy className="h-3.5 w-3.5" />
                             </Button>
                           </div>
-                          <p className="text-xs text-muted-foreground mt-1">For players on the same WiFi</p>
+                          <p className="text-xs text-muted-foreground mt-1">
+                            {server.host_ip
+                              ? "For players on the same WiFi"
+                              : "⚠️ Set Host IP in Network settings for local access"}
+                          </p>
                         </div>
 
                         {/* Public Connection */}
@@ -800,13 +810,29 @@ export function App() {
                           <TabsContent value="network" className="space-y-4">
                             <div className="space-y-4">
                               <div>
+                                <Label htmlFor="hostIp">Host IP Address (Local Network)</Label>
+                                <Input
+                                  id="hostIp"
+                                  type="text"
+                                  value={serverSettings.hostIp}
+                                  onChange={(e) => setServerSettings({...serverSettings, hostIp: e.target.value})}
+                                  onBlur={(e) => saveNetworkConfig(server.name, 'host_ip', e.target.value)}
+                                  placeholder="192.168.0.170"
+                                  className="rounded-sm"
+                                />
+                                <p className="text-xs text-muted-foreground mt-1">
+                                  The IP address of the LXD host machine on your local network
+                                </p>
+                              </div>
+
+                              <div>
                                 <Label htmlFor="publicDomain">Public Domain (Optional)</Label>
                                 <Input
                                   id="publicDomain"
                                   type="text"
                                   value={serverSettings.publicDomain}
                                   onChange={(e) => setServerSettings({...serverSettings, publicDomain: e.target.value})}
-                                  onBlur={(e) => savePublicDomain(server.name, e.target.value)}
+                                  onBlur={(e) => saveNetworkConfig(server.name, 'public_domain', e.target.value)}
                                   placeholder="mc.yourdomain.com"
                                   className="rounded-sm"
                                 />
