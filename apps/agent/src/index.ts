@@ -478,10 +478,8 @@ app.post("/settings/bans/player/add", async (req, res) => {
     }
 
     // Resolve UUID
-    const uuid = await resolveUuid(username);
-    if (!uuid) {
-      return res.status(404).json({ error: `Player ${username} not found` });
-    }
+    const profile = await resolveUsername(username);
+    const uuid = profile.uuid;
 
     const bannedPlayersPath = path.join(MC_DIR, "banned-players.json");
     const bannedPlayers = readJsonArray<{
@@ -502,7 +500,7 @@ app.post("/settings/bans/player/add", async (req, res) => {
     // Add ban
     bannedPlayers.push({
       uuid,
-      name: username,
+      name: profile.name,
       created: new Date().toISOString(),
       source: "Server",
       expires: "forever",
