@@ -379,30 +379,30 @@ export function App() {
 
   return (
     <TooltipProvider>
-      <div className="min-h-screen bg-background p-6">
-        <div className="max-w-7xl mx-auto space-y-6">
+      <div className="min-h-screen bg-background p-3 sm:p-6">
+        <div className="max-w-7xl mx-auto space-y-4 sm:space-y-6">
         {/* Header */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <img src="/mc-logo.svg" alt="Minecraft Server" className="h-10" />
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          <div className="flex items-center gap-3 sm:gap-4">
+            <img src="/mc-logo.svg" alt="Minecraft Server" className="h-8 sm:h-10 flex-shrink-0" />
             <div>
-              <h1 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-green-400 to-emerald-600 bg-clip-text text-transparent">
+              <h1 className="text-xl sm:text-2xl md:text-3xl font-bold tracking-tight bg-gradient-to-r from-green-400 to-emerald-600 bg-clip-text text-transparent">
                 Minecraft Server Control
               </h1>
-              <p className="text-muted-foreground mt-1">
+              <p className="text-xs sm:text-sm text-muted-foreground mt-0.5 sm:mt-1">
                 Build, play, and manage your worlds
               </p>
             </div>
           </div>
-          <div className="flex gap-2">
+          <div className="flex gap-2 w-full sm:w-auto">
             <Dialog>
               <DialogTrigger asChild>
-                <Button variant="outline" size="sm" className="rounded-sm hover:bg-green-500/10 hover:border-green-500 transition-all">
-                  <HelpCircle className="mr-2 h-4 w-4" />
-                  Getting Started
+                <Button variant="outline" size="sm" className="rounded-sm hover:bg-green-500/10 hover:border-green-500 transition-all flex-1 sm:flex-none">
+                  <HelpCircle className="mr-1 sm:mr-2 h-4 w-4" />
+                  <span className="text-xs sm:text-sm">Help</span>
                 </Button>
               </DialogTrigger>
-              <DialogContent className="rounded-sm max-w-3xl max-h-[85vh] overflow-y-auto">
+              <DialogContent className="rounded-sm max-w-[95vw] sm:max-w-3xl max-h-[90vh] overflow-y-auto">
                 <DialogHeader>
                   <DialogTitle>User Documentation</DialogTitle>
                   <DialogDescription>
@@ -625,14 +625,14 @@ export function App() {
             <Button
               variant="outline"
               size="sm"
-              className="rounded-sm"
+              className="rounded-sm flex-1 sm:flex-none"
               onClick={refresh}
               disabled={isRefreshing}
             >
               <RefreshCw
-                className={`mr-2 h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`}
+                className={`mr-1 sm:mr-2 h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`}
               />
-              Refresh
+              <span className="text-xs sm:text-sm">Refresh</span>
             </Button>
           </div>
         </div>
@@ -661,52 +661,52 @@ export function App() {
           <div className="grid gap-6">
             {servers.map((server) => (
               <Card key={server.name} className="rounded-sm">
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <CardTitle className="flex items-center gap-2">
+                <CardHeader className="p-4 sm:p-6">
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                    <div className="flex-1 w-full">
+                      <CardTitle className="flex items-center gap-2 flex-wrap text-base sm:text-lg">
                         {server.name}
                         <Badge
                           variant={getStatusColor(server.status)}
-                          className="rounded-sm"
+                          className="rounded-sm text-xs"
                         >
                           {server.status}
                         </Badge>
                       </CardTitle>
-                      <CardDescription className="mt-1">
-                        {server.edition} {server.mc_version} · {server.memory_mb}MB RAM · {server.cpu_limit} CPU
+                      <CardDescription className="mt-1 text-xs sm:text-sm">
+                        {server.edition} {server.mc_version} · {server.memory_mb}MB · {server.cpu_limit} CPU
                       </CardDescription>
 
                       {/* Connection Info */}
                       <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
                         {/* Local Connection */}
-                        <div className="border-2 rounded-lg p-4 bg-card">
-                          <div className="flex items-center justify-between mb-3">
-                            <div className="flex items-center gap-2">
-                              <Globe className="h-5 w-5 text-muted-foreground" />
-                              <span className="text-base font-bold">Local Network</span>
+                        <div className="border-2 rounded-lg p-3 sm:p-4 bg-card">
+                          <div className="flex items-center justify-between mb-2 sm:mb-3">
+                            <div className="flex items-center gap-1.5 sm:gap-2">
+                              <Globe className="h-4 w-4 sm:h-5 sm:w-5 text-muted-foreground flex-shrink-0" />
+                              <span className="text-sm sm:text-base font-bold">Local Network</span>
                             </div>
                             {server.minecraft?.online ? (
-                              <Badge className="bg-green-500 hover:bg-green-600 text-sm font-bold px-3 py-1">✓ RUNNING</Badge>
+                              <Badge className="bg-green-500 hover:bg-green-600 text-xs sm:text-sm font-bold px-2 sm:px-3 py-0.5 sm:py-1">✓ RUNNING</Badge>
                             ) : (
-                              <Badge variant="destructive" className="text-sm font-bold px-3 py-1">✗ STOPPED</Badge>
+                              <Badge variant="destructive" className="text-xs sm:text-sm font-bold px-2 sm:px-3 py-0.5 sm:py-1">✗ STOPPED</Badge>
                             )}
                           </div>
-                          <div className="flex items-center gap-2 mb-2">
-                            <code className="bg-black/80 text-green-400 px-4 py-3 rounded text-lg font-bold flex-1 text-center border-2 border-green-500/30">
+                          <div className="flex items-center gap-1 sm:gap-2 mb-2">
+                            <code className="bg-black/80 text-green-400 px-2 py-2 sm:px-4 sm:py-3 rounded text-sm sm:text-lg font-bold flex-1 text-center border-2 border-green-500/30 break-all">
                               {server.host_ip || server.local_ip}:{server.public_port}
                             </code>
                             <Button
                               variant="ghost"
                               size="icon"
-                              className="h-10 w-10"
+                              className="h-8 w-8 sm:h-10 sm:w-10 flex-shrink-0"
                               onClick={() => copyToClipboard(`${server.host_ip || server.local_ip}:${server.public_port}`)}
                               title="Copy to clipboard"
                             >
-                              <Copy className="h-5 w-5" />
+                              <Copy className="h-4 w-4 sm:h-5 sm:w-5" />
                             </Button>
                           </div>
-                          <p className="text-sm font-semibold text-center">
+                          <p className="text-xs sm:text-sm font-semibold text-center">
                             {server.host_ip
                               ? "For players on the same WiFi"
                               : "⚠️ Set Host IP in Network settings"}
@@ -714,48 +714,48 @@ export function App() {
                         </div>
 
                         {/* Public Connection */}
-                        <div className="border-2 rounded-lg p-4 bg-card">
-                          <div className="flex items-center justify-between mb-3">
-                            <div className="flex items-center gap-2">
-                              <Globe className="h-5 w-5 text-muted-foreground" />
-                              <span className="text-base font-bold">Public Internet</span>
+                        <div className="border-2 rounded-lg p-3 sm:p-4 bg-card">
+                          <div className="flex items-center justify-between mb-2 sm:mb-3">
+                            <div className="flex items-center gap-1.5 sm:gap-2">
+                              <Globe className="h-4 w-4 sm:h-5 sm:w-5 text-muted-foreground flex-shrink-0" />
+                              <span className="text-sm sm:text-base font-bold">Public Internet</span>
                             </div>
                             {server.public_domain ? (
                               server.minecraft?.online ? (
-                                <Badge className="bg-green-500 hover:bg-green-600 text-sm font-bold px-3 py-1">✓ RUNNING</Badge>
+                                <Badge className="bg-green-500 hover:bg-green-600 text-xs sm:text-sm font-bold px-2 sm:px-3 py-0.5 sm:py-1">✓ RUNNING</Badge>
                               ) : (
-                                <Badge variant="destructive" className="text-sm font-bold px-3 py-1">✗ STOPPED</Badge>
+                                <Badge variant="destructive" className="text-xs sm:text-sm font-bold px-2 sm:px-3 py-0.5 sm:py-1">✗ STOPPED</Badge>
                               )
                             ) : (
-                              <Badge variant="outline" className="text-sm font-bold px-3 py-1">Not configured</Badge>
+                              <Badge variant="outline" className="text-xs sm:text-sm font-bold px-2 sm:px-3 py-0.5 sm:py-1">Not configured</Badge>
                             )}
                           </div>
                           {server.public_domain ? (
                             <>
-                              <div className="flex items-center gap-2 mb-2">
-                                <code className="bg-black/80 text-cyan-400 px-4 py-3 rounded text-lg font-bold flex-1 text-center border-2 border-cyan-500/30">
+                              <div className="flex items-center gap-1 sm:gap-2 mb-2">
+                                <code className="bg-black/80 text-cyan-400 px-2 py-2 sm:px-4 sm:py-3 rounded text-sm sm:text-lg font-bold flex-1 text-center border-2 border-cyan-500/30 break-all">
                                   {server.public_domain}:{server.public_port}
                                 </code>
                                 <Button
                                   variant="ghost"
                                   size="icon"
-                                  className="h-10 w-10"
+                                  className="h-8 w-8 sm:h-10 sm:w-10 flex-shrink-0"
                                   onClick={() => copyToClipboard(`${server.public_domain}:${server.public_port}`)}
                                   title="Copy to clipboard"
                                 >
-                                  <Copy className="h-5 w-5" />
+                                  <Copy className="h-4 w-4 sm:h-5 sm:w-5" />
                                 </Button>
                               </div>
-                              <p className="text-sm font-semibold text-center">For friends anywhere (requires port forwarding)</p>
+                              <p className="text-xs sm:text-sm font-semibold text-center">For friends anywhere (requires port forwarding)</p>
                             </>
                           ) : (
                             <>
-                              <div className="flex items-center gap-2 mb-2">
-                                <code className="bg-muted px-4 py-3 rounded text-base font-semibold flex-1 text-center opacity-50">
+                              <div className="flex items-center gap-1 sm:gap-2 mb-2">
+                                <code className="bg-muted px-2 py-2 sm:px-4 sm:py-3 rounded text-sm sm:text-base font-semibold flex-1 text-center opacity-50">
                                   Not configured
                                 </code>
                               </div>
-                              <p className="text-sm font-semibold text-center">Configure in Network settings</p>
+                              <p className="text-xs sm:text-sm font-semibold text-center">Configure in Network settings</p>
                             </>
                           )}
                         </div>
@@ -763,53 +763,53 @@ export function App() {
 
                       {/* Player Info */}
                       {server.minecraft?.online && server.minecraft.players && (
-                        <div className="mt-3 flex items-center gap-3 text-base">
-                          <Users className="h-5 w-5 text-muted-foreground" />
-                          <span className="font-semibold text-muted-foreground">Players:</span>
-                          <Badge variant="secondary" className="rounded-sm text-sm font-bold px-3 py-1">
+                        <div className="mt-3 flex flex-wrap items-center gap-2 sm:gap-3 text-sm sm:text-base">
+                          <Users className="h-4 w-4 sm:h-5 sm:w-5 text-muted-foreground" />
+                          <span className="font-semibold text-muted-foreground text-xs sm:text-sm">Players:</span>
+                          <Badge variant="secondary" className="rounded-sm text-xs sm:text-sm font-bold px-2 sm:px-3 py-0.5 sm:py-1">
                             {server.minecraft.players.online}/{server.minecraft.players.max}
                           </Badge>
                           {server.minecraft.description && (
-                            <span className="text-sm text-muted-foreground ml-2 font-medium">
+                            <span className="text-xs sm:text-sm text-muted-foreground font-medium">
                               · {server.minecraft.description}
                             </span>
                           )}
                         </div>
                       )}
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 w-full sm:w-auto">
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="rounded-sm h-9 w-9"
+                        className="rounded-sm h-10 w-10 sm:h-9 sm:w-9 flex-1 sm:flex-none"
                         onClick={() => handleServerAction(server.name, "start")}
                         title="Start"
                       >
-                        <Play className="h-4 w-4" />
+                        <Play className="h-5 w-5 sm:h-4 sm:w-4" />
                       </Button>
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="rounded-sm h-9 w-9"
+                        className="rounded-sm h-10 w-10 sm:h-9 sm:w-9 flex-1 sm:flex-none"
                         onClick={() => handleServerAction(server.name, "stop")}
                         title="Stop"
                       >
-                        <Square className="h-4 w-4" />
+                        <Square className="h-5 w-5 sm:h-4 sm:w-4" />
                       </Button>
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="rounded-sm h-9 w-9"
+                        className="rounded-sm h-10 w-10 sm:h-9 sm:w-9 flex-1 sm:flex-none"
                         onClick={() => handleServerAction(server.name, "restart")}
                         title="Restart"
                       >
-                        <RotateCw className="h-4 w-4" />
+                        <RotateCw className="h-5 w-5 sm:h-4 sm:w-4" />
                       </Button>
                     </div>
                   </div>
                 </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                <CardContent className="p-4 sm:p-6">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 sm:gap-3">
                     {/* Version Management */}
                     <Dialog>
                       <DialogTrigger asChild>
@@ -1009,7 +1009,7 @@ export function App() {
                           Server Settings
                         </Button>
                       </DialogTrigger>
-                      <DialogContent className="rounded-sm max-w-3xl max-h-[85vh] overflow-y-auto">
+                      <DialogContent className="rounded-sm max-w-[95vw] sm:max-w-3xl max-h-[90vh] overflow-y-auto">
                         <DialogHeader>
                           <DialogTitle>⚙️ Server Configuration</DialogTitle>
                           <DialogDescription>
@@ -1535,11 +1535,11 @@ export function App() {
         {/* Console Log Panel */}
         {servers.length > 0 && (
           <Card className="rounded-sm border-amber-500/20">
-            <CardHeader className="pb-3">
+            <CardHeader className="pb-2 sm:pb-3 p-3 sm:p-6">
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Terminal className="h-4 w-4 text-amber-500" />
-                  <CardTitle className="text-base">Server Console</CardTitle>
+                <div className="flex items-center gap-1.5 sm:gap-2">
+                  <Terminal className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-amber-500 flex-shrink-0" />
+                  <CardTitle className="text-sm sm:text-base">Server Console</CardTitle>
                   {isLoadingLogs && (
                     <RefreshCw className="h-3 w-3 animate-spin text-muted-foreground" />
                   )}
@@ -1551,29 +1551,29 @@ export function App() {
                   className="h-6 w-6 p-0"
                 >
                   {showLogs ? (
-                    <ChevronUp className="h-4 w-4" />
+                    <ChevronUp className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
                   ) : (
-                    <ChevronDown className="h-4 w-4" />
+                    <ChevronDown className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
                   )}
                 </Button>
               </div>
             </CardHeader>
             {showLogs && (
-              <CardContent className="pt-0">
-                <div className="bg-black/90 rounded p-3 font-mono text-xs text-green-400 h-24 overflow-y-auto border border-green-500/20">
+              <CardContent className="pt-0 p-3 sm:p-6 sm:pt-0">
+                <div className="bg-black/90 rounded p-2 sm:p-3 font-mono text-[10px] sm:text-xs text-green-400 h-20 sm:h-24 overflow-y-auto border border-green-500/20">
                   {logs ? (
-                    <pre className="whitespace-pre-wrap">{logs}</pre>
+                    <pre className="whitespace-pre-wrap break-words">{logs}</pre>
                   ) : (
                     <span className="text-muted-foreground italic">No logs available...</span>
                   )}
                 </div>
-                <div className="flex items-center justify-between mt-2 text-xs text-muted-foreground">
-                  <span>Auto-refreshes every 5 seconds • Showing recent logs</span>
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mt-2 gap-2 text-[10px] sm:text-xs text-muted-foreground">
+                  <span className="leading-tight">Auto-refreshes every 5 seconds</span>
                   <Button
                     variant="ghost"
                     size="sm"
                     onClick={() => fetchLogs()}
-                    className="h-6 text-xs"
+                    className="h-6 text-[10px] sm:text-xs px-2"
                   >
                     <RefreshCw className="h-3 w-3 mr-1" />
                     Refresh Now
