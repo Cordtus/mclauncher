@@ -18,7 +18,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
       - name: Install dependencies
         run: npm install
@@ -47,14 +46,14 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             echo "Checking service status..."
-            lxc exec mc-manager -- systemctl is-active mc-manager
-            lxc exec mc-server-1 -- systemctl is-active mc-agent
+            lxc exec nodev2:mc-manager -- systemctl is-active mc-manager
+            lxc exec nodev2:mc-server-1 -- systemctl is-active mc-agent
             echo "Deployment successful!"
 
       - name: Notification
         if: always()
         run: |
-          if [ ${{ job.status }} == 'success' ]; then
+          if [ "${{ job.status }}" == "success" ]; then
             echo "✅ Deployment successful!"
           else
             echo "❌ Deployment failed!"

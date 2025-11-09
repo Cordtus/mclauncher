@@ -429,6 +429,215 @@ app.post("/settings/operators/remove", async (req, res) => {
 });
 
 // ============================================================================
+// Ban Management
+// ============================================================================
+
+/**
+ * Get all bans (players and IPs)
+ */
+app.get("/settings/bans", async (_req, res) => {
+  try {
+    const bannedPlayersPath = path.join(MC_DIR, "banned-players.json");
+    const bannedIpsPath = path.join(MC_DIR, "banned-ips.json");
+
+    const bannedPlayers = readJsonArray<{
+      uuid: string;
+      name: string;
+      created: string;
+      source: string;
+      expires: string;
+      reason: string;
+    }>(bannedPlayersPath);
+
+    const bannedIps = readJsonArray<{
+      ip: string;
+      created: string;
+      source: string;
+      expires: string;
+      reason: string;
+    }>(bannedIpsPath);
+
+    res.json({
+      players: bannedPlayers,
+      ips: bannedIps
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Ban a player
+ */
+app.post("/settings/bans/player/add", async (req, res) => {
+  try {
+    const { username, reason = "Banned by an operator" } = req.body;
+
+    if (!username || typeof username !== 'string') {
+      return res.status(400).json({ error: "Missing username" });
+    }
+
+    // Resolve UUID
+    const profile = await resolveUsername(username);
+    const uuid = profile.uuid;
+
+    const bannedPlayersPath = path.join(MC_DIR, "banned-players.json");
+    const bannedPlayers = readJsonArray<{
+      uuid: string;
+      name: string;
+      created: string;
+      source: string;
+      expires: string;
+      reason: string;
+    }>(bannedPlayersPath);
+
+    // Check if already banned
+    const existing = bannedPlayers.find(p => p.uuid === uuid);
+    if (existing) {
+      return res.status(400).json({ error: `Player ${username} is already banned` });
+    }
+
+    // Add ban
+    bannedPlayers.push({
+      uuid,
+      name: profile.name,
+      created: new Date().toISOString(),
+      source: "Server",
+      expires: "forever",
+      reason
+    });
+
+    writeJsonArray(bannedPlayersPath, bannedPlayers);
+    sh("chown", ["mc:mc", bannedPlayersPath]);
+
+    res.json({ success: true, message: `Player ${username} has been banned` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Pardon (unban) a player
+ */
+app.post("/settings/bans/player/remove", async (req, res) => {
+  try {
+    const { username } = req.body;
+
+    if (!username || typeof username !== 'string') {
+      return res.status(400).json({ error: "Missing username" });
+    }
+
+    const bannedPlayersPath = path.join(MC_DIR, "banned-players.json");
+    const bannedPlayers = readJsonArray<{
+      uuid: string;
+      name: string;
+      created: string;
+      source: string;
+      expires: string;
+      reason: string;
+    }>(bannedPlayersPath);
+
+    const filtered = bannedPlayers.filter(p => p.name.toLowerCase() !== username.toLowerCase());
+
+    if (filtered.length === bannedPlayers.length) {
+      return res.status(404).json({ error: "Player not found in ban list" });
+    }
+
+    writeJsonArray(bannedPlayersPath, filtered);
+    sh("chown", ["mc:mc", bannedPlayersPath]);
+
+    res.json({ success: true, message: `Player ${username} has been pardoned` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Ban an IP address
+ */
+app.post("/settings/bans/ip/add", async (req, res) => {
+  try {
+    const { ip, reason = "Banned by an operator" } = req.body;
+
+    if (!ip || typeof ip !== 'string') {
+      return res.status(400).json({ error: "Missing IP address" });
+    }
+
+    // Basic IP validation
+    const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
+    if (!ipRegex.test(ip)) {
+      return res.status(400).json({ error: "Invalid IP address format" });
+    }
+
+    const bannedIpsPath = path.join(MC_DIR, "banned-ips.json");
+    const bannedIps = readJsonArray<{
+      ip: string;
+      created: string;
+      source: string;
+      expires: string;
+      reason: string;
+    }>(bannedIpsPath);
+
+    // Check if already banned
+    const existing = bannedIps.find(b => b.ip === ip);
+    if (existing) {
+      return res.status(400).json({ error: `IP ${ip} is already banned` });
+    }
+
+    // Add ban
+    bannedIps.push({
+      ip,
+      created: new Date().toISOString(),
+      source: "Server",
+      expires: "forever",
+      reason
+    });
+
+    writeJsonArray(bannedIpsPath, bannedIps);
+    sh("chown", ["mc:mc", bannedIpsPath]);
+
+    res.json({ success: true, message: `IP ${ip} has been banned` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Pardon (unban) an IP address
+ */
+app.post("/settings/bans/ip/remove", async (req, res) => {
+  try {
+    const { ip } = req.body;
+
+    if (!ip || typeof ip !== 'string') {
+      return res.status(400).json({ error: "Missing IP address" });
+    }
+
+    const bannedIpsPath = path.join(MC_DIR, "banned-ips.json");
+    const bannedIps = readJsonArray<{
+      ip: string;
+      created: string;
+      source: string;
+      expires: string;
+      reason: string;
+    }>(bannedIpsPath);
+
+    const filtered = bannedIps.filter(b => b.ip !== ip);
+
+    if (filtered.length === bannedIps.length) {
+      return res.status(404).json({ error: "IP not found in ban list" });
+    }
+
+    writeJsonArray(bannedIpsPath, filtered);
+    sh("chown", ["mc:mc", bannedIpsPath]);
+
+    res.json({ success: true, message: `IP ${ip} has been pardoned` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
 // File Uploads
 // ============================================================================
 
@@ -897,6 +1106,183 @@ app.post("/command", (req, res) => {
   ]);
 
   res.type("text/plain").send(result.stdout + "\n" + result.stderr);
+});
+
+// Get TPS (Paper/Spigot servers)
+app.get("/tps", (req, res) => {
+  try {
+    // Read RCON password from server.properties
+    const propsPath = path.join(MC_DIR, "server.properties");
+    if (!fs.existsSync(propsPath)) {
+      return res.status(500).json({ error: "server.properties not found" });
+    }
+
+    const props = parseProperties(propsPath);
+    const rconPassword = props["rcon.password"];
+
+    if (!rconPassword) {
+      return res.status(500).json({ error: "RCON not configured in server.properties" });
+    }
+
+    //Execute TPS command via RCON
+    const result = shSafe("mcrcon", [
+      "-P",
+      String(RCON_PORT),
+      "-p",
+      rconPassword,
+      "tps",
+    ]);
+
+    if (result.code !== 0) {
+      // Try forge tps command if regular tps fails
+      const forgeResult = shSafe("mcrcon", [
+        "-P",
+        String(RCON_PORT),
+        "-p",
+        rconPassword,
+        "forge tps",
+      ]);
+
+      if (forgeResult.code !== 0) {
+        return res.status(500).json({
+          error: "Failed to get TPS data",
+          output: result.stdout + result.stderr
+        });
+      }
+
+      return res.json({
+        raw: forgeResult.stdout,
+        tps: parseTpsOutput(forgeResult.stdout)
+      });
+    }
+
+    res.json({
+      raw: result.stdout,
+      tps: parseTpsOutput(result.stdout)
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Parse TPS output from Paper/Spigot/Forge
+function parseTpsOutput(output: string): number | null {
+  // Paper/Spigot format: "TPS from last 1m, 5m, 15m: 20.0, 20.0, 20.0"
+  // Forge format: "Dim  0 (minecraft:overworld) : Mean tick time: 0.123 ms. Mean TPS: 20.0"
+
+  const paperMatch = output.match(/TPS.*?(\d+\.\d+)/i);
+  if (paperMatch) {
+    return parseFloat(paperMatch[1]);
+  }
+
+  const forgeMatch = output.match(/Mean TPS:\s*(\d+\.\d+)/i);
+  if (forgeMatch) {
+    return parseFloat(forgeMatch[1]);
+  }
+
+  return null;
+}
+
+// Get current JVM settings
+app.get("/jvm/settings", (_req, res) => {
+  try {
+    const serviceFile = "/etc/systemd/system/minecraft.service";
+    if (!fs.existsSync(serviceFile)) {
+      return res.status(500).json({ error: "Minecraft service file not found" });
+    }
+
+    const serviceContent = fs.readFileSync(serviceFile, "utf8");
+    const execStartMatch = serviceContent.match(/ExecStart=([^\n]+)/);
+
+    if (!execStartMatch) {
+      return res.status(500).json({ error: "Could not parse ExecStart from service file" });
+    }
+
+    const execStart = execStartMatch[1];
+
+    // Parse JVM flags
+    const xmsMatch = execStart.match(/-Xms(\d+)([MG])/);
+    const xmxMatch = execStart.match(/-Xmx(\d+)([MG])/);
+    const g1gcMatch = execStart.includes("-XX:+UseG1GC");
+    const zgcMatch = execStart.includes("-XX:+UseZGC");
+
+    // Extract custom flags (everything between java and -jar)
+    const customFlagsMatch = execStart.match(/java\s+(.*?)\s+-jar/);
+    const allFlags = customFlagsMatch ? customFlagsMatch[1] : "";
+
+    // Remove known flags to get custom ones
+    let customFlags = allFlags
+      .replace(/-Xms\d+[MG]/, "")
+      .replace(/-Xmx\d+[MG]/, "")
+      .replace(/-XX:\+UseG1GC/, "")
+      .replace(/-XX:\+UseZGC/, "")
+      .trim();
+
+    res.json({
+      xms: xmsMatch ? parseInt(xmsMatch[1]) : 512,
+      xmsUnit: xmsMatch ? xmsMatch[2] : "M",
+      xmx: xmxMatch ? parseInt(xmxMatch[1]) : 2048,
+      xmxUnit: xmxMatch ? xmxMatch[2] : "M",
+      gc: zgcMatch ? "zgc" : g1gcMatch ? "g1gc" : "default",
+      customFlags: customFlags || ""
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update JVM settings
+app.post("/jvm/settings", (req, res) => {
+  try {
+    const { xms, xmsUnit, xmx, xmxUnit, gc, customFlags } = req.body;
+
+    if (!xms || !xmx) {
+      return res.status(400).json({ error: "Missing xms or xmx" });
+    }
+
+    const serviceFile = "/etc/systemd/system/minecraft.service";
+    if (!fs.existsSync(serviceFile)) {
+      return res.status(500).json({ error: "Minecraft service file not found" });
+    }
+
+    let serviceContent = fs.readFileSync(serviceFile, "utf8");
+
+    // Build new JVM flags
+    let jvmFlags = `-Xms${xms}${xmsUnit || 'M'} -Xmx${xmx}${xmxUnit || 'M'}`;
+
+    // Add garbage collector
+    if (gc === "g1gc") {
+      jvmFlags += " -XX:+UseG1GC";
+    } else if (gc === "zgc") {
+      jvmFlags += " -XX:+UseZGC";
+    }
+
+    // Add custom flags
+    if (customFlags && customFlags.trim()) {
+      jvmFlags += " " + customFlags.trim();
+    }
+
+    // Replace ExecStart line
+    const newExecStart = `/usr/bin/java ${jvmFlags} -jar server.jar nogui`;
+    serviceContent = serviceContent.replace(
+      /ExecStart=.*/,
+      `ExecStart=${newExecStart}`
+    );
+
+    // Write updated service file
+    fs.writeFileSync(serviceFile, serviceContent);
+
+    // Reload systemd and restart service
+    sh("systemctl", ["daemon-reload"]);
+    sh("systemctl", ["restart", "minecraft"]);
+
+    res.json({
+      success: true,
+      message: "JVM settings updated and server restarted"
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Create backup

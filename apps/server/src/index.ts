@@ -142,6 +142,7 @@ app.get("/api/servers", async (_req, res) => {
         // Connection info
         local_ip: localIp,
         local_port: localPort,
+        host_ip: server.host_ip || null,
         public_port: server.public_port,
         public_domain: server.public_domain || null,
 
@@ -163,6 +164,7 @@ app.get("/api/servers", async (_req, res) => {
         // Connection info
         local_ip: localIp,
         local_port: localPort,
+        host_ip: server.host_ip || null,
         public_port: server.public_port,
         public_domain: server.public_domain || null,
 
@@ -311,6 +313,58 @@ app.get("/api/servers/:name/logs", async (req, res) => {
     res.type("text/plain").send(text);
   } catch (err: any) {
     res.status(500).send(err.message);
+  }
+});
+
+// Get TPS
+app.get("/api/servers/:name/tps", async (req, res) => {
+  const { name } = req.params;
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).send("Server not found");
+
+  try {
+    const response = await proxyToAgent(server.agent_url, "/tps");
+    const data = await response.json();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get JVM settings
+app.get("/api/servers/:name/jvm/settings", async (req, res) => {
+  const { name } = req.params;
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).send("Server not found");
+
+  try {
+    const response = await proxyToAgent(server.agent_url, "/jvm/settings");
+    const data = await response.json();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update JVM settings
+app.post("/api/servers/:name/jvm/settings", requireAdmin, async (req, res) => {
+  const { name } = req.params;
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).send("Server not found");
+
+  try {
+    const response = await proxyToAgent(server.agent_url, "/jvm/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
+    const data = await response.json();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -505,6 +559,106 @@ app.post("/api/servers/:name/settings/operators/remove", requireAdmin, async (re
 
   try {
     const response = await proxyToAgent(server.agent_url, "/settings/operators/remove", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
+    const data = await response.json();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
+// BAN MANAGEMENT ENDPOINTS
+// ============================================================================
+
+// Get all bans
+app.get("/api/servers/:name/settings/bans", async (req, res) => {
+  const { name } = req.params;
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).send("Server not found");
+
+  try {
+    const response = await proxyToAgent(server.agent_url, "/settings/bans");
+    const data = await response.json();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Ban a player
+app.post("/api/servers/:name/settings/bans/player/add", requireAdmin, async (req, res) => {
+  const { name } = req.params;
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).send("Server not found");
+
+  try {
+    const response = await proxyToAgent(server.agent_url, "/settings/bans/player/add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
+    const data = await response.json();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Pardon a player
+app.post("/api/servers/:name/settings/bans/player/remove", requireAdmin, async (req, res) => {
+  const { name } = req.params;
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).send("Server not found");
+
+  try {
+    const response = await proxyToAgent(server.agent_url, "/settings/bans/player/remove", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
+    const data = await response.json();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Ban an IP
+app.post("/api/servers/:name/settings/bans/ip/add", requireAdmin, async (req, res) => {
+  const { name } = req.params;
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).send("Server not found");
+
+  try {
+    const response = await proxyToAgent(server.agent_url, "/settings/bans/ip/add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
+    const data = await response.json();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Pardon an IP
+app.post("/api/servers/:name/settings/bans/ip/remove", requireAdmin, async (req, res) => {
+  const { name } = req.params;
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).send("Server not found");
+
+  try {
+    const response = await proxyToAgent(server.agent_url, "/settings/bans/ip/remove", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req.body),
