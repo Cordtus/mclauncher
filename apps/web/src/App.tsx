@@ -280,6 +280,14 @@ export function App() {
     toast.success('Tour completed! You can restart it anytime from the Help menu.');
   };
 
+  // Check for first visit and auto-start tour
+  useEffect(() => {
+    const hasSeenTour = localStorage.getItem('mc-tour-completed');
+    if (!hasSeenTour && servers.length > 0) {
+      setTimeout(() => startTour(), 1000);
+    }
+  }, [servers]);
+
   // Save settings to localStorage whenever they change
   useEffect(() => {
     localStorage.setItem('mc-server-settings', JSON.stringify(serverSettings));
