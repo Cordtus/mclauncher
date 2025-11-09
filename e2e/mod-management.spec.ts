@@ -6,7 +6,7 @@ test.describe('Mod Management', () => {
     await page.goto('/');
 
     // Wait for the page to load
-    await page.waitForSelector('text=MC LXD Manager');
+    await page.waitForSelector('text=Minecraft Server Control', { timeout: 10000 });
   });
 
   test('should display mods tab for modded servers', async ({ page }) => {
