@@ -639,6 +639,34 @@ export function App() {
 
         <Separator />
 
+        {/* Quick Start Guide */}
+        {servers.length > 0 && (
+          <Card className="rounded-sm border-2 border-blue-500/50 bg-blue-500/5">
+            <CardHeader className="p-4 sm:p-6 pb-3">
+              <CardTitle className="text-base sm:text-lg flex items-center gap-2">
+                <Info className="h-5 w-5 text-blue-500" />
+                Quick Start: How to Join Your Server
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-4 sm:p-6 pt-0">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+                <div className="bg-background/50 p-3 rounded-lg border">
+                  <div className="font-bold text-blue-500 mb-2">1. Start Server</div>
+                  <p className="text-xs text-muted-foreground">Click the Play button (▶) below to start your Minecraft server. Wait for status to show "RUNNING".</p>
+                </div>
+                <div className="bg-background/50 p-3 rounded-lg border">
+                  <div className="font-bold text-blue-500 mb-2">2. Copy Address</div>
+                  <p className="text-xs text-muted-foreground">Use "Local Network" for same WiFi, or "Public Internet" for online friends. Click copy button to copy address.</p>
+                </div>
+                <div className="bg-background/50 p-3 rounded-lg border">
+                  <div className="font-bold text-blue-500 mb-2">3. Add in Minecraft</div>
+                  <p className="text-xs text-muted-foreground">In Minecraft: Multiplayer → Add Server → Paste the address → Join!</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Message Banner */}
         {message && (
           <Card className="rounded-sm border-l-4 border-l-primary">
@@ -706,11 +734,16 @@ export function App() {
                               <Copy className="h-4 w-4 sm:h-5 sm:w-5" />
                             </Button>
                           </div>
-                          <p className="text-xs sm:text-sm font-semibold text-center">
-                            {server.host_ip
-                              ? "For players on the same WiFi"
-                              : "⚠️ Set Host IP in Network settings"}
-                          </p>
+                          {server.host_ip ? (
+                            <p className="text-xs sm:text-sm text-center">
+                              <span className="font-semibold text-green-600">✓ Ready!</span>{" "}
+                              <span className="text-muted-foreground">Players on your WiFi network can connect</span>
+                            </p>
+                          ) : (
+                            <p className="text-xs sm:text-sm text-center text-amber-600 font-semibold">
+                              ⚠️ Configure Host IP in Server Settings → Network tab
+                            </p>
+                          )}
                         </div>
 
                         {/* Public Connection */}
@@ -746,7 +779,10 @@ export function App() {
                                   <Copy className="h-4 w-4 sm:h-5 sm:w-5" />
                                 </Button>
                               </div>
-                              <p className="text-xs sm:text-sm font-semibold text-center">For friends anywhere (requires port forwarding)</p>
+                              <p className="text-xs sm:text-sm text-center">
+                                <span className="font-semibold text-cyan-600">✓ Ready!</span>{" "}
+                                <span className="text-muted-foreground">Anyone can connect from anywhere</span>
+                              </p>
                             </>
                           ) : (
                             <>
@@ -755,7 +791,9 @@ export function App() {
                                   Not configured
                                 </code>
                               </div>
-                              <p className="text-xs sm:text-sm font-semibold text-center">Configure in Network settings</p>
+                              <p className="text-xs sm:text-sm text-center text-muted-foreground">
+                                Optional: Configure domain in Server Settings → Network tab
+                              </p>
                             </>
                           )}
                         </div>

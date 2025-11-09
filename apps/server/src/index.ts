@@ -142,6 +142,7 @@ app.get("/api/servers", async (_req, res) => {
         // Connection info
         local_ip: localIp,
         local_port: localPort,
+        host_ip: server.host_ip || null,
         public_port: server.public_port,
         public_domain: server.public_domain || null,
 
@@ -163,6 +164,7 @@ app.get("/api/servers", async (_req, res) => {
         // Connection info
         local_ip: localIp,
         local_port: localPort,
+        host_ip: server.host_ip || null,
         public_port: server.public_port,
         public_domain: server.public_domain || null,
 
