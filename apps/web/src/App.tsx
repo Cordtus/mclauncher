@@ -213,7 +213,7 @@ export function App() {
     {
       target: "[data-tour='connection-local']",
       title: "Local Network Connection",
-      content: "This shows the address players on your WiFi network should use to connect. Configure the Host IP in Server Settings to enable local connections.",
+      content: "This shows the address players on your local WiFi network should use to connect. Configure the Host IP in Server Settings to enable local connections.",
     },
     {
       target: "[data-tour='connection-public']",
@@ -887,7 +887,7 @@ export function App() {
                       </div>
                       <div>
                         <h3 className="font-semibold mb-1">Local Network</h3>
-                        <p className="text-muted-foreground text-xs">Shows status for players on the same WiFi network. Set Host IP in Network settings first.</p>
+                        <p className="text-muted-foreground text-xs">Shows status for players on your local WiFi network. Set Host IP in Network settings first.</p>
                       </div>
                       <div>
                         <h3 className="font-semibold mb-1">Public Internet</h3>
@@ -1039,13 +1039,12 @@ export function App() {
                               onClick={() => copyToClipboard(`${server.host_ip || server.local_ip}:${server.public_port}`)}
                               title="Copy to clipboard"
                             >
-                              <Copy className="h-4 w-4 sm:h-5 sm:w-5" />
+                             <Copy className="h-4 w-4 sm:h-5 sm:w-5" />
                             </Button>
                           </div>
                           {server.host_ip ? (
                             <p className="text-xs sm:text-sm text-center">
                               <span className="font-semibold text-green-600">✓ Ready!</span>{" "}
-                              <span className="text-muted-foreground">Players on your WiFi network can connect</span>
                             </p>
                           ) : (
                             <p className="text-xs sm:text-sm text-center text-amber-600 font-semibold">
@@ -1089,7 +1088,6 @@ export function App() {
                               </div>
                               <p className="text-xs sm:text-sm text-center">
                                 <span className="font-semibold text-cyan-600">✓ Ready!</span>{" "}
-                                <span className="text-muted-foreground">Anyone can connect from anywhere</span>
                               </p>
                             </>
                           ) : (
