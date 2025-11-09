@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import {
   Play,
   Square,
@@ -126,6 +126,7 @@ export function App() {
   const [tourActive, setTourActive] = useState(false);
   const [tourStep, setTourStep] = useState(0);
   const [tourElementRect, setTourElementRect] = useState<DOMRect | null>(null);
+  const hasAutoStartedTour = useRef(false);
 
   // Version management state
   const [versionType, setVersionType] = useState<"paper" | "vanilla">("paper");
@@ -281,13 +282,14 @@ export function App() {
     toast.success('Tour completed! You can restart it anytime from the Help menu.');
   };
 
-  // Check for first visit and auto-start tour
+  // Check for first visit and auto-start tour (only once)
   useEffect(() => {
     const hasSeenTour = localStorage.getItem('mc-tour-completed');
-    if (!hasSeenTour && servers.length > 0) {
+    if (!hasSeenTour && servers.length > 0 && !hasAutoStartedTour.current) {
+      hasAutoStartedTour.current = true;
       setTimeout(() => startTour(), 1000);
     }
-  }, [servers]);
+  }, [servers.length]); // Only depends on servers.length changing
 
   // Update tour element position when tour step changes
   useEffect(() => {
