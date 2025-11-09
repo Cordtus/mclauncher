@@ -1,0 +1,61 @@
+name: Deploy to LXD Containers
+
+on:
+  push:
+    branches:
+      - feature/advanced-mod-management
+
+jobs:
+  deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build applications
+        run: npm run build
+
+      - name: Deploy to LXD host
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd ~/repos/mclauncher
+            git pull origin feature/advanced-mod-management
+            npm install
+            npm run build
+            sudo ./deploy-updates.sh
+
+      - name: Verify deployment
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            echo "Checking service status..."
+            lxc exec mc-manager -- systemctl is-active mc-manager
+            lxc exec mc-server-1 -- systemctl is-active mc-agent
+            echo "Deployment successful!"
+
+      - name: Notification
+        if: always()
+        run: |
+          if [ ${{ job.status }} == 'success' ]; then
+            echo "✅ Deployment successful!"
+          else
+            echo "❌ Deployment failed!"
+          fi
