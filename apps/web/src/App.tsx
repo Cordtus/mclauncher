@@ -172,6 +172,14 @@ export function App() {
       // Operators
       operators: [] as string[],
       newOperator: "",
+
+      // Bans
+      bannedPlayers: [] as Array<{uuid: string; name: string; reason: string; created: string}>,
+      bannedIps: [] as Array<{ip: string; reason: string; created: string}>,
+      newBanPlayer: "",
+      newBanPlayerReason: "",
+      newBanIp: "",
+      newBanIpReason: "",
     };
   });
 
@@ -316,6 +324,142 @@ export function App() {
       toast.error(err.message || 'Failed to save settings');
     } finally {
       setIsSavingSettings(false);
+    }
+  };
+
+  // Fetch bans when settings dialog opens
+  const fetchBans = async (serverName: string) => {
+    try {
+      const response = await fetch(`/api/servers/${serverName}/settings/bans`);
+      if (!response.ok) throw new Error('Failed to fetch bans');
+      const data = await response.json();
+      setServerSettings({
+        ...serverSettings,
+        bannedPlayers: data.players || [],
+        bannedIps: data.ips || []
+      });
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to fetch bans');
+    }
+  };
+
+  // Ban a player
+  const banPlayer = async (serverName: string) => {
+    if (!serverSettings.newBanPlayer.trim()) return;
+
+    try {
+      const response = await fetch(`/api/servers/${serverName}/settings/bans/player/add`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders()
+        },
+        body: JSON.stringify({
+          username: serverSettings.newBanPlayer.trim(),
+          reason: serverSettings.newBanPlayerReason.trim() || 'Banned by an operator'
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: response.statusText }));
+        throw new Error(errorData.error || 'Failed to ban player');
+      }
+
+      const data = await response.json();
+      toast.success(data.message || 'Player banned successfully');
+      setServerSettings({
+        ...serverSettings,
+        newBanPlayer: '',
+        newBanPlayerReason: ''
+      });
+      await fetchBans(serverName);
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to ban player');
+    }
+  };
+
+  // Pardon a player
+  const pardonPlayer = async (serverName: string, username: string) => {
+    try {
+      const response = await fetch(`/api/servers/${serverName}/settings/bans/player/remove`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders()
+        },
+        body: JSON.stringify({ username })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: response.statusText }));
+        throw new Error(errorData.error || 'Failed to pardon player');
+      }
+
+      const data = await response.json();
+      toast.success(data.message || 'Player pardoned successfully');
+      await fetchBans(serverName);
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to pardon player');
+    }
+  };
+
+  // Ban an IP
+  const banIp = async (serverName: string) => {
+    if (!serverSettings.newBanIp.trim()) return;
+
+    try {
+      const response = await fetch(`/api/servers/${serverName}/settings/bans/ip/add`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders()
+        },
+        body: JSON.stringify({
+          ip: serverSettings.newBanIp.trim(),
+          reason: serverSettings.newBanIpReason.trim() || 'Banned by an operator'
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: response.statusText }));
+        throw new Error(errorData.error || 'Failed to ban IP');
+      }
+
+      const data = await response.json();
+      toast.success(data.message || 'IP banned successfully');
+      setServerSettings({
+        ...serverSettings,
+        newBanIp: '',
+        newBanIpReason: ''
+      });
+      await fetchBans(serverName);
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to ban IP');
+    }
+  };
+
+  // Pardon an IP
+  const pardonIp = async (serverName: string, ip: string) => {
+    try {
+      const response = await fetch(`/api/servers/${serverName}/settings/bans/ip/remove`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders()
+        },
+        body: JSON.stringify({ ip })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: response.statusText }));
+        throw new Error(errorData.error || 'Failed to pardon IP');
+      }
+
+      const data = await response.json();
+      toast.success(data.message || 'IP pardoned successfully');
+      await fetchBans(serverName);
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to pardon IP');
     }
   };
 
@@ -1037,7 +1181,10 @@ export function App() {
                     </Tooltip>
 
                     {/* Server Settings */}
-                    <Dialog open={serverSettingsDialog} onOpenChange={setServerSettingsDialog}>
+                    <Dialog open={serverSettingsDialog} onOpenChange={(open) => {
+                      setServerSettingsDialog(open);
+                      if (open) fetchBans(server.name);
+                    }}>
                       <DialogTrigger asChild>
                         <Button
                           variant="outline"
@@ -1056,13 +1203,14 @@ export function App() {
                         </DialogHeader>
 
                         <Tabs defaultValue="properties" className="w-full">
-                          <TabsList className={`grid w-full ${['forge', 'neoforge', 'fabric'].includes(server.edition.toLowerCase()) ? 'grid-cols-7' : 'grid-cols-6'}`}>
+                          <TabsList className={`grid w-full ${['forge', 'neoforge', 'fabric'].includes(server.edition.toLowerCase()) ? 'grid-cols-8' : 'grid-cols-7'}`}>
                             <TabsTrigger value="network">Network</TabsTrigger>
                             <TabsTrigger value="properties">Properties</TabsTrigger>
                             <TabsTrigger value="gameplay">Gameplay</TabsTrigger>
                             <TabsTrigger value="security">Security</TabsTrigger>
                             <TabsTrigger value="plugins">Plugins</TabsTrigger>
                             <TabsTrigger value="admins">Admins</TabsTrigger>
+                            <TabsTrigger value="bans">Bans</TabsTrigger>
                             {['forge', 'neoforge', 'fabric'].includes(server.edition.toLowerCase()) && (
                               <TabsTrigger value="mods">Mods</TabsTrigger>
                             )}
@@ -1505,6 +1653,143 @@ export function App() {
                                           }}
                                         >
                                           Remove
+                                        </Button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </TabsContent>
+
+                          {/* Bans Tab */}
+                          <TabsContent value="bans" className="space-y-4">
+                            <div className="space-y-4">
+                              {/* Player Bans */}
+                              <div>
+                                <Label>Ban Players</Label>
+                                <p className="text-xs text-muted-foreground mb-2">
+                                  Ban players by username to prevent them from joining
+                                </p>
+                                <div className="space-y-2">
+                                  <Input
+                                    placeholder="Minecraft username"
+                                    value={serverSettings.newBanPlayer}
+                                    onChange={(e) => setServerSettings({...serverSettings, newBanPlayer: e.target.value})}
+                                    className="rounded-sm"
+                                  />
+                                  <Input
+                                    placeholder="Reason (optional)"
+                                    value={serverSettings.newBanPlayerReason}
+                                    onChange={(e) => setServerSettings({...serverSettings, newBanPlayerReason: e.target.value})}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter' && serverSettings.newBanPlayer.trim()) {
+                                        banPlayer(server.name);
+                                      }
+                                    }}
+                                    className="rounded-sm"
+                                  />
+                                  <Button
+                                    type="button"
+                                    variant="destructive"
+                                    className="rounded-sm w-full"
+                                    onClick={() => banPlayer(server.name)}
+                                  >
+                                    Ban Player
+                                  </Button>
+                                </div>
+                              </div>
+
+                              {/* Banned Players List */}
+                              {serverSettings.bannedPlayers.length > 0 && (
+                                <div className="space-y-2">
+                                  <Label>Banned Players:</Label>
+                                  <div className="space-y-1">
+                                    {serverSettings.bannedPlayers.map((ban, idx) => (
+                                      <div key={idx} className="flex items-start justify-between p-2 bg-muted rounded-sm">
+                                        <div className="flex flex-col">
+                                          <span className="font-medium">{ban.name}</span>
+                                          {ban.reason && (
+                                            <span className="text-xs text-muted-foreground">Reason: {ban.reason}</span>
+                                          )}
+                                          <span className="text-xs text-muted-foreground">
+                                            Banned: {new Date(ban.created).toLocaleDateString()}
+                                          </span>
+                                        </div>
+                                        <Button
+                                          variant="ghost"
+                                          size="sm"
+                                          className="h-6 px-2"
+                                          onClick={() => pardonPlayer(server.name, ban.name)}
+                                        >
+                                          Pardon
+                                        </Button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              <div className="border-t pt-4 mt-4" />
+
+                              {/* IP Bans */}
+                              <div>
+                                <Label>Ban IP Addresses</Label>
+                                <p className="text-xs text-muted-foreground mb-2">
+                                  Ban IP addresses to block connections from specific networks
+                                </p>
+                                <div className="space-y-2">
+                                  <Input
+                                    placeholder="IP address (e.g., 192.168.1.100)"
+                                    value={serverSettings.newBanIp}
+                                    onChange={(e) => setServerSettings({...serverSettings, newBanIp: e.target.value})}
+                                    className="rounded-sm"
+                                  />
+                                  <Input
+                                    placeholder="Reason (optional)"
+                                    value={serverSettings.newBanIpReason}
+                                    onChange={(e) => setServerSettings({...serverSettings, newBanIpReason: e.target.value})}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter' && serverSettings.newBanIp.trim()) {
+                                        banIp(server.name);
+                                      }
+                                    }}
+                                    className="rounded-sm"
+                                  />
+                                  <Button
+                                    type="button"
+                                    variant="destructive"
+                                    className="rounded-sm w-full"
+                                    onClick={() => banIp(server.name)}
+                                  >
+                                    Ban IP Address
+                                  </Button>
+                                </div>
+                              </div>
+
+                              {/* Banned IPs List */}
+                              {serverSettings.bannedIps.length > 0 && (
+                                <div className="space-y-2">
+                                  <Label>Banned IP Addresses:</Label>
+                                  <div className="space-y-1">
+                                    {serverSettings.bannedIps.map((ban, idx) => (
+                                      <div key={idx} className="flex items-start justify-between p-2 bg-muted rounded-sm">
+                                        <div className="flex flex-col">
+                                          <span className="font-medium font-mono">{ban.ip}</span>
+                                          {ban.reason && (
+                                            <span className="text-xs text-muted-foreground">Reason: {ban.reason}</span>
+                                          )}
+                                          <span className="text-xs text-muted-foreground">
+                                            Banned: {new Date(ban.created).toLocaleDateString()}
+                                          </span>
+                                        </div>
+                                        <Button
+                                          variant="ghost"
+                                          size="sm"
+                                          className="h-6 px-2"
+                                          onClick={() => pardonIp(server.name, ban.ip)}
+                                        >
+                                          Pardon
                                         </Button>
                                       </div>
                                     ))}

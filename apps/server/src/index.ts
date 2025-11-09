@@ -518,6 +518,106 @@ app.post("/api/servers/:name/settings/operators/remove", requireAdmin, async (re
   }
 });
 
+// ============================================================================
+// BAN MANAGEMENT ENDPOINTS
+// ============================================================================
+
+// Get all bans
+app.get("/api/servers/:name/settings/bans", async (req, res) => {
+  const { name } = req.params;
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).send("Server not found");
+
+  try {
+    const response = await proxyToAgent(server.agent_url, "/settings/bans");
+    const data = await response.json();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Ban a player
+app.post("/api/servers/:name/settings/bans/player/add", requireAdmin, async (req, res) => {
+  const { name } = req.params;
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).send("Server not found");
+
+  try {
+    const response = await proxyToAgent(server.agent_url, "/settings/bans/player/add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
+    const data = await response.json();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Pardon a player
+app.post("/api/servers/:name/settings/bans/player/remove", requireAdmin, async (req, res) => {
+  const { name } = req.params;
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).send("Server not found");
+
+  try {
+    const response = await proxyToAgent(server.agent_url, "/settings/bans/player/remove", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
+    const data = await response.json();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Ban an IP
+app.post("/api/servers/:name/settings/bans/ip/add", requireAdmin, async (req, res) => {
+  const { name } = req.params;
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).send("Server not found");
+
+  try {
+    const response = await proxyToAgent(server.agent_url, "/settings/bans/ip/add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
+    const data = await response.json();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Pardon an IP
+app.post("/api/servers/:name/settings/bans/ip/remove", requireAdmin, async (req, res) => {
+  const { name } = req.params;
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).send("Server not found");
+
+  try {
+    const response = await proxyToAgent(server.agent_url, "/settings/bans/ip/remove", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
+    const data = await response.json();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Proxy file uploads (plugins/mods/worlds)
 async function proxyFileUpload(req: Request, res: Response, endpoint: string) {
   const { name } = req.params;

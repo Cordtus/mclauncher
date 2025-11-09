@@ -429,6 +429,217 @@ app.post("/settings/operators/remove", async (req, res) => {
 });
 
 // ============================================================================
+// Ban Management
+// ============================================================================
+
+/**
+ * Get all bans (players and IPs)
+ */
+app.get("/settings/bans", async (_req, res) => {
+  try {
+    const bannedPlayersPath = path.join(MC_DIR, "banned-players.json");
+    const bannedIpsPath = path.join(MC_DIR, "banned-ips.json");
+
+    const bannedPlayers = readJsonArray<{
+      uuid: string;
+      name: string;
+      created: string;
+      source: string;
+      expires: string;
+      reason: string;
+    }>(bannedPlayersPath);
+
+    const bannedIps = readJsonArray<{
+      ip: string;
+      created: string;
+      source: string;
+      expires: string;
+      reason: string;
+    }>(bannedIpsPath);
+
+    res.json({
+      players: bannedPlayers,
+      ips: bannedIps
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Ban a player
+ */
+app.post("/settings/bans/player/add", async (req, res) => {
+  try {
+    const { username, reason = "Banned by an operator" } = req.body;
+
+    if (!username || typeof username !== 'string') {
+      return res.status(400).json({ error: "Missing username" });
+    }
+
+    // Resolve UUID
+    const uuid = await resolveUuid(username);
+    if (!uuid) {
+      return res.status(404).json({ error: `Player ${username} not found` });
+    }
+
+    const bannedPlayersPath = path.join(MC_DIR, "banned-players.json");
+    const bannedPlayers = readJsonArray<{
+      uuid: string;
+      name: string;
+      created: string;
+      source: string;
+      expires: string;
+      reason: string;
+    }>(bannedPlayersPath);
+
+    // Check if already banned
+    const existing = bannedPlayers.find(p => p.uuid === uuid);
+    if (existing) {
+      return res.status(400).json({ error: `Player ${username} is already banned` });
+    }
+
+    // Add ban
+    bannedPlayers.push({
+      uuid,
+      name: username,
+      created: new Date().toISOString(),
+      source: "Server",
+      expires: "forever",
+      reason
+    });
+
+    writeJsonArray(bannedPlayersPath, bannedPlayers);
+    sh("chown", ["mc:mc", bannedPlayersPath]);
+
+    res.json({ success: true, message: `Player ${username} has been banned` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Pardon (unban) a player
+ */
+app.post("/settings/bans/player/remove", async (req, res) => {
+  try {
+    const { username } = req.body;
+
+    if (!username || typeof username !== 'string') {
+      return res.status(400).json({ error: "Missing username" });
+    }
+
+    const bannedPlayersPath = path.join(MC_DIR, "banned-players.json");
+    const bannedPlayers = readJsonArray<{
+      uuid: string;
+      name: string;
+      created: string;
+      source: string;
+      expires: string;
+      reason: string;
+    }>(bannedPlayersPath);
+
+    const filtered = bannedPlayers.filter(p => p.name.toLowerCase() !== username.toLowerCase());
+
+    if (filtered.length === bannedPlayers.length) {
+      return res.status(404).json({ error: "Player not found in ban list" });
+    }
+
+    writeJsonArray(bannedPlayersPath, filtered);
+    sh("chown", ["mc:mc", bannedPlayersPath]);
+
+    res.json({ success: true, message: `Player ${username} has been pardoned` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Ban an IP address
+ */
+app.post("/settings/bans/ip/add", async (req, res) => {
+  try {
+    const { ip, reason = "Banned by an operator" } = req.body;
+
+    if (!ip || typeof ip !== 'string') {
+      return res.status(400).json({ error: "Missing IP address" });
+    }
+
+    // Basic IP validation
+    const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
+    if (!ipRegex.test(ip)) {
+      return res.status(400).json({ error: "Invalid IP address format" });
+    }
+
+    const bannedIpsPath = path.join(MC_DIR, "banned-ips.json");
+    const bannedIps = readJsonArray<{
+      ip: string;
+      created: string;
+      source: string;
+      expires: string;
+      reason: string;
+    }>(bannedIpsPath);
+
+    // Check if already banned
+    const existing = bannedIps.find(b => b.ip === ip);
+    if (existing) {
+      return res.status(400).json({ error: `IP ${ip} is already banned` });
+    }
+
+    // Add ban
+    bannedIps.push({
+      ip,
+      created: new Date().toISOString(),
+      source: "Server",
+      expires: "forever",
+      reason
+    });
+
+    writeJsonArray(bannedIpsPath, bannedIps);
+    sh("chown", ["mc:mc", bannedIpsPath]);
+
+    res.json({ success: true, message: `IP ${ip} has been banned` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Pardon (unban) an IP address
+ */
+app.post("/settings/bans/ip/remove", async (req, res) => {
+  try {
+    const { ip } = req.body;
+
+    if (!ip || typeof ip !== 'string') {
+      return res.status(400).json({ error: "Missing IP address" });
+    }
+
+    const bannedIpsPath = path.join(MC_DIR, "banned-ips.json");
+    const bannedIps = readJsonArray<{
+      ip: string;
+      created: string;
+      source: string;
+      expires: string;
+      reason: string;
+    }>(bannedIpsPath);
+
+    const filtered = bannedIps.filter(b => b.ip !== ip);
+
+    if (filtered.length === bannedIps.length) {
+      return res.status(404).json({ error: "IP not found in ban list" });
+    }
+
+    writeJsonArray(bannedIpsPath, filtered);
+    sh("chown", ["mc:mc", bannedIpsPath]);
+
+    res.json({ success: true, message: `IP ${ip} has been pardoned` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
 // File Uploads
 // ============================================================================
 
