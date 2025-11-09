@@ -380,6 +380,142 @@ app.post("/api/servers/:name/config", requireAdmin, async (req, res) => {
   }
 });
 
+// ============================================================================
+// Settings Management Routes
+// ============================================================================
+
+// Apply structured server settings
+app.post("/api/servers/:name/settings", requireAdmin, async (req, res) => {
+  const { name } = req.params;
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).send("Server not found");
+
+  try {
+    const response = await proxyToAgent(server.agent_url, "/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
+    const data = await response.json();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get whitelist
+app.get("/api/servers/:name/settings/whitelist", async (req, res) => {
+  const { name } = req.params;
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).send("Server not found");
+
+  try {
+    const response = await proxyToAgent(server.agent_url, "/settings/whitelist");
+    const data = await response.json();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Add to whitelist
+app.post("/api/servers/:name/settings/whitelist/add", requireAdmin, async (req, res) => {
+  const { name } = req.params;
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).send("Server not found");
+
+  try {
+    const response = await proxyToAgent(server.agent_url, "/settings/whitelist/add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
+    const data = await response.json();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Remove from whitelist
+app.post("/api/servers/:name/settings/whitelist/remove", requireAdmin, async (req, res) => {
+  const { name } = req.params;
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).send("Server not found");
+
+  try {
+    const response = await proxyToAgent(server.agent_url, "/settings/whitelist/remove", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
+    const data = await response.json();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get operators
+app.get("/api/servers/:name/settings/operators", async (req, res) => {
+  const { name } = req.params;
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).send("Server not found");
+
+  try {
+    const response = await proxyToAgent(server.agent_url, "/settings/operators");
+    const data = await response.json();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Add operator
+app.post("/api/servers/:name/settings/operators/add", requireAdmin, async (req, res) => {
+  const { name } = req.params;
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).send("Server not found");
+
+  try {
+    const response = await proxyToAgent(server.agent_url, "/settings/operators/add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
+    const data = await response.json();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Remove operator
+app.post("/api/servers/:name/settings/operators/remove", requireAdmin, async (req, res) => {
+  const { name } = req.params;
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).send("Server not found");
+
+  try {
+    const response = await proxyToAgent(server.agent_url, "/settings/operators/remove", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
+    const data = await response.json();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Proxy file uploads (plugins/mods/worlds)
 async function proxyFileUpload(req: Request, res: Response, endpoint: string) {
   const { name } = req.params;

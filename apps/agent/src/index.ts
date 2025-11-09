@@ -24,6 +24,8 @@ import { VanillaDownloader } from "./downloaders/vanilla.js";
 import { pingMinecraftServer } from "./utils/mcping.js";
 import { extractModMetadata, extractModIcon } from "./services/jar-metadata.js";
 import { parseConfigFile, updateConfigFile, listConfigFiles, detectFormat } from "./services/config-parser.js";
+import { resolveUsername } from "./services/mojang.js";
+import { parseProperties, updateProperties, readJsonArray, writeJsonArray } from "./services/properties-parser.js";
 
 const PORT = Number(process.env.AGENT_PORT || 9090);
 const MC_DIR = process.env.MC_DIR || "/opt/minecraft";
@@ -155,6 +157,280 @@ app.post("/config", (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ============================================================================
+// Settings Management
+// ============================================================================
+
+/**
+ * Apply structured server settings
+ * Updates server.properties, whitelist.json, and ops.json
+ */
+app.post("/settings", async (req, res) => {
+  try {
+    const { properties, whitelist, operators, restart = true } = req.body;
+
+    if (!properties && !whitelist && !operators) {
+      return res.status(400).json({ error: "No settings provided" });
+    }
+
+    const configPath = path.join(MC_DIR, "server.properties");
+    const whitelistPath = path.join(MC_DIR, "whitelist.json");
+    const opsPath = path.join(MC_DIR, "ops.json");
+
+    // Update server.properties if provided
+    if (properties && typeof properties === 'object') {
+      if (!fs.existsSync(configPath)) {
+        return res.status(404).json({ error: "server.properties not found" });
+      }
+      updateProperties(configPath, properties);
+      sh("chown", ["mc:mc", configPath]);
+    }
+
+    // Update whitelist if provided
+    if (Array.isArray(whitelist)) {
+      const whitelistData: Array<{ uuid: string; name: string }> = [];
+
+      for (const username of whitelist) {
+        if (typeof username !== 'string') continue;
+
+        try {
+          const profile = await resolveUsername(username);
+          whitelistData.push({ uuid: profile.uuid, name: profile.name });
+        } catch (err: any) {
+          return res.status(400).json({
+            error: `Failed to resolve username "${username}": ${err.message}`
+          });
+        }
+      }
+
+      writeJsonArray(whitelistPath, whitelistData);
+      sh("chown", ["mc:mc", whitelistPath]);
+
+      // Enable whitelist in properties if not empty
+      if (whitelistData.length > 0) {
+        updateProperties(configPath, { "white-list": true });
+      }
+    }
+
+    // Update operators if provided
+    if (Array.isArray(operators)) {
+      const opsData: Array<{ uuid: string; name: string; level: number; bypassesPlayerLimit: boolean }> = [];
+
+      for (const username of operators) {
+        if (typeof username !== 'string') continue;
+
+        try {
+          const profile = await resolveUsername(username);
+          opsData.push({
+            uuid: profile.uuid,
+            name: profile.name,
+            level: 4,
+            bypassesPlayerLimit: false
+          });
+        } catch (err: any) {
+          return res.status(400).json({
+            error: `Failed to resolve operator username "${username}": ${err.message}`
+          });
+        }
+      }
+
+      writeJsonArray(opsPath, opsData);
+      sh("chown", ["mc:mc", opsPath]);
+    }
+
+    // Restart server if requested
+    if (restart) {
+      const status = shSafe("systemctl", ["is-active", "minecraft"]);
+      if (status.stdout.trim() === "active") {
+        sh("systemctl", ["restart", "minecraft"]);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: "Settings applied successfully" + (restart ? " and server restarted" : "")
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Get current whitelist
+ */
+app.get("/settings/whitelist", (_req, res) => {
+  try {
+    const whitelistPath = path.join(MC_DIR, "whitelist.json");
+    const whitelist = readJsonArray<{ uuid: string; name: string }>(whitelistPath);
+    res.json(whitelist);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Add player to whitelist
+ */
+app.post("/settings/whitelist/add", async (req, res) => {
+  try {
+    const { username } = req.body;
+
+    if (!username || typeof username !== 'string') {
+      return res.status(400).json({ error: "Missing username" });
+    }
+
+    const whitelistPath = path.join(MC_DIR, "whitelist.json");
+    const whitelist = readJsonArray<{ uuid: string; name: string }>(whitelistPath);
+
+    // Check if already whitelisted
+    if (whitelist.some(p => p.name.toLowerCase() === username.toLowerCase())) {
+      return res.json({ success: true, message: "Player already whitelisted" });
+    }
+
+    // Resolve username to UUID
+    const profile = await resolveUsername(username);
+
+    // Add to whitelist
+    whitelist.push({ uuid: profile.uuid, name: profile.name });
+    writeJsonArray(whitelistPath, whitelist);
+    sh("chown", ["mc:mc", whitelistPath]);
+
+    // Enable whitelist in properties
+    const configPath = path.join(MC_DIR, "server.properties");
+    updateProperties(configPath, { "white-list": true });
+
+    // Reload whitelist in-game if server is running
+    const status = shSafe("systemctl", ["is-active", "minecraft"]);
+    if (status.stdout.trim() === "active") {
+      // Use RCON to reload whitelist
+      shSafe("mcrcon", ["-H", "localhost", "-P", String(RCON_PORT), "-p", "admin", "whitelist reload"]);
+    }
+
+    res.json({ success: true, message: `Player ${profile.name} added to whitelist` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Remove player from whitelist
+ */
+app.post("/settings/whitelist/remove", async (req, res) => {
+  try {
+    const { username } = req.body;
+
+    if (!username || typeof username !== 'string') {
+      return res.status(400).json({ error: "Missing username" });
+    }
+
+    const whitelistPath = path.join(MC_DIR, "whitelist.json");
+    const whitelist = readJsonArray<{ uuid: string; name: string }>(whitelistPath);
+
+    const filtered = whitelist.filter(p => p.name.toLowerCase() !== username.toLowerCase());
+
+    if (filtered.length === whitelist.length) {
+      return res.status(404).json({ error: "Player not found in whitelist" });
+    }
+
+    writeJsonArray(whitelistPath, filtered);
+    sh("chown", ["mc:mc", whitelistPath]);
+
+    // Reload whitelist in-game if server is running
+    const status = shSafe("systemctl", ["is-active", "minecraft"]);
+    if (status.stdout.trim() === "active") {
+      shSafe("mcrcon", ["-H", "localhost", "-P", String(RCON_PORT), "-p", "admin", "whitelist reload"]);
+    }
+
+    res.json({ success: true, message: `Player ${username} removed from whitelist` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Get current operators
+ */
+app.get("/settings/operators", (_req, res) => {
+  try {
+    const opsPath = path.join(MC_DIR, "ops.json");
+    const ops = readJsonArray<{ uuid: string; name: string; level: number }>(opsPath);
+    res.json(ops);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Add operator
+ */
+app.post("/settings/operators/add", async (req, res) => {
+  try {
+    const { username } = req.body;
+
+    if (!username || typeof username !== 'string') {
+      return res.status(400).json({ error: "Missing username" });
+    }
+
+    const opsPath = path.join(MC_DIR, "ops.json");
+    const ops = readJsonArray<{ uuid: string; name: string; level: number; bypassesPlayerLimit: boolean }>(opsPath);
+
+    // Check if already an operator
+    if (ops.some(p => p.name.toLowerCase() === username.toLowerCase())) {
+      return res.json({ success: true, message: "Player already an operator" });
+    }
+
+    // Resolve username to UUID
+    const profile = await resolveUsername(username);
+
+    // Add to operators
+    ops.push({
+      uuid: profile.uuid,
+      name: profile.name,
+      level: 4,
+      bypassesPlayerLimit: false
+    });
+    writeJsonArray(opsPath, ops);
+    sh("chown", ["mc:mc", opsPath]);
+
+    res.json({ success: true, message: `Player ${profile.name} added as operator` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Remove operator
+ */
+app.post("/settings/operators/remove", async (req, res) => {
+  try {
+    const { username } = req.body;
+
+    if (!username || typeof username !== 'string') {
+      return res.status(400).json({ error: "Missing username" });
+    }
+
+    const opsPath = path.join(MC_DIR, "ops.json");
+    const ops = readJsonArray<{ uuid: string; name: string; level: number; bypassesPlayerLimit: boolean }>(opsPath);
+
+    const filtered = ops.filter(p => p.name.toLowerCase() !== username.toLowerCase());
+
+    if (filtered.length === ops.length) {
+      return res.status(404).json({ error: "Player not found in operators list" });
+    }
+
+    writeJsonArray(opsPath, filtered);
+    sh("chown", ["mc:mc", opsPath]);
+
+    res.json({ success: true, message: `Player ${username} removed from operators` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
+// File Uploads
+// ============================================================================
 
 // Upload plugin
 app.post("/plugins", upload.single("file"), (req, res) => {
@@ -320,7 +596,10 @@ app.patch("/mods/:fileName/toggle", (req, res) => {
   }
 });
 
-// Delete mod
+/**
+ * Delete mod and optionally remove its config files
+ * Extracts metadata before deletion to identify config files
+ */
 app.delete("/mods/:fileName", async (req, res) => {
   try {
     const { fileName } = req.params;
@@ -333,22 +612,34 @@ app.delete("/mods/:fileName", async (req, res) => {
       return res.status(404).json({ error: "Mod not found" });
     }
 
+    // Extract metadata BEFORE deleting if we need to remove configs
+    let metadata = null;
+    if (removeConfigs === 'true') {
+      try {
+        metadata = await extractModMetadata(filePath);
+      } catch (err) {
+        console.warn(`Failed to extract metadata for ${fileName}, configs may not be removed:`, err);
+      }
+    }
+
+    // Delete the mod file
     fs.unlinkSync(filePath);
 
-    // Optionally remove config files
-    if (removeConfigs === 'true') {
-      const metadata = await extractModMetadata(filePath);
-      if (metadata) {
-        const configDir = path.join(MC_DIR, "config");
-        const modConfigDir = path.join(configDir, metadata.modId);
-        const modConfigFile = path.join(configDir, `${metadata.modId}.toml`);
+    // Remove config files if we have metadata
+    if (metadata) {
+      const configDir = path.join(MC_DIR, "config");
+      const modConfigDir = path.join(configDir, metadata.modId);
+      const modConfigFile = path.join(configDir, `${metadata.modId}.toml`);
 
+      try {
         if (fs.existsSync(modConfigDir)) {
           fs.rmSync(modConfigDir, { recursive: true, force: true });
         }
         if (fs.existsSync(modConfigFile)) {
           fs.unlinkSync(modConfigFile);
         }
+      } catch (err) {
+        console.warn(`Failed to remove config files for ${metadata.modId}:`, err);
       }
     }
 

@@ -16,7 +16,9 @@ import {
   ChevronUp,
   Terminal,
   Package2,
+  Loader2,
 } from "lucide-react";
+import { toast } from "sonner";
 import { ModBrowser } from "@/components/ModBrowser";
 import { ModsManagementPanel } from "@/components/ModsManagementPanel";
 import { Button } from "@/components/ui/button";
@@ -122,6 +124,10 @@ export function App() {
   const [versionType, setVersionType] = useState<"paper" | "vanilla">("paper");
   const [newVersion, setNewVersion] = useState("");
   const [isChangingVersion, setIsChangingVersion] = useState(false);
+
+  // Settings management state
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [serverSettingsDialog, setServerSettingsDialog] = useState(false);
 
   // Server configuration state (persisted in localStorage)
   const [serverSettings, setServerSettings] = useState(() => {
@@ -259,6 +265,57 @@ export function App() {
       setTimeout(() => refresh(), 2000);
     } catch (err) {
       setMessage(`Failed to ${action} server`);
+    }
+  };
+
+  /**
+   * Save server settings to backend
+   * Maps frontend state to backend API format and applies all settings
+   */
+  const handleSaveSettings = async (serverName: string) => {
+    setIsSavingSettings(true);
+    try {
+      const payload = {
+        properties: {
+          'motd': serverSettings.motd,
+          'max-players': serverSettings.maxPlayers,
+          'gamemode': serverSettings.gamemode,
+          'difficulty': serverSettings.difficulty,
+          'pvp': serverSettings.pvp,
+          'spawn-protection': serverSettings.spawnProtection,
+          'view-distance': serverSettings.viewDistance,
+          'online-mode': serverSettings.onlineMode,
+          'allow-flight': serverSettings.allowFlight,
+          'enforce-whitelist': serverSettings.enforceWhitelist,
+        },
+        whitelist: serverSettings.whitelist,
+        operators: serverSettings.operators,
+        restart: true
+      };
+
+      const response = await fetch(`/api/servers/${serverName}/settings`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders()
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: response.statusText }));
+        throw new Error(errorData.error || 'Failed to save settings');
+      }
+
+      const data = await response.json();
+      toast.success(data.message || 'Settings applied successfully');
+      setServerSettingsDialog(false);
+
+      setTimeout(() => refresh(), 2000);
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to save settings');
+    } finally {
+      setIsSavingSettings(false);
     }
   };
 
@@ -942,14 +999,14 @@ export function App() {
                     </Tooltip>
 
                     {/* Server Settings */}
-                    <Dialog>
+                    <Dialog open={serverSettingsDialog} onOpenChange={setServerSettingsDialog}>
                       <DialogTrigger asChild>
                         <Button
                           variant="outline"
                           className="rounded-sm hover:bg-blue-500/10 hover:border-blue-500 transition-all"
                         >
                           <Settings className="mr-2 h-4 w-4" />
-                          ⚙️ Server Settings
+                          Server Settings
                         </Button>
                       </DialogTrigger>
                       <DialogContent className="rounded-sm max-w-3xl max-h-[85vh] overflow-y-auto">
@@ -1436,18 +1493,24 @@ export function App() {
                           <Button
                             variant="outline"
                             className="rounded-sm"
-                            onClick={() => {/* TODO: Save settings */}}
+                            onClick={() => setServerSettingsDialog(false)}
+                            disabled={isSavingSettings}
                           >
                             Cancel
                           </Button>
                           <Button
                             className="rounded-sm"
-                            onClick={() => {
-                              // TODO: Apply settings to server
-                              console.log("Applying settings:", serverSettings);
-                            }}
+                            onClick={() => handleSaveSettings(server.name)}
+                            disabled={isSavingSettings}
                           >
-                            💾 Save & Apply
+                            {isSavingSettings ? (
+                              <>
+                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                Saving...
+                              </>
+                            ) : (
+                              "Save & Apply"
+                            )}
                           </Button>
                         </DialogFooter>
                       </DialogContent>
