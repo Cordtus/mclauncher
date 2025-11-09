@@ -125,6 +125,7 @@ export function App() {
   // Tour state
   const [tourActive, setTourActive] = useState(false);
   const [tourStep, setTourStep] = useState(0);
+  const [tourElementRect, setTourElementRect] = useState<DOMRect | null>(null);
 
   // Version management state
   const [versionType, setVersionType] = useState<"paper" | "vanilla">("paper");
@@ -287,6 +288,35 @@ export function App() {
       setTimeout(() => startTour(), 1000);
     }
   }, [servers]);
+
+  // Update tour element position when tour step changes
+  useEffect(() => {
+    if (!tourActive) {
+      setTourElementRect(null);
+      return;
+    }
+
+    const currentStep = tourSteps[tourStep];
+    if (!currentStep.target) {
+      setTourElementRect(null);
+      return;
+    }
+
+    // Find the target element
+    const element = document.querySelector(currentStep.target);
+    if (element) {
+      // Scroll element into view smoothly
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+      // Wait a bit for scroll animation, then get position
+      setTimeout(() => {
+        const rect = element.getBoundingClientRect();
+        setTourElementRect(rect);
+      }, 300);
+    } else {
+      setTourElementRect(null);
+    }
+  }, [tourActive, tourStep]);
 
   // Save settings to localStorage whenever they change
   useEffect(() => {
@@ -2197,30 +2227,70 @@ export function App() {
         {/* Tour Overlay */}
         {tourActive && (
           <div className="fixed inset-0 z-50 pointer-events-none">
-            {/* Backdrop */}
-            <div className="absolute inset-0 bg-black/60 pointer-events-auto" onClick={skipTour} />
+            {/* Backdrop with spotlight effect */}
+            <div
+              className="absolute inset-0 bg-black/70 pointer-events-auto"
+              onClick={skipTour}
+              style={{
+                boxShadow: tourElementRect
+                  ? `0 0 0 9999px rgba(0,0,0,0.7), inset 0 0 0 ${tourElementRect.top}px rgba(0,0,0,0.7)`
+                  : undefined
+              }}
+            />
 
-            {/* Tour Tooltip */}
-            <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 pointer-events-auto">
-              <Card className="rounded-sm w-[90vw] max-w-md shadow-2xl border-2 border-primary">
+            {/* Highlight box around target element */}
+            {tourElementRect && (
+              <div
+                className="absolute pointer-events-none animate-pulse"
+                style={{
+                  top: tourElementRect.top - 8,
+                  left: tourElementRect.left - 8,
+                  width: tourElementRect.width + 16,
+                  height: tourElementRect.height + 16,
+                  border: '3px solid rgb(34, 197, 94)',
+                  borderRadius: '8px',
+                  boxShadow: '0 0 20px rgba(34, 197, 94, 0.6), inset 0 0 20px rgba(34, 197, 94, 0.2)',
+                }}
+              />
+            )}
+
+            {/* Tour Tooltip - positioned near highlighted element */}
+            <div
+              className="absolute pointer-events-auto"
+              style={{
+                top: tourElementRect
+                  ? (tourElementRect.bottom + 20 < window.innerHeight - 300
+                      ? tourElementRect.bottom + 20  // Below element
+                      : tourElementRect.top > 300
+                        ? tourElementRect.top - 320  // Above element
+                        : window.innerHeight / 2 - 150)  // Center fallback
+                  : window.innerHeight / 2 - 150,
+                left: tourElementRect
+                  ? Math.max(20, Math.min(tourElementRect.left, window.innerWidth - 420))
+                  : window.innerWidth / 2 - 200,
+                maxWidth: '400px',
+                width: 'calc(100vw - 40px)',
+              }}
+            >
+              <Card className="rounded-sm shadow-2xl border-2 border-green-500 bg-background/95 backdrop-blur">
                 <CardHeader className="pb-3">
                   <div className="flex items-center justify-between mb-2">
-                    <Badge variant="outline" className="rounded-sm">
+                    <Badge variant="outline" className="rounded-sm bg-green-500/10 border-green-500">
                       Step {tourStep + 1} of {tourSteps.length}
                     </Badge>
                     <Button
                       variant="ghost"
                       size="sm"
                       onClick={skipTour}
-                      className="h-6 px-2 text-xs"
+                      className="h-6 px-2 text-xs hover:bg-red-500/10"
                     >
                       Skip Tour
                     </Button>
                   </div>
-                  <CardTitle className="text-lg">{tourSteps[tourStep].title}</CardTitle>
+                  <CardTitle className="text-lg text-green-500">{tourSteps[tourStep].title}</CardTitle>
                 </CardHeader>
                 <CardContent className="pb-4">
-                  <p className="text-sm text-muted-foreground mb-4">
+                  <p className="text-sm mb-4">
                     {tourSteps[tourStep].content}
                   </p>
                   <div className="flex items-center justify-between gap-2">
@@ -2236,7 +2306,7 @@ export function App() {
                     <Button
                       size="sm"
                       onClick={nextTourStep}
-                      className="rounded-sm"
+                      className="rounded-sm bg-green-500 hover:bg-green-600"
                     >
                       {tourStep === tourSteps.length - 1 ? 'Finish' : 'Next'}
                     </Button>
