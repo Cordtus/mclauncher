@@ -181,6 +181,14 @@ export function App() {
       newBanPlayerReason: "",
       newBanIp: "",
       newBanIpReason: "",
+
+      // JVM settings
+      jvmXms: 512,
+      jvmXmsUnit: 'M',
+      jvmXmx: 2048,
+      jvmXmxUnit: 'M',
+      jvmGc: 'default',
+      jvmCustomFlags: '',
     };
   });
 
@@ -494,6 +502,58 @@ export function App() {
         fetchTps(server.name);
       }
     });
+  };
+
+  // Fetch JVM settings
+  const fetchJvmSettings = async (serverName: string) => {
+    try {
+      const response = await fetch(`/api/servers/${serverName}/jvm/settings`);
+      if (response.ok) {
+        const data = await response.json();
+        setServerSettings({
+          ...serverSettings,
+          jvmXms: data.xms,
+          jvmXmsUnit: data.xmsUnit,
+          jvmXmx: data.xmx,
+          jvmXmxUnit: data.xmxUnit,
+          jvmGc: data.gc,
+          jvmCustomFlags: data.customFlags
+        });
+      }
+    } catch (err: any) {
+      toast.error('Failed to fetch JVM settings');
+    }
+  };
+
+  // Update JVM settings
+  const updateJvmSettings = async (serverName: string) => {
+    try {
+      const response = await fetch(`/api/servers/${serverName}/jvm/settings`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders()
+        },
+        body: JSON.stringify({
+          xms: serverSettings.jvmXms,
+          xmsUnit: serverSettings.jvmXmsUnit,
+          xmx: serverSettings.jvmXmx,
+          xmxUnit: serverSettings.jvmXmxUnit,
+          gc: serverSettings.jvmGc,
+          customFlags: serverSettings.jvmCustomFlags
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: response.statusText }));
+        throw new Error(errorData.error || 'Failed to update JVM settings');
+      }
+
+      const data = await response.json();
+      toast.success(data.message || 'JVM settings updated successfully');
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to update JVM settings');
+    }
   };
 
   const handleFileUpload = async (
@@ -1224,7 +1284,10 @@ export function App() {
                     {/* Server Settings */}
                     <Dialog open={serverSettingsDialog} onOpenChange={(open) => {
                       setServerSettingsDialog(open);
-                      if (open) fetchBans(server.name);
+                      if (open) {
+                        fetchBans(server.name);
+                        fetchJvmSettings(server.name);
+                      }
                     }}>
                       <DialogTrigger asChild>
                         <Button
@@ -1244,11 +1307,12 @@ export function App() {
                         </DialogHeader>
 
                         <Tabs defaultValue="properties" className="w-full">
-                          <TabsList className={`grid w-full ${['forge', 'neoforge', 'fabric'].includes(server.edition.toLowerCase()) ? 'grid-cols-8' : 'grid-cols-7'}`}>
+                          <TabsList className={`grid w-full ${['forge', 'neoforge', 'fabric'].includes(server.edition.toLowerCase()) ? 'grid-cols-9' : 'grid-cols-8'}`}>
                             <TabsTrigger value="network">Network</TabsTrigger>
                             <TabsTrigger value="properties">Properties</TabsTrigger>
                             <TabsTrigger value="gameplay">Gameplay</TabsTrigger>
                             <TabsTrigger value="security">Security</TabsTrigger>
+                            <TabsTrigger value="performance">Performance</TabsTrigger>
                             <TabsTrigger value="plugins">Plugins</TabsTrigger>
                             <TabsTrigger value="admins">Admins</TabsTrigger>
                             <TabsTrigger value="bans">Bans</TabsTrigger>
@@ -1556,6 +1620,125 @@ export function App() {
                                   <li>• Keep Online Mode ON to prevent fake accounts</li>
                                   <li>• Only give OP to people you trust completely</li>
                                   <li>• Server password is extra protection (optional)</li>
+                                </ul>
+                              </div>
+                            </div>
+                          </TabsContent>
+
+                          {/* Performance Tab */}
+                          <TabsContent value="performance" className="space-y-4">
+                            <div className="space-y-4">
+                              <div className="bg-blue-50 dark:bg-blue-950/30 border-l-4 border-blue-500 p-3 rounded-sm">
+                                <p className="text-sm font-semibold text-blue-900 dark:text-blue-100 mb-1">
+                                  JVM Performance Settings
+                                </p>
+                                <p className="text-xs text-blue-700 dark:text-blue-300">
+                                  Adjust Java memory allocation and garbage collector. Server will restart after applying changes.
+                                </p>
+                              </div>
+
+                              {/* Heap Size */}
+                              <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                  <Label>Initial Heap Size (-Xms)</Label>
+                                  <p className="text-xs text-muted-foreground mb-2">
+                                    Starting memory allocation
+                                  </p>
+                                  <div className="flex gap-2">
+                                    <Input
+                                      type="number"
+                                      min="128"
+                                      value={serverSettings.jvmXms}
+                                      onChange={(e) => setServerSettings({...serverSettings, jvmXms: parseInt(e.target.value)})}
+                                      className="rounded-sm"
+                                    />
+                                    <select
+                                      className="rounded-sm border px-3 py-2"
+                                      value={serverSettings.jvmXmsUnit}
+                                      onChange={(e) => setServerSettings({...serverSettings, jvmXmsUnit: e.target.value})}
+                                    >
+                                      <option value="M">MB</option>
+                                      <option value="G">GB</option>
+                                    </select>
+                                  </div>
+                                </div>
+
+                                <div>
+                                  <Label>Maximum Heap Size (-Xmx)</Label>
+                                  <p className="text-xs text-muted-foreground mb-2">
+                                    Maximum memory allowed
+                                  </p>
+                                  <div className="flex gap-2">
+                                    <Input
+                                      type="number"
+                                      min="512"
+                                      value={serverSettings.jvmXmx}
+                                      onChange={(e) => setServerSettings({...serverSettings, jvmXmx: parseInt(e.target.value)})}
+                                      className="rounded-sm"
+                                    />
+                                    <select
+                                      className="rounded-sm border px-3 py-2"
+                                      value={serverSettings.jvmXmxUnit}
+                                      onChange={(e) => setServerSettings({...serverSettings, jvmXmxUnit: e.target.value})}
+                                    >
+                                      <option value="M">MB</option>
+                                      <option value="G">GB</option>
+                                    </select>
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Garbage Collector */}
+                              <div>
+                                <Label>Garbage Collector</Label>
+                                <p className="text-xs text-muted-foreground mb-2">
+                                  Choose GC algorithm for memory management
+                                </p>
+                                <select
+                                  className="rounded-sm border px-3 py-2 w-full"
+                                  value={serverSettings.jvmGc}
+                                  onChange={(e) => setServerSettings({...serverSettings, jvmGc: e.target.value})}
+                                >
+                                  <option value="default">Default (ParallelGC)</option>
+                                  <option value="g1gc">G1GC (Recommended for Java 9+)</option>
+                                  <option value="zgc">ZGC (Low-latency, Java 14+)</option>
+                                </select>
+                                <p className="text-xs text-muted-foreground mt-1">
+                                  G1GC is recommended for modern Minecraft servers. ZGC provides near lag-free performance.
+                                </p>
+                              </div>
+
+                              {/* Custom Flags */}
+                              <div>
+                                <Label>Custom JVM Flags (Advanced)</Label>
+                                <p className="text-xs text-muted-foreground mb-2">
+                                  Additional JVM arguments (e.g., -XX:MaxGCPauseMillis=200)
+                                </p>
+                                <Input
+                                  placeholder="Optional custom flags"
+                                  value={serverSettings.jvmCustomFlags}
+                                  onChange={(e) => setServerSettings({...serverSettings, jvmCustomFlags: e.target.value})}
+                                  className="rounded-sm font-mono text-xs"
+                                />
+                              </div>
+
+                              {/* Apply Button */}
+                              <div className="flex justify-end">
+                                <Button
+                                  onClick={() => updateJvmSettings(server.name)}
+                                  className="rounded-sm"
+                                >
+                                  Apply JVM Settings & Restart Server
+                                </Button>
+                              </div>
+
+                              <div className="bg-muted/50 p-3 rounded-lg">
+                                <p className="text-sm font-semibold mb-1">💡 Performance Tips</p>
+                                <ul className="text-xs text-muted-foreground space-y-1">
+                                  <li>• Set -Xms equal to -Xmx for consistent performance</li>
+                                  <li>• Leave at least 1-2GB free for the OS</li>
+                                  <li>• G1GC is best for servers with 4GB+ RAM</li>
+                                  <li>• ZGC requires Java 14+ and works best with 8GB+ RAM</li>
                                 </ul>
                               </div>
                             </div>

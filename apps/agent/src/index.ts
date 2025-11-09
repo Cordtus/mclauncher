@@ -1185,6 +1185,108 @@ function parseTpsOutput(output: string): number | null {
   return null;
 }
 
+// Get current JVM settings
+app.get("/jvm/settings", (_req, res) => {
+  try {
+    const serviceFile = "/etc/systemd/system/minecraft.service";
+    if (!fs.existsSync(serviceFile)) {
+      return res.status(500).json({ error: "Minecraft service file not found" });
+    }
+
+    const serviceContent = fs.readFileSync(serviceFile, "utf8");
+    const execStartMatch = serviceContent.match(/ExecStart=([^\n]+)/);
+
+    if (!execStartMatch) {
+      return res.status(500).json({ error: "Could not parse ExecStart from service file" });
+    }
+
+    const execStart = execStartMatch[1];
+
+    // Parse JVM flags
+    const xmsMatch = execStart.match(/-Xms(\d+)([MG])/);
+    const xmxMatch = execStart.match(/-Xmx(\d+)([MG])/);
+    const g1gcMatch = execStart.includes("-XX:+UseG1GC");
+    const zgcMatch = execStart.includes("-XX:+UseZGC");
+
+    // Extract custom flags (everything between java and -jar)
+    const customFlagsMatch = execStart.match(/java\s+(.*?)\s+-jar/);
+    const allFlags = customFlagsMatch ? customFlagsMatch[1] : "";
+
+    // Remove known flags to get custom ones
+    let customFlags = allFlags
+      .replace(/-Xms\d+[MG]/, "")
+      .replace(/-Xmx\d+[MG]/, "")
+      .replace(/-XX:\+UseG1GC/, "")
+      .replace(/-XX:\+UseZGC/, "")
+      .trim();
+
+    res.json({
+      xms: xmsMatch ? parseInt(xmsMatch[1]) : 512,
+      xmsUnit: xmsMatch ? xmsMatch[2] : "M",
+      xmx: xmxMatch ? parseInt(xmxMatch[1]) : 2048,
+      xmxUnit: xmxMatch ? xmxMatch[2] : "M",
+      gc: zgcMatch ? "zgc" : g1gcMatch ? "g1gc" : "default",
+      customFlags: customFlags || ""
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update JVM settings
+app.post("/jvm/settings", (req, res) => {
+  try {
+    const { xms, xmsUnit, xmx, xmxUnit, gc, customFlags } = req.body;
+
+    if (!xms || !xmx) {
+      return res.status(400).json({ error: "Missing xms or xmx" });
+    }
+
+    const serviceFile = "/etc/systemd/system/minecraft.service";
+    if (!fs.existsSync(serviceFile)) {
+      return res.status(500).json({ error: "Minecraft service file not found" });
+    }
+
+    let serviceContent = fs.readFileSync(serviceFile, "utf8");
+
+    // Build new JVM flags
+    let jvmFlags = `-Xms${xms}${xmsUnit || 'M'} -Xmx${xmx}${xmxUnit || 'M'}`;
+
+    // Add garbage collector
+    if (gc === "g1gc") {
+      jvmFlags += " -XX:+UseG1GC";
+    } else if (gc === "zgc") {
+      jvmFlags += " -XX:+UseZGC";
+    }
+
+    // Add custom flags
+    if (customFlags && customFlags.trim()) {
+      jvmFlags += " " + customFlags.trim();
+    }
+
+    // Replace ExecStart line
+    const newExecStart = `/usr/bin/java ${jvmFlags} -jar server.jar nogui`;
+    serviceContent = serviceContent.replace(
+      /ExecStart=.*/,
+      `ExecStart=${newExecStart}`
+    );
+
+    // Write updated service file
+    fs.writeFileSync(serviceFile, serviceContent);
+
+    // Reload systemd and restart service
+    sh("systemctl", ["daemon-reload"]);
+    sh("systemctl", ["restart", "minecraft"]);
+
+    res.json({
+      success: true,
+      message: "JVM settings updated and server restarted"
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Create backup
 app.post("/backup", (_req, res) => {
   try {

@@ -332,6 +332,42 @@ app.get("/api/servers/:name/tps", async (req, res) => {
   }
 });
 
+// Get JVM settings
+app.get("/api/servers/:name/jvm/settings", async (req, res) => {
+  const { name } = req.params;
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).send("Server not found");
+
+  try {
+    const response = await proxyToAgent(server.agent_url, "/jvm/settings");
+    const data = await response.json();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update JVM settings
+app.post("/api/servers/:name/jvm/settings", requireAdmin, async (req, res) => {
+  const { name } = req.params;
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).send("Server not found");
+
+  try {
+    const response = await proxyToAgent(server.agent_url, "/jvm/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
+    const data = await response.json();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Check if public connection is accessible
 app.get("/api/servers/:name/check-public", async (req, res) => {
   const { name } = req.params;
