@@ -36,6 +36,8 @@ Thumbs.db
 # Test
 coverage/
 .nyc_output/
+test-results/
+playwright-report/
 
 # Temp
 tmp/
@@ -49,10 +51,30 @@ CLAUDE.md
 .cursor/
 .aider*
 
+# Internal planning and architecture docs (private)
+*PLAN_*.md
+*REVIEW*.md
+*ARCHITECTURE*.md
+
+# Internal deployment documentation (private)
+AUTOMATED_DEPLOYMENT.md
+DEPLOYMENT.md
+DEPLOY.md
+SETUP_AUTOMATED_DEPLOYMENT.md
+CADDY_CONFIG.md
+CADDY_REBUILD.md
+README_WORKSTATION.md
+
 # Local setup scripts (host-specific)
 setup/
+deploy/
+test_ui.py
 
-# Workstation deployment scripts (local only)
+# Deployment scripts (local/server-specific)
 deploy-from-workstation.sh
+deploy.sh
+deploy-updates.sh
 dev-helpers.sh
-README_WORKSTATION.md
+setup-webhook.sh
+webhook-deploy.js
+webhook-deploy.service
