@@ -86,6 +86,39 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, onIn
   const [isInstalling, setIsInstalling] = useState(false);
   const [installedMods, setInstalledMods] = useState<string[]>([]);
   const [message, setMessage] = useState<string>("");
+  const [showPopular, setShowPopular] = useState(true);
+
+  // Popular mods by loader type
+  const popularMods = {
+    fabric: [
+      { slug: "sodium", name: "Sodium", description: "Modern rendering engine and optimization mod", category: "Optimization" },
+      { slug: "lithium", name: "Lithium", description: "Server-side performance optimization", category: "Optimization" },
+      { slug: "ferritecore", name: "FerriteCore", description: "Memory usage optimization", category: "Optimization" },
+      { slug: "starlight", name: "Starlight", description: "Rewrites lighting engine", category: "Optimization" },
+      { slug: "fabric-api", name: "Fabric API", description: "Essential library for Fabric mods", category: "Library" },
+      { slug: "roughly-enough-items", name: "REI (Roughly Enough Items)", description: "Recipe viewer and crafting helper", category: "Utility" },
+      { slug: "waystones", name: "Waystones", description: "Teleportation stones", category: "Utility" },
+      { slug: "journeymap", name: "JourneyMap", description: "Real-time map and minimap", category: "Utility" },
+    ],
+    forge: [
+      { slug: "jei", name: "JEI (Just Enough Items)", description: "Recipe viewer and crafting helper", category: "Utility" },
+      { slug: "waystones", name: "Waystones", description: "Teleportation stones", category: "Utility" },
+      { slug: "journeymap", name: "JourneyMap", description: "Real-time map and minimap", category: "Utility" },
+      { slug: "create", name: "Create", description: "Mechanical contraptions and automation", category: "Technology" },
+      { slug: "ae2", name: "Applied Energistics 2", description: "Advanced storage and automation", category: "Technology" },
+      { slug: "mekanism", name: "Mekanism", description: "Tech mod with machines and tools", category: "Technology" },
+      { slug: "botania", name: "Botania", description: "Nature-themed magic mod", category: "Magic" },
+      { slug: "ferritecore", name: "FerriteCore", description: "Memory usage optimization", category: "Optimization" },
+    ],
+    neoforge: [
+      { slug: "jei", name: "JEI (Just Enough Items)", description: "Recipe viewer and crafting helper", category: "Utility" },
+      { slug: "waystones", name: "Waystones", description: "Teleportation stones", category: "Utility" },
+      { slug: "journeymap", name: "JourneyMap", description: "Real-time map and minimap", category: "Utility" },
+      { slug: "create", name: "Create", description: "Mechanical contraptions and automation", category: "Technology" },
+      { slug: "ae2", name: "Applied Energistics 2", description: "Advanced storage and automation", category: "Technology" },
+      { slug: "ferritecore", name: "FerriteCore", description: "Memory usage optimization", category: "Optimization" },
+    ],
+  };
 
   const categories = [
     { value: "all", label: "All Categories" },
@@ -115,8 +148,11 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, onIn
   }, []);
 
   useEffect(() => {
+    const hasSearch = searchQuery.length > 0 || category !== "all";
+    setShowPopular(!hasSearch);
+
     const timer = setTimeout(() => {
-      if (searchQuery.length > 0 || category !== "all") {
+      if (hasSearch) {
         searchMods();
       }
     }, 500);
@@ -154,6 +190,30 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, onIn
     } catch (err) {
       console.error("Search failed:", err);
       setMods([]);
+    } finally {
+      setIsSearching(false);
+    }
+  }
+
+  async function searchModBySlug(slug: string) {
+    setIsSearching(true);
+    try {
+      const params = new URLSearchParams({
+        query: slug,
+        mcVersion: mcVersion,
+        loader: loader,
+        limit: "1",
+        sort: "relevance",
+      });
+
+      const response = await fetch(`/api/mods/search?${params}`);
+      const data = await response.json();
+
+      if (data.hits && data.hits.length > 0) {
+        await selectMod(data.hits[0]);
+      }
+    } catch (err) {
+      console.error("Failed to load mod:", err);
     } finally {
       setIsSearching(false);
     }
@@ -288,13 +348,46 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, onIn
         Showing mods compatible with {mcVersion} ({loader})
       </div>
 
-      {isSearching ? (
+      {showPopular ? (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-semibold">Popular & Recommended Mods</h3>
+            <Badge variant="outline">Quick Install</Badge>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            These are the most popular and commonly used mods for {loader}. Click any mod to see details and install.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 max-h-[60vh] overflow-y-auto">
+            {popularMods[loader].map((mod) => (
+              <Card
+                key={mod.slug}
+                className="rounded-sm cursor-pointer hover:border-primary transition-colors"
+                onClick={() => searchModBySlug(mod.slug)}
+              >
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">{mod.name}</CardTitle>
+                  <CardDescription className="text-xs">{mod.category}</CardDescription>
+                </CardHeader>
+                <CardContent className="pt-0">
+                  <p className="text-xs text-muted-foreground">
+                    {mod.description}
+                  </p>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+          <Separator />
+          <p className="text-xs text-center text-muted-foreground">
+            Use the search bar above to find thousands more mods from Modrinth
+          </p>
+        </div>
+      ) : isSearching ? (
         <div className="py-12 text-center text-muted-foreground">
           Searching...
         </div>
       ) : mods.length === 0 ? (
         <div className="py-12 text-center text-muted-foreground">
-          {searchQuery || category !== "all" ? "No mods found. Try different search terms." : "Enter a search term or select a category to browse mods."}
+          No mods found. Try different search terms.
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[60vh] overflow-y-auto">
