@@ -120,6 +120,11 @@ export function App() {
   const [selectedServer, setSelectedServer] = useState<string | null>(null);
   const [message, setMessage] = useState<string>("");
   const [serverTps, setServerTps] = useState<Map<string, number | null>>(new Map());
+  const [helpDialog, setHelpDialog] = useState(false);
+
+  // Tour state
+  const [tourActive, setTourActive] = useState(false);
+  const [tourStep, setTourStep] = useState(0);
 
   // Version management state
   const [versionType, setVersionType] = useState<"paper" | "vanilla">("paper");
@@ -193,6 +198,96 @@ export function App() {
   });
 
 
+  // Tour steps definition
+  const tourSteps = [
+    {
+      target: null,
+      title: "Welcome to MC Manager!",
+      content: "Let's take a quick tour of all the features to help you get your Minecraft server up and running. You can skip this tour at any time or restart it from the Help menu.",
+    },
+    {
+      target: "[data-tour='server-controls']",
+      title: "Server Controls",
+      content: "Use these buttons to start, stop, or restart your Minecraft server. The status badge shows whether your server is currently running.",
+    },
+    {
+      target: "[data-tour='connection-local']",
+      title: "Local Network Connection",
+      content: "This shows the address players on your WiFi network should use to connect. Configure the Host IP in Server Settings to enable local connections.",
+    },
+    {
+      target: "[data-tour='connection-public']",
+      title: "Public Internet Connection",
+      content: "This shows the address for players connecting from the internet. You'll need to set up port forwarding and configure your public domain in Server Settings.",
+    },
+    {
+      target: "[data-tour='settings-button']",
+      title: "Server Settings",
+      content: "Click here to configure all server properties including network settings, game rules, whitelist, operators, bans, and JVM performance tuning.",
+    },
+    {
+      target: "[data-tour='version-button']",
+      title: "Change Server Version",
+      content: "Switch between Minecraft versions or server types (Paper/Vanilla). Your worlds and settings will be preserved.",
+    },
+    {
+      target: "[data-tour='upload-world']",
+      title: "Upload Custom Worlds",
+      content: "Upload your own world files as .zip archives. The server will stop, replace the world, and restart automatically.",
+    },
+    {
+      target: "[data-tour='console']",
+      title: "Server Console",
+      content: "Monitor your server's real-time logs here. The console shows the last 100 lines and auto-refreshes every 5 seconds. Use this to debug issues or monitor player activity.",
+    },
+    {
+      target: "[data-tour='help-button']",
+      title: "Help & Documentation",
+      content: "Access complete documentation, troubleshooting guides, and restart this tour anytime from the Help menu.",
+    },
+  ];
+
+  // Start the guided tour
+  const startTour = () => {
+    setTourStep(0);
+    setTourActive(true);
+  };
+
+  // Tour navigation
+  const nextTourStep = () => {
+    if (tourStep < tourSteps.length - 1) {
+      setTourStep(tourStep + 1);
+    } else {
+      completeTour();
+    }
+  };
+
+  const prevTourStep = () => {
+    if (tourStep > 0) {
+      setTourStep(tourStep - 1);
+    }
+  };
+
+  const skipTour = () => {
+    setTourActive(false);
+    setTourStep(0);
+  };
+
+  const completeTour = () => {
+    setTourActive(false);
+    setTourStep(0);
+    localStorage.setItem('mc-tour-completed', 'true');
+    toast.success('Tour completed! You can restart it anytime from the Help menu.');
+  };
+
+  // Check for first visit and auto-start tour
+  useEffect(() => {
+    const hasSeenTour = localStorage.getItem('mc-tour-completed');
+    if (!hasSeenTour && servers.length > 0) {
+      setTimeout(() => startTour(), 1000);
+    }
+  }, [servers]);
+
   // Save settings to localStorage whenever they change
   useEffect(() => {
     localStorage.setItem('mc-server-settings', JSON.stringify(serverSettings));
@@ -256,9 +351,9 @@ export function App() {
       const response = await fetch(`/api/servers/${servers[0].name}/logs`);
       const logText = await response.text();
 
-      // Get last 50 lines for scrolling
+      // Get last 100 lines for scrolling
       const lines = logText.trim().split('\n');
-      const lastLines = lines.slice(-50).join('\n');
+      const lastLines = lines.slice(-100).join('\n');
       setLogs(lastLines);
     } catch (err) {
       console.error('Failed to fetch logs:', err);
@@ -632,9 +727,9 @@ export function App() {
             </div>
           </div>
           <div className="flex gap-2 w-full sm:w-auto">
-            <Dialog>
+            <Dialog open={helpDialog} onOpenChange={setHelpDialog}>
               <DialogTrigger asChild>
-                <Button variant="outline" size="sm" className="rounded-sm hover:bg-green-500/10 hover:border-green-500 transition-all flex-1 sm:flex-none">
+                <Button data-tour="help-button" variant="outline" size="sm" className="rounded-sm hover:bg-green-500/10 hover:border-green-500 transition-all flex-1 sm:flex-none">
                   <HelpCircle className="mr-1 sm:mr-2 h-4 w-4" />
                   <span className="text-xs sm:text-sm">Help</span>
                 </Button>
@@ -648,24 +743,21 @@ export function App() {
                 </DialogHeader>
                 <div className="space-y-6 text-sm">
 
-                  <section>
-                    <h2 className="text-lg font-bold mb-3 border-b pb-2">Quick Start</h2>
-                    <div className="space-y-3">
-                      <div>
-                        <h3 className="font-semibold mb-1">Starting Your Server</h3>
-                        <p className="text-muted-foreground">Click the Play button (▶) to start the server. Initial startup takes 30-60 seconds. The status badge will change to "Running" and show green "ONLINE" when ready.</p>
-                      </div>
-                      <div>
-                        <h3 className="font-semibold mb-1">Connecting to Your Server</h3>
-                        <p className="text-muted-foreground mb-2">In Minecraft, select Multiplayer → Add Server:</p>
-                        <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
-                          <li><strong>Local Network:</strong> Use the IP:PORT shown in the "Local Network" card (players on same WiFi)</li>
-                          <li><strong>Public Internet:</strong> Use the public domain:PORT once configured in Network settings</li>
-                          <li><strong>Important:</strong> The server uses a non-standard port (not 25565) for security</li>
-                          <li>Use the copy button to quickly copy the full address including port</li>
-                        </ul>
-                      </div>
-                    </div>
+                  <section className="bg-blue-50 dark:bg-blue-950/30 border-l-4 border-blue-500 p-4 rounded-sm">
+                    <h2 className="text-lg font-bold mb-3 text-blue-900 dark:text-blue-100">New to MC Manager?</h2>
+                    <p className="text-blue-700 dark:text-blue-300 mb-4">
+                      Take our interactive guided tour to learn all the features and how to get your server running!
+                    </p>
+                    <Button
+                      onClick={() => {
+                        setHelpDialog(false);
+                        setTimeout(() => startTour(), 100);
+                      }}
+                      className="w-full rounded-sm"
+                      variant="default"
+                    >
+                      Start Guided Tour
+                    </Button>
                   </section>
 
                   <section>
@@ -874,35 +966,6 @@ export function App() {
           </div>
         </div>
 
-        <Separator />
-
-        {/* Quick Start Guide */}
-        {servers.length > 0 && (
-          <Card className="rounded-sm border-2 border-blue-500/50 bg-blue-500/5">
-            <CardHeader className="p-4 sm:p-6 pb-3">
-              <CardTitle className="text-base sm:text-lg flex items-center gap-2">
-                <Info className="h-5 w-5 text-blue-500" />
-                Quick Start: How to Join Your Server
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-4 sm:p-6 pt-0">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
-                <div className="bg-background/50 p-3 rounded-lg border">
-                  <div className="font-bold text-blue-500 mb-2">1. Start Server</div>
-                  <p className="text-xs text-muted-foreground">Click the Play button (▶) below to start your Minecraft server. Wait for status to show "RUNNING".</p>
-                </div>
-                <div className="bg-background/50 p-3 rounded-lg border">
-                  <div className="font-bold text-blue-500 mb-2">2. Copy Address</div>
-                  <p className="text-xs text-muted-foreground">Use "Local Network" for same WiFi, or "Public Internet" for online friends. Click copy button to copy address.</p>
-                </div>
-                <div className="bg-background/50 p-3 rounded-lg border">
-                  <div className="font-bold text-blue-500 mb-2">3. Add in Minecraft</div>
-                  <p className="text-xs text-muted-foreground">In Minecraft: Multiplayer → Add Server → Paste the address → Join!</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        )}
 
         {/* Message Banner */}
         {message && (
@@ -953,7 +1016,7 @@ export function App() {
                       {/* Connection Info */}
                       <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
                         {/* Local Connection */}
-                        <div className="border-2 rounded-lg p-3 sm:p-4 bg-card">
+                        <div data-tour="connection-local" className="border-2 rounded-lg p-3 sm:p-4 bg-card">
                           <div className="flex items-center justify-between mb-2 sm:mb-3">
                             <div className="flex items-center gap-1.5 sm:gap-2">
                               <Globe className="h-4 w-4 sm:h-5 sm:w-5 text-muted-foreground flex-shrink-0" />
@@ -992,7 +1055,7 @@ export function App() {
                         </div>
 
                         {/* Public Connection */}
-                        <div className="border-2 rounded-lg p-3 sm:p-4 bg-card">
+                        <div data-tour="connection-public" className="border-2 rounded-lg p-3 sm:p-4 bg-card">
                           <div className="flex items-center justify-between mb-2 sm:mb-3">
                             <div className="flex items-center gap-1.5 sm:gap-2">
                               <Globe className="h-4 w-4 sm:h-5 sm:w-5 text-muted-foreground flex-shrink-0" />
@@ -1060,7 +1123,7 @@ export function App() {
                         </div>
                       )}
                     </div>
-                    <div className="flex items-center gap-2 w-full sm:w-auto">
+                    <div data-tour="server-controls" className="flex items-center gap-2 w-full sm:w-auto">
                       <Button
                         variant="ghost"
                         size="icon"
@@ -1097,12 +1160,13 @@ export function App() {
                     <Dialog>
                       <DialogTrigger asChild>
                         <Button
+                          data-tour="version-button"
                           variant="outline"
                           className="rounded-sm w-full hover:bg-blue-500/10 hover:border-blue-500 transition-all"
                           onClick={() => setSelectedServer(server.name)}
                         >
                           <Settings className="mr-2 h-4 w-4" />
-                          ⚙️ Change Version
+                          Change Version
                         </Button>
                       </DialogTrigger>
                       <DialogContent className="rounded-sm">
@@ -1250,7 +1314,7 @@ export function App() {
 
                     {/* Upload World */}
                     <Tooltip>
-                      <div>
+                      <div data-tour="upload-world">
                         <input
                           type="file"
                           accept=".zip"
@@ -1269,7 +1333,7 @@ export function App() {
                             >
                               <span>
                                 <Globe className="mr-2 h-4 w-4" />
-                                🌍 Upload World
+                                Upload World
                               </span>
                             </Button>
                           </TooltipTrigger>
@@ -1291,6 +1355,7 @@ export function App() {
                     }}>
                       <DialogTrigger asChild>
                         <Button
+                          data-tour="settings-button"
                           variant="outline"
                           className="rounded-sm hover:bg-blue-500/10 hover:border-blue-500 transition-all"
                         >
@@ -2081,7 +2146,7 @@ export function App() {
 
         {/* Console Log Panel */}
         {servers.length > 0 && (
-          <Card className="rounded-sm border-amber-500/20">
+          <Card data-tour="console" className="rounded-sm border-amber-500/20">
             <CardHeader className="pb-2 sm:pb-3 p-3 sm:p-6">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-1.5 sm:gap-2">
@@ -2107,9 +2172,9 @@ export function App() {
             </CardHeader>
             {showLogs && (
               <CardContent className="pt-0 p-3 sm:p-6 sm:pt-0">
-                <div className="bg-black/90 rounded p-2 sm:p-3 font-mono text-[10px] sm:text-xs text-green-400 h-20 sm:h-24 overflow-y-auto border border-green-500/20">
+                <div className="bg-black/90 rounded p-2 sm:p-3 font-mono text-[10px] sm:text-xs text-green-400 h-64 overflow-y-auto border border-green-500/20">
                   {logs ? (
-                    <pre className="whitespace-pre-wrap break-words">{logs}</pre>
+                    <pre className="whitespace-pre-wrap break-words overflow-hidden">{logs}</pre>
                   ) : (
                     <span className="text-muted-foreground italic">No logs available...</span>
                   )}
@@ -2129,6 +2194,59 @@ export function App() {
               </CardContent>
             )}
           </Card>
+        )}
+
+        {/* Tour Overlay */}
+        {tourActive && (
+          <div className="fixed inset-0 z-50 pointer-events-none">
+            {/* Backdrop */}
+            <div className="absolute inset-0 bg-black/60 pointer-events-auto" onClick={skipTour} />
+
+            {/* Tour Tooltip */}
+            <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 pointer-events-auto">
+              <Card className="rounded-sm w-[90vw] max-w-md shadow-2xl border-2 border-primary">
+                <CardHeader className="pb-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <Badge variant="outline" className="rounded-sm">
+                      Step {tourStep + 1} of {tourSteps.length}
+                    </Badge>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={skipTour}
+                      className="h-6 px-2 text-xs"
+                    >
+                      Skip Tour
+                    </Button>
+                  </div>
+                  <CardTitle className="text-lg">{tourSteps[tourStep].title}</CardTitle>
+                </CardHeader>
+                <CardContent className="pb-4">
+                  <p className="text-sm text-muted-foreground mb-4">
+                    {tourSteps[tourStep].content}
+                  </p>
+                  <div className="flex items-center justify-between gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={prevTourStep}
+                      disabled={tourStep === 0}
+                      className="rounded-sm"
+                    >
+                      Previous
+                    </Button>
+                    <Button
+                      size="sm"
+                      onClick={nextTourStep}
+                      className="rounded-sm"
+                    >
+                      {tourStep === tourSteps.length - 1 ? 'Finish' : 'Next'}
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          </div>
         )}
         </div>
       </div>
