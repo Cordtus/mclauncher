@@ -287,27 +287,147 @@ export async function updateConfigFile(
 
 /**
  * Update TOML values while preserving comments and formatting
+ * Handles nested keys, sections, and different value types correctly
  */
 function updateTomlValues(content: string, updates: Record<string, any>): string {
-  let lines = content.split('\n');
+  const lines = content.split('\n');
+  let currentSection = '';
+  const updatedKeys = new Set<string>();
 
+  // First pass: update existing keys
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    // Track section headers [section] or [section.subsection]
+    const sectionMatch = trimmed.match(/^\[([^\]]+)\]$/);
+    if (sectionMatch) {
+      currentSection = sectionMatch[1];
+      continue;
+    }
+
+    // Skip comments and empty lines
+    if (!trimmed || trimmed.startsWith('#')) {
+      continue;
+    }
+
+    // Match key = value lines
+    const keyMatch = trimmed.match(/^([a-zA-Z0-9_-]+)\s*=/);
+    if (keyMatch) {
+      const fieldName = keyMatch[1];
+      const fullKey = currentSection ? `${currentSection}.${fieldName}` : fieldName;
+
+      // Check if this key needs updating
+      if (fullKey in updates) {
+        const indent = line.match(/^\s*/)?.[0] || '';
+        const newValue = formatTomlValue(updates[fullKey]);
+        lines[i] = `${indent}${fieldName} = ${newValue}`;
+        updatedKeys.add(fullKey);
+      }
+    }
+  }
+
+  // Second pass: append keys that weren't found
   for (const [key, value] of Object.entries(updates)) {
-    const parts = key.split('.');
-    const fieldName = parts[parts.length - 1];
+    if (!updatedKeys.has(key)) {
+      const parts = key.split('.');
+      if (parts.length > 1) {
+        // Nested key - find or create the section
+        const section = parts.slice(0, -1).join('.');
+        const fieldName = parts[parts.length - 1];
+        const sectionIndex = findOrAddSection(lines, section);
+        const newValue = formatTomlValue(value);
 
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (line.startsWith(fieldName + ' =') || line.startsWith(fieldName + '=')) {
-        // Preserve indentation
-        const indent = lines[i].match(/^\s*/)?.[0] || '';
-        const valueStr = typeof value === 'string' ? `"${value}"` : String(value);
-        lines[i] = `${indent}${fieldName} = ${valueStr}`;
-        break;
+        // Find the end of the section to append the new key
+        let insertIndex = sectionIndex + 1;
+        while (insertIndex < lines.length &&
+               lines[insertIndex].trim() &&
+               !lines[insertIndex].trim().startsWith('[')) {
+          insertIndex++;
+        }
+        lines.splice(insertIndex, 0, `${fieldName} = ${newValue}`);
+      } else {
+        // Top-level key - add at the beginning (before first section)
+        const newValue = formatTomlValue(value);
+        let insertIndex = 0;
+        while (insertIndex < lines.length && !lines[insertIndex].trim().startsWith('[')) {
+          insertIndex++;
+        }
+        if (insertIndex > 0 && lines[insertIndex - 1].trim() !== '') {
+          lines.splice(insertIndex, 0, '');
+        }
+        lines.splice(insertIndex, 0, `${key} = ${newValue}`);
       }
     }
   }
 
   return lines.join('\n');
+}
+
+/**
+ * Format a value for TOML syntax
+ * Handles strings, numbers, booleans, arrays, and inline tables
+ */
+function formatTomlValue(value: any): string {
+  if (value === null || value === undefined) {
+    return '""';
+  }
+
+  if (typeof value === 'boolean') {
+    return value.toString();
+  }
+
+  if (typeof value === 'number') {
+    return value.toString();
+  }
+
+  if (typeof value === 'string') {
+    // Escape special characters for TOML strings
+    const escaped = value
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/\n/g, '\\n')
+      .replace(/\r/g, '\\r')
+      .replace(/\t/g, '\\t');
+    return `"${escaped}"`;
+  }
+
+  if (Array.isArray(value)) {
+    const items = value.map(v => formatTomlValue(v)).join(', ');
+    return `[${items}]`;
+  }
+
+  if (typeof value === 'object') {
+    // Inline table format
+    const entries = Object.entries(value)
+      .map(([k, v]) => `${k} = ${formatTomlValue(v)}`)
+      .join(', ');
+    return `{ ${entries} }`;
+  }
+
+  return String(value);
+}
+
+/**
+ * Find a section in the lines array, or add it if missing
+ * Returns the line index of the section header
+ */
+function findOrAddSection(lines: string[], section: string): number {
+  const sectionHeader = `[${section}]`;
+
+  // Look for existing section
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim() === sectionHeader) {
+      return i;
+    }
+  }
+
+  // Section not found - add it at the end
+  if (lines.length > 0 && lines[lines.length - 1].trim() !== '') {
+    lines.push('');
+  }
+  lines.push(sectionHeader);
+  return lines.length - 1;
 }
 
 /**
