@@ -64,6 +64,7 @@ SETUP_AUTOMATED_DEPLOYMENT.md
 CADDY_CONFIG.md
 CADDY_REBUILD.md
 README_WORKSTATION.md
+FEATURES.md
 
 # Local setup scripts (host-specific)
 setup/
