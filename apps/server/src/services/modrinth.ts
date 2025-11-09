@@ -64,7 +64,8 @@ export interface ModrinthFile {
 export interface ModSearchParams {
   query: string;
   mcVersion?: string;
-  loader?: 'forge' | 'fabric' | 'neoforge';
+  loader?: 'forge' | 'fabric' | 'neoforge' | 'paper' | 'bukkit' | 'spigot' | 'purpur' | 'folia';
+  projectType?: 'mod' | 'plugin';
   category?: string;
   limit?: number;
   offset?: number;
@@ -79,11 +80,11 @@ export interface ModCompatibilityInfo {
 }
 
 /**
- * Search for mods on Modrinth
+ * Search for mods or plugins on Modrinth
  */
 export async function searchMods(params: ModSearchParams): Promise<ModrinthSearchResult> {
   const facets: string[][] = [
-    ['project_type:mod']
+    [`project_type:${params.projectType || 'mod'}`]
   ];
 
   // Filter by Minecraft version

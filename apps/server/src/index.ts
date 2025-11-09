@@ -827,13 +827,14 @@ app.post("/api/servers/:name/backup", requireAdmin, async (req, res) => {
 
 import * as modrinth from './services/modrinth.js';
 
-// Search for mods
+// Search for mods or plugins
 app.get("/api/mods/search", async (req, res) => {
   try {
     const {
       query = '',
       mcVersion,
       loader,
+      projectType,
       category,
       limit,
       offset,
@@ -843,7 +844,8 @@ app.get("/api/mods/search", async (req, res) => {
     const results = await modrinth.searchMods({
       query: query as string,
       mcVersion: mcVersion as string | undefined,
-      loader: loader as 'forge' | 'fabric' | 'neoforge' | undefined,
+      loader: loader as any,
+      projectType: projectType as 'mod' | 'plugin' | undefined,
       category: category as string | undefined,
       limit: limit ? parseInt(limit as string) : undefined,
       offset: offset ? parseInt(offset as string) : undefined,

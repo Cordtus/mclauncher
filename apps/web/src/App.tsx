@@ -1242,39 +1242,72 @@ export function App() {
                       </DialogContent>
                     </Dialog>
 
-                    {/* Upload Plugin - Only for Paper/Purpur/Spigot */}
+                    {/* Plugin Management - Only for Paper/Purpur/Spigot */}
                     {['paper', 'purpur', 'spigot'].includes(server.edition.toLowerCase()) && (
-                      <Tooltip>
-                        <div>
-                          <input
-                            type="file"
-                            accept=".jar"
-                            id={`plugin-${server.name}`}
-                            className="hidden"
-                            onChange={(e) =>
-                              handleFileUpload(server.name, "plugins", e)
-                            }
-                          />
-                          <label htmlFor={`plugin-${server.name}`}>
-                            <TooltipTrigger asChild>
-                              <Button
-                                variant="outline"
-                                className="rounded-sm w-full hover:bg-purple-500/10 hover:border-purple-500 transition-all"
-                                asChild
-                              >
-                                <span>
-                                  <Package className="mr-2 h-4 w-4" />
-                                  🔌 Upload Plugin
-                                </span>
-                              </Button>
-                            </TooltipTrigger>
-                          </label>
-                        </div>
-                        <TooltipContent className="max-w-xs">
-                          <p className="font-semibold mb-1">Upload Plugin (.jar)</p>
-                          <p className="text-xs">Download from SpigotMC, Bukkit, or Modrinth. Restart server after upload.</p>
-                        </TooltipContent>
-                      </Tooltip>
+                      <>
+                        <Dialog>
+                          <DialogTrigger asChild>
+                            <Button
+                              variant="outline"
+                              className="rounded-sm hover:bg-purple-500/10 hover:border-purple-500 transition-all"
+                            >
+                              <Package2 className="mr-2 h-4 w-4" />
+                              Browse Plugins
+                            </Button>
+                          </DialogTrigger>
+                          <DialogContent className="rounded-sm max-w-5xl max-h-[90vh]">
+                            <DialogHeader>
+                              <DialogTitle>Plugin Browser</DialogTitle>
+                              <DialogDescription>
+                                Search and install plugins from Modrinth
+                              </DialogDescription>
+                            </DialogHeader>
+                            <ModBrowser
+                              serverName={server.name}
+                              mcVersion={server.mc_version}
+                              loader={server.edition.toLowerCase() as 'paper' | 'spigot' | 'purpur'}
+                              serverMemoryMB={server.memory_mb}
+                              type="plugin"
+                              onInstall={() => {
+                                setMessage(`Plugin installed. Restart ${server.name} to load the plugin.`);
+                                refresh();
+                              }}
+                            />
+                          </DialogContent>
+                        </Dialog>
+
+                        <Tooltip>
+                          <div>
+                            <input
+                              type="file"
+                              accept=".jar"
+                              id={`plugin-${server.name}`}
+                              className="hidden"
+                              onChange={(e) =>
+                                handleFileUpload(server.name, "plugins", e)
+                              }
+                            />
+                            <label htmlFor={`plugin-${server.name}`}>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  variant="outline"
+                                  className="rounded-sm w-full hover:bg-purple-500/10 hover:border-purple-500 transition-all"
+                                  asChild
+                                >
+                                  <span>
+                                    <Package className="mr-2 h-4 w-4" />
+                                    Upload Plugin
+                                  </span>
+                                </Button>
+                              </TooltipTrigger>
+                            </label>
+                          </div>
+                          <TooltipContent className="max-w-xs">
+                            <p className="font-semibold mb-1">Upload Plugin (.jar)</p>
+                            <p className="text-xs">Download from SpigotMC, Bukkit, or Modrinth. Restart server after upload.</p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </>
                     )}
 
                     {/* Mod Management - Only for Forge/NeoForge/Fabric */}

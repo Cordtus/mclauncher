@@ -23,8 +23,9 @@ import { Separator } from "@/components/ui/separator";
 interface ModBrowserProps {
   serverName: string;
   mcVersion: string;
-  loader: 'forge' | 'fabric' | 'neoforge';
+  loader: 'forge' | 'fabric' | 'neoforge' | 'paper' | 'bukkit' | 'spigot' | 'purpur' | 'folia';
   serverMemoryMB: number;
+  type?: 'mod' | 'plugin';
   onInstall?: () => void;
 }
 
@@ -74,7 +75,7 @@ interface CompatibilityInfo {
   resourceWarning?: string;
 }
 
-export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, onInstall }: ModBrowserProps) {
+export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type = 'mod', onInstall }: ModBrowserProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [category, setCategory] = useState<string>("all");
   const [sortBy, setSortBy] = useState<string>("relevance");
@@ -88,8 +89,8 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, onIn
   const [message, setMessage] = useState<string>("");
   const [showPopular, setShowPopular] = useState(true);
 
-  // Popular mods by loader type
-  const popularMods = {
+  // Popular mods/plugins by loader type
+  const popularMods: Record<string, Array<{slug: string; name: string; description: string; category: string}>> = {
     fabric: [
       { slug: "sodium", name: "Sodium", description: "Modern rendering engine and optimization mod", category: "Optimization" },
       { slug: "lithium", name: "Lithium", description: "Server-side performance optimization", category: "Optimization" },
@@ -117,6 +118,29 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, onIn
       { slug: "create", name: "Create", description: "Mechanical contraptions and automation", category: "Technology" },
       { slug: "ae2", name: "Applied Energistics 2", description: "Advanced storage and automation", category: "Technology" },
       { slug: "ferritecore", name: "FerriteCore", description: "Memory usage optimization", category: "Optimization" },
+    ],
+    paper: [
+      { slug: "luckperms", name: "LuckPerms", description: "Advanced permissions plugin", category: "Admin Tools" },
+      { slug: "essentialsx", name: "EssentialsX", description: "Essential server commands and features", category: "Admin Tools" },
+      { slug: "worldedit", name: "WorldEdit", description: "In-game map editor", category: "World Management" },
+      { slug: "worldguard", name: "WorldGuard", description: "Region protection and management", category: "World Management" },
+      { slug: "vault", name: "Vault", description: "Economy and permissions API", category: "Library" },
+      { slug: "coreprotect", name: "CoreProtect", description: "Block logging and rollback", category: "Admin Tools" },
+      { slug: "dynmap", name: "Dynmap", description: "Real-time web-based map", category: "Utility" },
+      { slug: "papi", name: "PlaceholderAPI", description: "Placeholder system for plugins", category: "Library" },
+    ],
+    bukkit: [
+      { slug: "luckperms", name: "LuckPerms", description: "Advanced permissions plugin", category: "Admin Tools" },
+      { slug: "essentialsx", name: "EssentialsX", description: "Essential server commands and features", category: "Admin Tools" },
+      { slug: "worldedit", name: "WorldEdit", description: "In-game map editor", category: "World Management" },
+      { slug: "vault", name: "Vault", description: "Economy and permissions API", category: "Library" },
+    ],
+    spigot: [
+      { slug: "luckperms", name: "LuckPerms", description: "Advanced permissions plugin", category: "Admin Tools" },
+      { slug: "essentialsx", name: "EssentialsX", description: "Essential server commands and features", category: "Admin Tools" },
+      { slug: "worldedit", name: "WorldEdit", description: "In-game map editor", category: "World Management" },
+      { slug: "worldguard", name: "WorldGuard", description: "Region protection and management", category: "World Management" },
+      { slug: "vault", name: "Vault", description: "Economy and permissions API", category: "Library" },
     ],
   };
 
@@ -176,6 +200,7 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, onIn
         query: searchQuery,
         mcVersion: mcVersion,
         loader: loader,
+        projectType: type,
         limit: "20",
         sort: sortBy,
       });
