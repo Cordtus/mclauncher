@@ -16,8 +16,11 @@ import {
   ChevronUp,
   Terminal,
   Package2,
+  Loader2,
 } from "lucide-react";
+import { toast } from "sonner";
 import { ModBrowser } from "@/components/ModBrowser";
+import { ModsManagementPanel } from "@/components/ModsManagementPanel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -122,6 +125,10 @@ export function App() {
   const [newVersion, setNewVersion] = useState("");
   const [isChangingVersion, setIsChangingVersion] = useState(false);
 
+  // Settings management state
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [serverSettingsDialog, setServerSettingsDialog] = useState(false);
+
   // Server configuration state (persisted in localStorage)
   const [serverSettings, setServerSettings] = useState(() => {
     const saved = localStorage.getItem('mc-server-settings');
@@ -168,11 +175,6 @@ export function App() {
     };
   });
 
-  // Connection status tracking
-  const [connectionStatus, setConnectionStatus] = useState({
-    local: { status: 'checking' as 'online' | 'offline' | 'checking', lastChecked: null as Date | null },
-    public: { status: 'checking' as 'online' | 'offline' | 'checking', lastChecked: null as Date | null }
-  });
 
   // Save settings to localStorage whenever they change
   useEffect(() => {
@@ -212,54 +214,10 @@ export function App() {
       const res = await fetch("/api/servers");
       const serverData = await res.json();
       setServers(serverData);
-
-      // Check connection status for first server
-      if (serverData.length > 0) {
-        checkConnectionStatus(serverData[0]);
-      }
     } catch (err) {
       setMessage("Failed to fetch servers");
     } finally {
       setIsRefreshing(false);
-    }
-  }
-
-  // Check if local and public connections are accessible
-  async function checkConnectionStatus(server: ServerRow) {
-    // Check local connection - use server status from agent
-    if (server.minecraft?.online) {
-      setConnectionStatus(prev => ({
-        ...prev,
-        local: { status: 'online', lastChecked: new Date() }
-      }));
-    } else {
-      setConnectionStatus(prev => ({
-        ...prev,
-        local: { status: 'offline', lastChecked: new Date() }
-      }));
-    }
-
-    // Check public connection (if public domain is set)
-    if (server.public_domain) {
-      try {
-        // Use a public ping service or our own backend endpoint
-        const publicCheck = await fetch(`/api/servers/${server.name}/check-public`, {
-          signal: AbortSignal.timeout(5000)
-        });
-        const result = await publicCheck.json();
-        setConnectionStatus(prev => ({
-          ...prev,
-          public: {
-            status: result.accessible ? 'online' : 'offline',
-            lastChecked: new Date()
-          }
-        }));
-      } catch (err) {
-        setConnectionStatus(prev => ({
-          ...prev,
-          public: { status: 'offline', lastChecked: new Date() }
-        }));
-      }
     }
   }
 
@@ -272,9 +230,9 @@ export function App() {
       const response = await fetch(`/api/servers/${servers[0].name}/logs`);
       const logText = await response.text();
 
-      // Get last 10 lines
+      // Get last 50 lines for scrolling
       const lines = logText.trim().split('\n');
-      const lastLines = lines.slice(-10).join('\n');
+      const lastLines = lines.slice(-50).join('\n');
       setLogs(lastLines);
     } catch (err) {
       console.error('Failed to fetch logs:', err);
@@ -307,6 +265,57 @@ export function App() {
       setTimeout(() => refresh(), 2000);
     } catch (err) {
       setMessage(`Failed to ${action} server`);
+    }
+  };
+
+  /**
+   * Save server settings to backend
+   * Maps frontend state to backend API format and applies all settings
+   */
+  const handleSaveSettings = async (serverName: string) => {
+    setIsSavingSettings(true);
+    try {
+      const payload = {
+        properties: {
+          'motd': serverSettings.motd,
+          'max-players': serverSettings.maxPlayers,
+          'gamemode': serverSettings.gamemode,
+          'difficulty': serverSettings.difficulty,
+          'pvp': serverSettings.pvp,
+          'spawn-protection': serverSettings.spawnProtection,
+          'view-distance': serverSettings.viewDistance,
+          'online-mode': serverSettings.onlineMode,
+          'allow-flight': serverSettings.allowFlight,
+          'enforce-whitelist': serverSettings.enforceWhitelist,
+        },
+        whitelist: serverSettings.whitelist,
+        operators: serverSettings.operators,
+        restart: true
+      };
+
+      const response = await fetch(`/api/servers/${serverName}/settings`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders()
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: response.statusText }));
+        throw new Error(errorData.error || 'Failed to save settings');
+      }
+
+      const data = await response.json();
+      toast.success(data.message || 'Settings applied successfully');
+      setServerSettingsDialog(false);
+
+      setTimeout(() => refresh(), 2000);
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to save settings');
+    } finally {
+      setIsSavingSettings(false);
     }
   };
 
@@ -413,9 +422,10 @@ export function App() {
                         <h3 className="font-semibold mb-1">Connecting to Your Server</h3>
                         <p className="text-muted-foreground mb-2">In Minecraft, select Multiplayer → Add Server:</p>
                         <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
-                          <li><strong>Local Network:</strong> Use the IP shown in the "Local Network" card (players on same WiFi)</li>
-                          <li><strong>Public Internet:</strong> Use the public domain once configured in Network settings</li>
-                          <li>Use the copy button to quickly copy the address</li>
+                          <li><strong>Local Network:</strong> Use the IP:PORT shown in the "Local Network" card (players on same WiFi)</li>
+                          <li><strong>Public Internet:</strong> Use the public domain:PORT once configured in Network settings</li>
+                          <li><strong>Important:</strong> The server uses a non-standard port (not 25565) for security</li>
+                          <li>Use the copy button to quickly copy the full address including port</li>
                         </ul>
                       </div>
                     </div>
@@ -638,58 +648,6 @@ export function App() {
           </Card>
         )}
 
-        {/* Console Log Panel */}
-        {servers.length > 0 && (
-          <Card className="rounded-sm border-amber-500/20">
-            <CardHeader className="pb-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Terminal className="h-4 w-4 text-amber-500" />
-                  <CardTitle className="text-base">Server Console</CardTitle>
-                  {isLoadingLogs && (
-                    <RefreshCw className="h-3 w-3 animate-spin text-muted-foreground" />
-                  )}
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setShowLogs(!showLogs)}
-                  className="h-6 w-6 p-0"
-                >
-                  {showLogs ? (
-                    <ChevronUp className="h-4 w-4" />
-                  ) : (
-                    <ChevronDown className="h-4 w-4" />
-                  )}
-                </Button>
-              </div>
-            </CardHeader>
-            {showLogs && (
-              <CardContent className="pt-0">
-                <div className="bg-black/90 rounded p-3 font-mono text-xs text-green-400 h-32 overflow-y-auto border border-green-500/20">
-                  {logs ? (
-                    <pre className="whitespace-pre-wrap">{logs}</pre>
-                  ) : (
-                    <span className="text-muted-foreground italic">No logs available...</span>
-                  )}
-                </div>
-                <div className="flex items-center justify-between mt-2 text-xs text-muted-foreground">
-                  <span>Auto-refreshes every 5 seconds • Last 10 lines</span>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => fetchLogs()}
-                    className="h-6 text-xs"
-                  >
-                    <RefreshCw className="h-3 w-3 mr-1" />
-                    Refresh Now
-                  </Button>
-                </div>
-              </CardContent>
-            )}
-          </Card>
-        )}
-
         {/* Server List */}
         {servers.length === 0 ? (
           <Card className="rounded-sm">
@@ -720,102 +678,99 @@ export function App() {
                       </CardDescription>
 
                       {/* Connection Info */}
-                      <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
                         {/* Local Connection */}
-                        <div className="border rounded-lg p-3 bg-card">
-                          <div className="flex items-center justify-between mb-2">
+                        <div className="border-2 rounded-lg p-4 bg-card">
+                          <div className="flex items-center justify-between mb-3">
                             <div className="flex items-center gap-2">
-                              <Globe className="h-4 w-4 text-muted-foreground" />
-                              <span className="text-sm font-semibold">Local Network</span>
+                              <Globe className="h-5 w-5 text-muted-foreground" />
+                              <span className="text-base font-bold">Local Network</span>
                             </div>
-                            {connectionStatus.local.status === 'online' && (
-                              <Badge className="bg-green-500 hover:bg-green-600">✓ ONLINE</Badge>
-                            )}
-                            {connectionStatus.local.status === 'offline' && (
-                              <Badge variant="destructive">✗ OFFLINE</Badge>
-                            )}
-                            {connectionStatus.local.status === 'checking' && (
-                              <Badge variant="outline">⟳ CHECKING</Badge>
+                            {server.minecraft?.online ? (
+                              <Badge className="bg-green-500 hover:bg-green-600 text-sm font-bold px-3 py-1">✓ RUNNING</Badge>
+                            ) : (
+                              <Badge variant="destructive" className="text-sm font-bold px-3 py-1">✗ STOPPED</Badge>
                             )}
                           </div>
-                          <div className="flex items-center gap-2">
-                            <code className="bg-muted px-2 py-1 rounded text-xs flex-1">
-                              {server.host_ip || server.local_ip}:{server.local_port}
+                          <div className="flex items-center gap-2 mb-2">
+                            <code className="bg-black/80 text-green-400 px-4 py-3 rounded text-lg font-bold flex-1 text-center border-2 border-green-500/30">
+                              {server.host_ip || server.local_ip}:{server.public_port}
                             </code>
                             <Button
                               variant="ghost"
                               size="icon"
-                              className="h-7 w-7"
-                              onClick={() => copyToClipboard(`${server.host_ip || server.local_ip}:${server.local_port}`)}
+                              className="h-10 w-10"
+                              onClick={() => copyToClipboard(`${server.host_ip || server.local_ip}:${server.public_port}`)}
                               title="Copy to clipboard"
                             >
-                              <Copy className="h-3.5 w-3.5" />
+                              <Copy className="h-5 w-5" />
                             </Button>
                           </div>
-                          <p className="text-xs text-muted-foreground mt-1">
+                          <p className="text-sm font-semibold text-center">
                             {server.host_ip
                               ? "For players on the same WiFi"
-                              : "⚠️ Set Host IP in Network settings for local access"}
+                              : "⚠️ Set Host IP in Network settings"}
                           </p>
                         </div>
 
                         {/* Public Connection */}
-                        <div className="border rounded-lg p-3 bg-card">
-                          <div className="flex items-center justify-between mb-2">
+                        <div className="border-2 rounded-lg p-4 bg-card">
+                          <div className="flex items-center justify-between mb-3">
                             <div className="flex items-center gap-2">
-                              <Globe className="h-4 w-4 text-muted-foreground" />
-                              <span className="text-sm font-semibold">🌍 Public Internet</span>
+                              <Globe className="h-5 w-5 text-muted-foreground" />
+                              <span className="text-base font-bold">Public Internet</span>
                             </div>
                             {server.public_domain ? (
-                              <>
-                                {connectionStatus.public.status === 'online' && (
-                                  <Badge className="bg-green-500 hover:bg-green-600">✓ ONLINE</Badge>
-                                )}
-                                {connectionStatus.public.status === 'offline' && (
-                                  <Badge variant="destructive">✗ OFFLINE</Badge>
-                                )}
-                                {connectionStatus.public.status === 'checking' && (
-                                  <Badge variant="outline">⟳ CHECKING</Badge>
-                                )}
-                              </>
+                              server.minecraft?.online ? (
+                                <Badge className="bg-green-500 hover:bg-green-600 text-sm font-bold px-3 py-1">✓ RUNNING</Badge>
+                              ) : (
+                                <Badge variant="destructive" className="text-sm font-bold px-3 py-1">✗ STOPPED</Badge>
+                              )
                             ) : (
-                              <Badge variant="outline">Not configured</Badge>
+                              <Badge variant="outline" className="text-sm font-bold px-3 py-1">Not configured</Badge>
                             )}
                           </div>
                           {server.public_domain ? (
                             <>
-                              <div className="flex items-center gap-2">
-                                <code className="bg-muted px-2 py-1 rounded text-xs flex-1">
+                              <div className="flex items-center gap-2 mb-2">
+                                <code className="bg-black/80 text-cyan-400 px-4 py-3 rounded text-lg font-bold flex-1 text-center border-2 border-cyan-500/30">
                                   {server.public_domain}:{server.public_port}
                                 </code>
                                 <Button
                                   variant="ghost"
                                   size="icon"
-                                  className="h-7 w-7"
+                                  className="h-10 w-10"
                                   onClick={() => copyToClipboard(`${server.public_domain}:${server.public_port}`)}
                                   title="Copy to clipboard"
                                 >
-                                  <Copy className="h-3.5 w-3.5" />
+                                  <Copy className="h-5 w-5" />
                                 </Button>
                               </div>
-                              <p className="text-xs text-muted-foreground mt-1">For friends anywhere</p>
+                              <p className="text-sm font-semibold text-center">For friends anywhere (requires port forwarding)</p>
                             </>
                           ) : (
-                            <p className="text-xs text-muted-foreground">Set up in Server Settings</p>
+                            <>
+                              <div className="flex items-center gap-2 mb-2">
+                                <code className="bg-muted px-4 py-3 rounded text-base font-semibold flex-1 text-center opacity-50">
+                                  Not configured
+                                </code>
+                              </div>
+                              <p className="text-sm font-semibold text-center">Configure in Network settings</p>
+                            </>
                           )}
                         </div>
                       </div>
 
                       {/* Player Info */}
                       {server.minecraft?.online && server.minecraft.players && (
-                        <div className="mt-2 flex items-center gap-2 text-sm">
-                          <Users className="h-3.5 w-3.5 text-muted-foreground" />
-                          <span className="text-muted-foreground">Players:</span>
-                          <Badge variant="secondary" className="rounded-sm text-xs">
+                        <div className="mt-3 flex items-center gap-3 text-base">
+                          <Users className="h-5 w-5 text-muted-foreground" />
+                          <span className="font-semibold text-muted-foreground">Players:</span>
+                          <Badge variant="secondary" className="rounded-sm text-sm font-bold px-3 py-1">
                             {server.minecraft.players.online}/{server.minecraft.players.max}
                           </Badge>
                           {server.minecraft.description && (
-                            <span className="text-xs text-muted-foreground ml-2">
+                            <span className="text-sm text-muted-foreground ml-2 font-medium">
                               · {server.minecraft.description}
                             </span>
                           )}
@@ -1044,14 +999,14 @@ export function App() {
                     </Tooltip>
 
                     {/* Server Settings */}
-                    <Dialog>
+                    <Dialog open={serverSettingsDialog} onOpenChange={setServerSettingsDialog}>
                       <DialogTrigger asChild>
                         <Button
                           variant="outline"
                           className="rounded-sm hover:bg-blue-500/10 hover:border-blue-500 transition-all"
                         >
                           <Settings className="mr-2 h-4 w-4" />
-                          ⚙️ Server Settings
+                          Server Settings
                         </Button>
                       </DialogTrigger>
                       <DialogContent className="rounded-sm max-w-3xl max-h-[85vh] overflow-y-auto">
@@ -1063,13 +1018,16 @@ export function App() {
                         </DialogHeader>
 
                         <Tabs defaultValue="properties" className="w-full">
-                          <TabsList className="grid w-full grid-cols-6">
+                          <TabsList className={`grid w-full ${['forge', 'neoforge', 'fabric'].includes(server.edition.toLowerCase()) ? 'grid-cols-7' : 'grid-cols-6'}`}>
                             <TabsTrigger value="network">Network</TabsTrigger>
                             <TabsTrigger value="properties">Properties</TabsTrigger>
                             <TabsTrigger value="gameplay">Gameplay</TabsTrigger>
                             <TabsTrigger value="security">Security</TabsTrigger>
                             <TabsTrigger value="plugins">Plugins</TabsTrigger>
                             <TabsTrigger value="admins">Admins</TabsTrigger>
+                            {['forge', 'neoforge', 'fabric'].includes(server.edition.toLowerCase()) && (
+                              <TabsTrigger value="mods">Mods</TabsTrigger>
+                            )}
                           </TabsList>
 
                           {/* Network Tab */}
@@ -1112,7 +1070,7 @@ export function App() {
                               <div className="bg-muted/50 p-3 rounded-lg">
                                 <p className="text-sm font-semibold mb-1">How to set up public access:</p>
                                 <ol className="text-xs text-muted-foreground space-y-1 list-decimal ml-4">
-                                  <li>Configure port forwarding on your router: External port 25565 → {server.host_ip || 'your LXD host'}:25565</li>
+                                  <li>Configure port forwarding on your router: External port {server.public_port} → {server.host_ip || 'your LXD host'}:{server.public_port}</li>
                                   <li>Set up DNS A record pointing to your public IP address</li>
                                   <li>Enter your domain name above</li>
                                   <li>Public connection status will update automatically</li>
@@ -1517,24 +1475,42 @@ export function App() {
                               )}
                             </div>
                           </TabsContent>
+
+                          {/* Mods Tab - Only for Forge/NeoForge/Fabric */}
+                          {['forge', 'neoforge', 'fabric'].includes(server.edition.toLowerCase()) && (
+                            <TabsContent value="mods">
+                              <ModsManagementPanel
+                                serverName={server.name}
+                                mcVersion={server.mc_version}
+                                loader={server.edition.toLowerCase() as 'forge' | 'fabric' | 'neoforge'}
+                                serverMemoryMB={server.memory_mb}
+                              />
+                            </TabsContent>
+                          )}
                         </Tabs>
 
                         <DialogFooter>
                           <Button
                             variant="outline"
                             className="rounded-sm"
-                            onClick={() => {/* TODO: Save settings */}}
+                            onClick={() => setServerSettingsDialog(false)}
+                            disabled={isSavingSettings}
                           >
                             Cancel
                           </Button>
                           <Button
                             className="rounded-sm"
-                            onClick={() => {
-                              // TODO: Apply settings to server
-                              console.log("Applying settings:", serverSettings);
-                            }}
+                            onClick={() => handleSaveSettings(server.name)}
+                            disabled={isSavingSettings}
                           >
-                            💾 Save & Apply
+                            {isSavingSettings ? (
+                              <>
+                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                Saving...
+                              </>
+                            ) : (
+                              "Save & Apply"
+                            )}
                           </Button>
                         </DialogFooter>
                       </DialogContent>
@@ -1554,6 +1530,58 @@ export function App() {
               </Card>
             ))}
           </div>
+        )}
+
+        {/* Console Log Panel */}
+        {servers.length > 0 && (
+          <Card className="rounded-sm border-amber-500/20">
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Terminal className="h-4 w-4 text-amber-500" />
+                  <CardTitle className="text-base">Server Console</CardTitle>
+                  {isLoadingLogs && (
+                    <RefreshCw className="h-3 w-3 animate-spin text-muted-foreground" />
+                  )}
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowLogs(!showLogs)}
+                  className="h-6 w-6 p-0"
+                >
+                  {showLogs ? (
+                    <ChevronUp className="h-4 w-4" />
+                  ) : (
+                    <ChevronDown className="h-4 w-4" />
+                  )}
+                </Button>
+              </div>
+            </CardHeader>
+            {showLogs && (
+              <CardContent className="pt-0">
+                <div className="bg-black/90 rounded p-3 font-mono text-xs text-green-400 h-24 overflow-y-auto border border-green-500/20">
+                  {logs ? (
+                    <pre className="whitespace-pre-wrap">{logs}</pre>
+                  ) : (
+                    <span className="text-muted-foreground italic">No logs available...</span>
+                  )}
+                </div>
+                <div className="flex items-center justify-between mt-2 text-xs text-muted-foreground">
+                  <span>Auto-refreshes every 5 seconds • Showing recent logs</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => fetchLogs()}
+                    className="h-6 text-xs"
+                  >
+                    <RefreshCw className="h-3 w-3 mr-1" />
+                    Refresh Now
+                  </Button>
+                </div>
+              </CardContent>
+            )}
+          </Card>
         )}
         </div>
       </div>

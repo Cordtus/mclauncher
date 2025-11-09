@@ -12,8 +12,8 @@ EDITION="${2:-paper}"           # paper or vanilla
 MC_VERSION="${3:-1.21.1}"
 MEMORY_MB="${4:-2048}"
 CPU_LIMIT="${5:-2}"
-PUBLIC_PORT="${6:-25565}"
-RCON_PORT="${7:-25575}"
+PUBLIC_PORT="${6:-34567}"        # Non-standard port to avoid botnet scans
+RCON_PORT="${7:-34568}"
 RCON_PASSWORD="${8:-$(openssl rand -hex 16)}"
 MANAGER_CONTAINER="${9:-mc-manager}"
 
@@ -200,8 +200,11 @@ lxc exec "$CONTAINER_NAME" -- systemctl enable minecraft
 lxc exec "$CONTAINER_NAME" -- systemctl start mc-agent
 lxc exec "$CONTAINER_NAME" -- systemctl start minecraft
 
-# Get container IP
+# Get container IP (for internal communication with agent)
 CONTAINER_IP=$(lxc list "$CONTAINER_NAME" -c4 --format=csv | cut -d' ' -f1)
+
+# Get host IP for local network connections
+HOST_IP=$(ip route get 1.1.1.1 | grep -oP 'src \K\S+')
 
 # Register with management backend
 echo "==> Registering server with management backend..."
@@ -219,6 +222,7 @@ curl -X POST http://127.0.0.1:8080/api/servers/register \
     \"name\": \"$CONTAINER_NAME\",
     \"agent_url\": \"http://$CONTAINER_IP:9090\",
     \"public_port\": $PUBLIC_PORT,
+    \"host_ip\": \"$HOST_IP\",
     \"memory_mb\": $MEMORY_MB,
     \"cpu_limit\": \"$CPU_LIMIT\",
     \"edition\": \"$EDITION\",
@@ -231,12 +235,16 @@ echo "==> Minecraft server created and registered!"
 echo ""
 echo "Container: $CONTAINER_NAME"
 echo "Edition: $EDITION $MC_VERSION"
-echo "Minecraft Port: $PUBLIC_PORT"
-echo "RCON Port: $RCON_PORT"
-echo "RCON Password: $RCON_PASSWORD"
-echo "Agent IP: $CONTAINER_IP:9090"
 echo ""
-echo "Commands:"
+echo "Connection Info:"
+echo "  Local Network: $HOST_IP:$PUBLIC_PORT"
+echo "  (Players on same WiFi use this address)"
+echo ""
+echo "RCON:"
+echo "  Port: $RCON_PORT"
+echo "  Password: $RCON_PASSWORD"
+echo ""
+echo "Management Commands:"
 echo "  lxc exec $CONTAINER_NAME -- systemctl status minecraft"
 echo "  lxc exec $CONTAINER_NAME -- systemctl status mc-agent"
 echo "  lxc exec $CONTAINER_NAME -- journalctl -u minecraft -f"

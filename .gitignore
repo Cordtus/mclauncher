@@ -51,3 +51,8 @@ CLAUDE.md
 
 # Local setup scripts (host-specific)
 setup/
+
+# Workstation deployment scripts (local only)
+deploy-from-workstation.sh
+dev-helpers.sh
+README_WORKSTATION.md

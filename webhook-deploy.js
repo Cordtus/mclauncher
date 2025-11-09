@@ -18,8 +18,8 @@ const { execSync } = require('child_process');
 
 const PORT = process.env.WEBHOOK_PORT || 9000;
 const SECRET = process.env.WEBHOOK_SECRET || '';
-const REPO_PATH = process.env.REPO_PATH || '/home/bv/repos/mclauncher';
-const BRANCH = process.env.DEPLOY_BRANCH || 'main';
+const REPO_PATH = process.env.REPO_PATH || '/home/cordt/repos/mclauncher';
+const BRANCH = process.env.DEPLOY_BRANCH || 'feature/advanced-mod-management';
 
 function verifySignature(payload, signature) {
   if (!SECRET) return true; // Skip verification if no secret set
@@ -46,7 +46,7 @@ function deploy() {
 
     // Deploy to containers
     console.log('Deploying to containers...');
-    execSync(`cd ${REPO_PATH} && ./deploy.sh --all`, { stdio: 'inherit' });
+    execSync(`cd ${REPO_PATH} && sudo ./deploy-updates.sh`, { stdio: 'inherit' });
 
     console.log('[%s] Deployment complete!', new Date().toISOString());
     return true;

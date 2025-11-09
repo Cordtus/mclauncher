@@ -22,6 +22,10 @@ import { WorldManager } from "./managers/world.js";
 import { PaperDownloader } from "./downloaders/paper.js";
 import { VanillaDownloader } from "./downloaders/vanilla.js";
 import { pingMinecraftServer } from "./utils/mcping.js";
+import { extractModMetadata, extractModIcon } from "./services/jar-metadata.js";
+import { parseConfigFile, updateConfigFile, listConfigFiles, detectFormat } from "./services/config-parser.js";
+import { resolveUsername } from "./services/mojang.js";
+import { parseProperties, updateProperties, readJsonArray, writeJsonArray } from "./services/properties-parser.js";
 
 const PORT = Number(process.env.AGENT_PORT || 9090);
 const MC_DIR = process.env.MC_DIR || "/opt/minecraft";
@@ -154,6 +158,280 @@ app.post("/config", (req, res) => {
   }
 });
 
+// ============================================================================
+// Settings Management
+// ============================================================================
+
+/**
+ * Apply structured server settings
+ * Updates server.properties, whitelist.json, and ops.json
+ */
+app.post("/settings", async (req, res) => {
+  try {
+    const { properties, whitelist, operators, restart = true } = req.body;
+
+    if (!properties && !whitelist && !operators) {
+      return res.status(400).json({ error: "No settings provided" });
+    }
+
+    const configPath = path.join(MC_DIR, "server.properties");
+    const whitelistPath = path.join(MC_DIR, "whitelist.json");
+    const opsPath = path.join(MC_DIR, "ops.json");
+
+    // Update server.properties if provided
+    if (properties && typeof properties === 'object') {
+      if (!fs.existsSync(configPath)) {
+        return res.status(404).json({ error: "server.properties not found" });
+      }
+      updateProperties(configPath, properties);
+      sh("chown", ["mc:mc", configPath]);
+    }
+
+    // Update whitelist if provided
+    if (Array.isArray(whitelist)) {
+      const whitelistData: Array<{ uuid: string; name: string }> = [];
+
+      for (const username of whitelist) {
+        if (typeof username !== 'string') continue;
+
+        try {
+          const profile = await resolveUsername(username);
+          whitelistData.push({ uuid: profile.uuid, name: profile.name });
+        } catch (err: any) {
+          return res.status(400).json({
+            error: `Failed to resolve username "${username}": ${err.message}`
+          });
+        }
+      }
+
+      writeJsonArray(whitelistPath, whitelistData);
+      sh("chown", ["mc:mc", whitelistPath]);
+
+      // Enable whitelist in properties if not empty
+      if (whitelistData.length > 0) {
+        updateProperties(configPath, { "white-list": true });
+      }
+    }
+
+    // Update operators if provided
+    if (Array.isArray(operators)) {
+      const opsData: Array<{ uuid: string; name: string; level: number; bypassesPlayerLimit: boolean }> = [];
+
+      for (const username of operators) {
+        if (typeof username !== 'string') continue;
+
+        try {
+          const profile = await resolveUsername(username);
+          opsData.push({
+            uuid: profile.uuid,
+            name: profile.name,
+            level: 4,
+            bypassesPlayerLimit: false
+          });
+        } catch (err: any) {
+          return res.status(400).json({
+            error: `Failed to resolve operator username "${username}": ${err.message}`
+          });
+        }
+      }
+
+      writeJsonArray(opsPath, opsData);
+      sh("chown", ["mc:mc", opsPath]);
+    }
+
+    // Restart server if requested
+    if (restart) {
+      const status = shSafe("systemctl", ["is-active", "minecraft"]);
+      if (status.stdout.trim() === "active") {
+        sh("systemctl", ["restart", "minecraft"]);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: "Settings applied successfully" + (restart ? " and server restarted" : "")
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Get current whitelist
+ */
+app.get("/settings/whitelist", (_req, res) => {
+  try {
+    const whitelistPath = path.join(MC_DIR, "whitelist.json");
+    const whitelist = readJsonArray<{ uuid: string; name: string }>(whitelistPath);
+    res.json(whitelist);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Add player to whitelist
+ */
+app.post("/settings/whitelist/add", async (req, res) => {
+  try {
+    const { username } = req.body;
+
+    if (!username || typeof username !== 'string') {
+      return res.status(400).json({ error: "Missing username" });
+    }
+
+    const whitelistPath = path.join(MC_DIR, "whitelist.json");
+    const whitelist = readJsonArray<{ uuid: string; name: string }>(whitelistPath);
+
+    // Check if already whitelisted
+    if (whitelist.some(p => p.name.toLowerCase() === username.toLowerCase())) {
+      return res.json({ success: true, message: "Player already whitelisted" });
+    }
+
+    // Resolve username to UUID
+    const profile = await resolveUsername(username);
+
+    // Add to whitelist
+    whitelist.push({ uuid: profile.uuid, name: profile.name });
+    writeJsonArray(whitelistPath, whitelist);
+    sh("chown", ["mc:mc", whitelistPath]);
+
+    // Enable whitelist in properties
+    const configPath = path.join(MC_DIR, "server.properties");
+    updateProperties(configPath, { "white-list": true });
+
+    // Reload whitelist in-game if server is running
+    const status = shSafe("systemctl", ["is-active", "minecraft"]);
+    if (status.stdout.trim() === "active") {
+      // Use RCON to reload whitelist
+      shSafe("mcrcon", ["-H", "localhost", "-P", String(RCON_PORT), "-p", "admin", "whitelist reload"]);
+    }
+
+    res.json({ success: true, message: `Player ${profile.name} added to whitelist` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Remove player from whitelist
+ */
+app.post("/settings/whitelist/remove", async (req, res) => {
+  try {
+    const { username } = req.body;
+
+    if (!username || typeof username !== 'string') {
+      return res.status(400).json({ error: "Missing username" });
+    }
+
+    const whitelistPath = path.join(MC_DIR, "whitelist.json");
+    const whitelist = readJsonArray<{ uuid: string; name: string }>(whitelistPath);
+
+    const filtered = whitelist.filter(p => p.name.toLowerCase() !== username.toLowerCase());
+
+    if (filtered.length === whitelist.length) {
+      return res.status(404).json({ error: "Player not found in whitelist" });
+    }
+
+    writeJsonArray(whitelistPath, filtered);
+    sh("chown", ["mc:mc", whitelistPath]);
+
+    // Reload whitelist in-game if server is running
+    const status = shSafe("systemctl", ["is-active", "minecraft"]);
+    if (status.stdout.trim() === "active") {
+      shSafe("mcrcon", ["-H", "localhost", "-P", String(RCON_PORT), "-p", "admin", "whitelist reload"]);
+    }
+
+    res.json({ success: true, message: `Player ${username} removed from whitelist` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Get current operators
+ */
+app.get("/settings/operators", (_req, res) => {
+  try {
+    const opsPath = path.join(MC_DIR, "ops.json");
+    const ops = readJsonArray<{ uuid: string; name: string; level: number }>(opsPath);
+    res.json(ops);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Add operator
+ */
+app.post("/settings/operators/add", async (req, res) => {
+  try {
+    const { username } = req.body;
+
+    if (!username || typeof username !== 'string') {
+      return res.status(400).json({ error: "Missing username" });
+    }
+
+    const opsPath = path.join(MC_DIR, "ops.json");
+    const ops = readJsonArray<{ uuid: string; name: string; level: number; bypassesPlayerLimit: boolean }>(opsPath);
+
+    // Check if already an operator
+    if (ops.some(p => p.name.toLowerCase() === username.toLowerCase())) {
+      return res.json({ success: true, message: "Player already an operator" });
+    }
+
+    // Resolve username to UUID
+    const profile = await resolveUsername(username);
+
+    // Add to operators
+    ops.push({
+      uuid: profile.uuid,
+      name: profile.name,
+      level: 4,
+      bypassesPlayerLimit: false
+    });
+    writeJsonArray(opsPath, ops);
+    sh("chown", ["mc:mc", opsPath]);
+
+    res.json({ success: true, message: `Player ${profile.name} added as operator` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Remove operator
+ */
+app.post("/settings/operators/remove", async (req, res) => {
+  try {
+    const { username } = req.body;
+
+    if (!username || typeof username !== 'string') {
+      return res.status(400).json({ error: "Missing username" });
+    }
+
+    const opsPath = path.join(MC_DIR, "ops.json");
+    const ops = readJsonArray<{ uuid: string; name: string; level: number; bypassesPlayerLimit: boolean }>(opsPath);
+
+    const filtered = ops.filter(p => p.name.toLowerCase() !== username.toLowerCase());
+
+    if (filtered.length === ops.length) {
+      return res.status(404).json({ error: "Player not found in operators list" });
+    }
+
+    writeJsonArray(opsPath, filtered);
+    sh("chown", ["mc:mc", opsPath]);
+
+    res.json({ success: true, message: `Player ${username} removed from operators` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
+// File Uploads
+// ============================================================================
+
 // Upload plugin
 app.post("/plugins", upload.single("file"), (req, res) => {
   const file = req.file;
@@ -191,6 +469,285 @@ app.post("/mods", upload.single("file"), (req, res) => {
     fs.unlinkSync(file.path);
     sh("chown", ["-R", "mc:mc", path.join(MC_DIR, "mods")]);
     res.send(`Mod ${file.originalname} uploaded. Restart server to load.`);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// List installed mods with metadata
+app.get("/mods/list", async (_req, res) => {
+  try {
+    const modsDir = path.join(MC_DIR, "mods");
+    if (!fs.existsSync(modsDir)) {
+      return res.json({ mods: [] });
+    }
+
+    const files = fs.readdirSync(modsDir);
+    const mods = [];
+
+    for (const file of files) {
+      if (!file.endsWith(".jar") && !file.endsWith(".jar.disabled")) {
+        continue;
+      }
+
+      const filePath = path.join(modsDir, file);
+      const enabled = file.endsWith(".jar");
+      const metadata = await extractModMetadata(filePath);
+
+      if (metadata) {
+        mods.push({
+          fileName: file,
+          modId: metadata.modId,
+          name: metadata.name,
+          version: metadata.version,
+          description: metadata.description,
+          authors: metadata.authors,
+          loader: metadata.loader,
+          enabled,
+        });
+      } else {
+        // Fallback for mods without proper metadata
+        mods.push({
+          fileName: file,
+          modId: file.replace(/\.jar(\.disabled)?$/, ''),
+          name: file.replace(/\.jar(\.disabled)?$/, ''),
+          version: 'unknown',
+          enabled,
+        });
+      }
+    }
+
+    res.json({ mods });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get mod metadata
+app.get("/mods/:fileName/metadata", async (req, res) => {
+  try {
+    const { fileName } = req.params;
+    const filePath = path.join(MC_DIR, "mods", fileName);
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: "Mod not found" });
+    }
+
+    const metadata = await extractModMetadata(filePath);
+    if (!metadata) {
+      return res.status(404).json({ error: "Could not extract metadata" });
+    }
+
+    res.json(metadata);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get mod icon
+app.get("/mods/:fileName/icon", async (req, res) => {
+  try {
+    const { fileName } = req.params;
+    const filePath = path.join(MC_DIR, "mods", fileName);
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: "Mod not found" });
+    }
+
+    const icon = await extractModIcon(filePath);
+    if (!icon) {
+      return res.status(404).json({ error: "Icon not found" });
+    }
+
+    res.contentType('image/png').send(icon);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Enable/disable mod
+app.patch("/mods/:fileName/toggle", (req, res) => {
+  try {
+    const { fileName } = req.params;
+    const { enabled } = req.body;
+
+    const modsDir = path.join(MC_DIR, "mods");
+    const currentPath = path.join(modsDir, fileName);
+
+    if (!fs.existsSync(currentPath)) {
+      return res.status(404).json({ error: "Mod not found" });
+    }
+
+    let newPath: string;
+    if (enabled && fileName.endsWith(".disabled")) {
+      // Enable: remove .disabled extension
+      newPath = path.join(modsDir, fileName.replace(/\.disabled$/, ''));
+    } else if (!enabled && !fileName.endsWith(".disabled")) {
+      // Disable: add .disabled extension
+      newPath = currentPath + ".disabled";
+    } else {
+      return res.json({ ok: true, message: "Already in desired state" });
+    }
+
+    fs.renameSync(currentPath, newPath);
+    res.json({ ok: true, message: enabled ? "Mod enabled" : "Mod disabled", newFileName: path.basename(newPath) });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Delete mod and optionally remove its config files
+ * Extracts metadata before deletion to identify config files
+ */
+app.delete("/mods/:fileName", async (req, res) => {
+  try {
+    const { fileName } = req.params;
+    const { removeConfigs } = req.query;
+
+    const modsDir = path.join(MC_DIR, "mods");
+    const filePath = path.join(modsDir, fileName);
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: "Mod not found" });
+    }
+
+    // Extract metadata BEFORE deleting if we need to remove configs
+    let metadata = null;
+    if (removeConfigs === 'true') {
+      try {
+        metadata = await extractModMetadata(filePath);
+      } catch (err) {
+        console.warn(`Failed to extract metadata for ${fileName}, configs may not be removed:`, err);
+      }
+    }
+
+    // Delete the mod file
+    fs.unlinkSync(filePath);
+
+    // Remove config files if we have metadata
+    if (metadata) {
+      const configDir = path.join(MC_DIR, "config");
+      const modConfigDir = path.join(configDir, metadata.modId);
+      const modConfigFile = path.join(configDir, `${metadata.modId}.toml`);
+
+      try {
+        if (fs.existsSync(modConfigDir)) {
+          fs.rmSync(modConfigDir, { recursive: true, force: true });
+        }
+        if (fs.existsSync(modConfigFile)) {
+          fs.unlinkSync(modConfigFile);
+        }
+      } catch (err) {
+        console.warn(`Failed to remove config files for ${metadata.modId}:`, err);
+      }
+    }
+
+    res.json({ ok: true, message: "Mod removed" });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// List config files for a mod
+app.get("/mods/:modId/configs", async (req, res) => {
+  try {
+    const { modId } = req.params;
+    const configDir = path.join(MC_DIR, "config");
+
+    if (!fs.existsSync(configDir)) {
+      return res.json({ configs: [] });
+    }
+
+    const allConfigs = await listConfigFiles(configDir);
+    const modConfigs = allConfigs.filter(f =>
+      f.includes(modId) || path.dirname(f).endsWith(modId)
+    );
+
+    res.json({ configs: modConfigs });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get config file content
+app.get("/mods/:modId/config/:fileName", async (req, res) => {
+  try {
+    const { modId, fileName } = req.params;
+    const configDir = path.join(MC_DIR, "config");
+
+    // Try different possible paths
+    const possiblePaths = [
+      path.join(configDir, fileName),
+      path.join(configDir, modId, fileName),
+      path.join(configDir, `${modId}.toml`),
+      path.join(configDir, `${modId}.json`),
+    ];
+
+    let filePath: string | null = null;
+    for (const p of possiblePaths) {
+      if (fs.existsSync(p)) {
+        filePath = p;
+        break;
+      }
+    }
+
+    if (!filePath) {
+      return res.status(404).json({ error: "Config file not found" });
+    }
+
+    const parsed = await parseConfigFile(filePath);
+    res.json(parsed);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update config file
+app.post("/mods/:modId/config/:fileName", async (req, res) => {
+  try {
+    const { modId, fileName } = req.params;
+    const { updates } = req.body;
+
+    if (!updates || typeof updates !== 'object') {
+      return res.status(400).json({ error: "Missing updates object" });
+    }
+
+    const configDir = path.join(MC_DIR, "config");
+
+    // Try different possible paths
+    const possiblePaths = [
+      path.join(configDir, fileName),
+      path.join(configDir, modId, fileName),
+      path.join(configDir, `${modId}.toml`),
+      path.join(configDir, `${modId}.json`),
+    ];
+
+    let filePath: string | null = null;
+    for (const p of possiblePaths) {
+      if (fs.existsSync(p)) {
+        filePath = p;
+        break;
+      }
+    }
+
+    if (!filePath) {
+      return res.status(404).json({ error: "Config file not found" });
+    }
+
+    // Backup original
+    const backupPath = `${filePath}.backup`;
+    fs.copyFileSync(filePath, backupPath);
+
+    try {
+      await updateConfigFile(filePath, updates);
+      sh("chown", ["-R", "mc:mc", configDir]);
+      res.json({ ok: true, message: "Config updated" });
+    } catch (err) {
+      // Restore backup on failure
+      fs.copyFileSync(backupPath, filePath);
+      throw err;
+    }
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
