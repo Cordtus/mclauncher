@@ -119,6 +119,7 @@ export function App() {
   const [isLoadingLogs, setIsLoadingLogs] = useState(false);
   const [selectedServer, setSelectedServer] = useState<string | null>(null);
   const [message, setMessage] = useState<string>("");
+  const [serverTps, setServerTps] = useState<Map<string, number | null>>(new Map());
 
   // Version management state
   const [versionType, setVersionType] = useState<"paper" | "vanilla">("paper");
@@ -197,6 +198,15 @@ export function App() {
         hostIp: servers[0].host_ip || "",
         publicDomain: servers[0].public_domain || ""
       }));
+    }
+  }, [servers]);
+
+  // Fetch TPS for running servers periodically
+  useEffect(() => {
+    if (servers.length > 0) {
+      fetchAllTps();
+      const interval = setInterval(fetchAllTps, 10000); // Update every 10 seconds
+      return () => clearInterval(interval);
     }
   }, [servers]);
 
@@ -461,6 +471,29 @@ export function App() {
     } catch (err: any) {
       toast.error(err.message || 'Failed to pardon IP');
     }
+  };
+
+  // Fetch TPS for a server
+  const fetchTps = async (serverName: string) => {
+    try {
+      const response = await fetch(`/api/servers/${serverName}/tps`);
+      if (response.ok) {
+        const data = await response.json();
+        setServerTps(prev => new Map(prev).set(serverName, data.tps));
+      }
+    } catch (err) {
+      // Silently fail - TPS might not be available for all server types
+      setServerTps(prev => new Map(prev).set(serverName, null));
+    }
+  };
+
+  // Fetch TPS for all running servers
+  const fetchAllTps = () => {
+    servers.forEach(server => {
+      if (server.status === 'Running') {
+        fetchTps(server.name);
+      }
+    });
   };
 
   const handleFileUpload = async (
@@ -844,6 +877,14 @@ export function App() {
                         >
                           {server.status}
                         </Badge>
+                        {server.status === 'Running' && serverTps.get(server.name) !== undefined && (
+                          <Badge
+                            variant={serverTps.get(server.name) && serverTps.get(server.name)! >= 19.5 ? "default" : "destructive"}
+                            className="rounded-sm text-xs"
+                          >
+                            TPS: {serverTps.get(server.name)?.toFixed(1) || 'N/A'}
+                          </Badge>
+                        )}
                       </CardTitle>
                       <CardDescription className="mt-1 text-xs sm:text-sm">
                         {server.edition} {server.mc_version} · {server.memory_mb}MB · {server.cpu_limit} CPU

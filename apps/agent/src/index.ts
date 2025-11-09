@@ -1110,6 +1110,81 @@ app.post("/command", (req, res) => {
   res.type("text/plain").send(result.stdout + "\n" + result.stderr);
 });
 
+// Get TPS (Paper/Spigot servers)
+app.get("/tps", (req, res) => {
+  try {
+    // Read RCON password from server.properties
+    const propsPath = path.join(MC_DIR, "server.properties");
+    if (!fs.existsSync(propsPath)) {
+      return res.status(500).json({ error: "server.properties not found" });
+    }
+
+    const props = parseProperties(propsPath);
+    const rconPassword = props["rcon.password"];
+
+    if (!rconPassword) {
+      return res.status(500).json({ error: "RCON not configured in server.properties" });
+    }
+
+    //Execute TPS command via RCON
+    const result = shSafe("mcrcon", [
+      "-P",
+      String(RCON_PORT),
+      "-p",
+      rconPassword,
+      "tps",
+    ]);
+
+    if (result.code !== 0) {
+      // Try forge tps command if regular tps fails
+      const forgeResult = shSafe("mcrcon", [
+        "-P",
+        String(RCON_PORT),
+        "-p",
+        rconPassword,
+        "forge tps",
+      ]);
+
+      if (forgeResult.code !== 0) {
+        return res.status(500).json({
+          error: "Failed to get TPS data",
+          output: result.stdout + result.stderr
+        });
+      }
+
+      return res.json({
+        raw: forgeResult.stdout,
+        tps: parseTpsOutput(forgeResult.stdout)
+      });
+    }
+
+    res.json({
+      raw: result.stdout,
+      tps: parseTpsOutput(result.stdout)
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Parse TPS output from Paper/Spigot/Forge
+function parseTpsOutput(output: string): number | null {
+  // Paper/Spigot format: "TPS from last 1m, 5m, 15m: 20.0, 20.0, 20.0"
+  // Forge format: "Dim  0 (minecraft:overworld) : Mean tick time: 0.123 ms. Mean TPS: 20.0"
+
+  const paperMatch = output.match(/TPS.*?(\d+\.\d+)/i);
+  if (paperMatch) {
+    return parseFloat(paperMatch[1]);
+  }
+
+  const forgeMatch = output.match(/Mean TPS:\s*(\d+\.\d+)/i);
+  if (forgeMatch) {
+    return parseFloat(forgeMatch[1]);
+  }
+
+  return null;
+}
+
 // Create backup
 app.post("/backup", (_req, res) => {
   try {

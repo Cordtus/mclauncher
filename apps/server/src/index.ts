@@ -316,6 +316,22 @@ app.get("/api/servers/:name/logs", async (req, res) => {
   }
 });
 
+// Get TPS
+app.get("/api/servers/:name/tps", async (req, res) => {
+  const { name } = req.params;
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).send("Server not found");
+
+  try {
+    const response = await proxyToAgent(server.agent_url, "/tps");
+    const data = await response.json();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Check if public connection is accessible
 app.get("/api/servers/:name/check-public", async (req, res) => {
   const { name } = req.params;
