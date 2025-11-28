@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { InstalledModCard } from "./InstalledModCard";
 import { ModConfigEditor } from "./ModConfigEditor";
 import { ModBrowser } from "./ModBrowser";
+import { ModpackExport } from "./ModpackExport";
 import {
   Dialog,
   DialogContent,
@@ -210,6 +211,12 @@ export function ModsManagementPanel({
           </p>
         </div>
         <div className="flex gap-2">
+          <ModpackExport
+            serverName={serverName}
+            mcVersion={mcVersion}
+            loader={loader}
+            modsCount={mods.length}
+          />
           <Dialog>
             <DialogTrigger asChild>
               <Button className="rounded-sm">

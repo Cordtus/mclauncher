@@ -75,6 +75,22 @@ interface CompatibilityInfo {
   resourceWarning?: string;
 }
 
+interface DependencyInfo {
+  projectId: string;
+  versionId?: string;
+  dependencyType: 'required' | 'optional' | 'incompatible';
+  projectName?: string;
+  projectSlug?: string;
+  downloadUrl?: string;
+  fileName?: string;
+}
+
+interface Dependencies {
+  required: DependencyInfo[];
+  optional: DependencyInfo[];
+  incompatible: DependencyInfo[];
+}
+
 export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type = 'mod', onInstall }: ModBrowserProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [category, setCategory] = useState<string>("all");
@@ -83,9 +99,12 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
   const [selectedMod, setSelectedMod] = useState<ModrinthMod | null>(null);
   const [modVersions, setModVersions] = useState<ModrinthVersion[]>([]);
   const [compatibility, setCompatibility] = useState<CompatibilityInfo | null>(null);
+  const [dependencies, setDependencies] = useState<Dependencies | null>(null);
+  const [selectedVersion, setSelectedVersion] = useState<ModrinthVersion | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [isInstalling, setIsInstalling] = useState(false);
   const [installedMods, setInstalledMods] = useState<string[]>([]);
+  const [installedModIds, setInstalledModIds] = useState<string[]>([]);
   const [message, setMessage] = useState<string>("");
   const [showPopular, setShowPopular] = useState(true);
 
@@ -187,7 +206,9 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
     try {
       const response = await fetch(`/api/servers/${serverName}/mods/installed`);
       const data = await response.json();
-      setInstalledMods(data.mods || []);
+      const mods = data.mods || [];
+      setInstalledMods(mods);
+      setInstalledModIds(mods.map((m: any) => m.modId));
     } catch (err) {
       console.error("Failed to fetch installed mods:", err);
     }
@@ -248,6 +269,8 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
     setSelectedMod(mod);
     setCompatibility(null);
     setModVersions([]);
+    setDependencies(null);
+    setSelectedVersion(null);
 
     try {
       const [versionsRes, compatRes] = await Promise.all([
@@ -269,18 +292,70 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
 
       setModVersions(versions);
       setCompatibility(compat);
+
+      // Auto-check dependencies for the first version
+      if (versions.length > 0) {
+        await checkDependencies(versions[0]);
+      }
     } catch (err) {
       console.error("Failed to load mod details:", err);
     }
   }
 
-  async function installMod(version: ModrinthVersion) {
+  async function checkDependencies(version: ModrinthVersion) {
+    setSelectedVersion(version);
+    setDependencies(null);
+
+    try {
+      const response = await fetch('/api/mods/check-dependencies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          versionId: version.id,
+          mcVersion,
+          loader,
+          installedModIds,
+        }),
+      });
+
+      if (response.ok) {
+        const deps = await response.json();
+        setDependencies(deps);
+      }
+    } catch (err) {
+      console.error("Failed to check dependencies:", err);
+    }
+  }
+
+  async function installMod(version: ModrinthVersion, includeDeps: boolean = true) {
     if (!selectedMod) return;
 
     setIsInstalling(true);
     setMessage("");
 
     try {
+      // Install required dependencies first if requested
+      if (includeDeps && dependencies?.required) {
+        for (const dep of dependencies.required) {
+          if (dep.downloadUrl && dep.fileName) {
+            await fetch(`/api/servers/${serverName}/mods/install`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${localStorage.getItem('ADMIN_TOKEN')}`,
+              },
+              body: JSON.stringify({
+                projectId: dep.projectId,
+                versionId: dep.versionId,
+                downloadUrl: dep.downloadUrl,
+                fileName: dep.fileName,
+              }),
+            });
+          }
+        }
+      }
+
+      // Install the main mod
       const primaryFile = version.files.find(f => f.primary) || version.files[0];
 
       const response = await fetch(`/api/servers/${serverName}/mods/install`, {
@@ -300,7 +375,10 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
       const result = await response.json();
 
       if (response.ok) {
-        setMessage(`Successfully installed ${selectedMod.title}. Restart server to load the mod.`);
+        const depsInstalled = includeDeps && dependencies?.required?.length
+          ? ` (+${dependencies.required.length} dependencies)`
+          : '';
+        setMessage(`Successfully installed ${selectedMod.title}${depsInstalled}. Restart server to load.`);
         setSelectedMod(null);
         await fetchInstalledMods();
         if (onInstall) onInstall();
@@ -556,6 +634,60 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
                   </div>
                 )}
 
+                {/* Dependencies Section */}
+                {dependencies && (dependencies.required.length > 0 || dependencies.incompatible.length > 0) && (
+                  <>
+                    <Separator />
+                    <div className="space-y-3">
+                      {dependencies.required.length > 0 && (
+                        <div className="space-y-2">
+                          <h3 className="text-sm font-semibold flex items-center gap-2">
+                            <Package2 className="h-4 w-4" />
+                            Required Dependencies ({dependencies.required.length})
+                          </h3>
+                          <div className="space-y-1.5">
+                            {dependencies.required.map((dep) => (
+                              <div
+                                key={dep.projectId}
+                                className="flex items-center justify-between p-2 bg-blue-500/10 border border-blue-500/20 rounded text-xs"
+                              >
+                                <span className="font-medium">{dep.projectName || dep.projectId}</span>
+                                {dep.downloadUrl ? (
+                                  <Badge variant="outline" className="text-xs">Will be installed</Badge>
+                                ) : (
+                                  <Badge variant="destructive" className="text-xs">Not found</Badge>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            These dependencies will be installed automatically
+                          </p>
+                        </div>
+                      )}
+
+                      {dependencies.incompatible.length > 0 && (
+                        <div className="space-y-2">
+                          <h3 className="text-sm font-semibold text-destructive flex items-center gap-2">
+                            <AlertTriangle className="h-4 w-4" />
+                            Incompatible Mods ({dependencies.incompatible.length})
+                          </h3>
+                          <div className="space-y-1.5">
+                            {dependencies.incompatible.map((dep) => (
+                              <div
+                                key={dep.projectId}
+                                className="flex items-center gap-2 p-2 bg-destructive/10 border border-destructive/20 rounded text-xs"
+                              >
+                                <span>{dep.projectName || dep.projectId}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
+
                 <Separator />
 
                 {modVersions.length > 0 ? (
@@ -563,8 +695,14 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
                     <h3 className="text-sm font-semibold">Available Versions</h3>
                     <div className="space-y-2 max-h-48 overflow-y-auto">
                       {modVersions.map((version) => (
-                        <div key={version.id} className="flex items-center justify-between p-3 border rounded-lg">
-                          <div className="flex-1">
+                        <div
+                          key={version.id}
+                          className={`flex items-center justify-between p-3 border rounded-lg transition-colors ${
+                            selectedVersion?.id === version.id ? 'border-primary bg-primary/5' : ''
+                          }`}
+                          onClick={() => checkDependencies(version)}
+                        >
+                          <div className="flex-1 cursor-pointer">
                             <p className="text-sm font-semibold">{version.name}</p>
                             <p className="text-xs text-muted-foreground">
                               {version.version_number} · {version.game_versions.join(', ')}
@@ -572,12 +710,15 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
                           </div>
                           <Button
                             size="sm"
-                            onClick={() => installMod(version)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              installMod(version);
+                            }}
                             disabled={!compatibility?.compatible || !compatibility?.resourceAvailable || isInstalling}
                             className="rounded-sm"
                           >
                             <Download className="h-3 w-3 mr-1" />
-                            {isInstalling ? "Installing..." : "Install"}
+                            {isInstalling ? "Installing..." : dependencies?.required?.length ? `Install +${dependencies.required.length}` : "Install"}
                           </Button>
                         </div>
                       ))}
