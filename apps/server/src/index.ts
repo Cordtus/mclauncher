@@ -920,6 +920,28 @@ app.post("/api/mods/check-compatibility", async (req, res) => {
   }
 });
 
+// Check mod dependencies
+app.post("/api/mods/check-dependencies", async (req, res) => {
+  try {
+    const { versionId, mcVersion, loader, installedModIds } = req.body;
+
+    if (!versionId || !mcVersion || !loader) {
+      return res.status(400).json({ error: 'Missing required parameters' });
+    }
+
+    const dependencies = await modrinth.getModDependencies(
+      versionId,
+      mcVersion,
+      loader,
+      installedModIds || []
+    );
+
+    res.json(dependencies);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Install a mod (download and upload to server)
 app.post("/api/servers/:name/mods/install", requireAdmin, async (req, res) => {
   try {
@@ -939,7 +961,7 @@ app.post("/api/servers/:name/mods/install", requireAdmin, async (req, res) => {
     form.append('file', modData, fileName);
 
     // Upload to the server's mods folder via agent
-    const uploadResponse = await fetch(`${server.agent_url}/mods/upload`, {
+    const uploadResponse = await fetch(`${server.agent_url}/mods`, {
       method: 'POST',
       body: form as any,
       headers: form.getHeaders()
@@ -1135,6 +1157,328 @@ app.post("/api/servers/:name/mods/:modId/config/:fileName", requireAdmin, async 
     res.json(result);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
+// MODPACK EXPORT ENDPOINTS
+// ============================================================================
+
+import * as modpack from './services/modpack.js';
+
+// Get modpack info (metadata + mod list for export)
+app.get("/api/servers/:name/modpack", async (req, res) => {
+  try {
+    const { name } = req.params;
+    const registry = loadRegistry();
+    const server = registry.servers.find((s) => s.name === name);
+    if (!server) return res.status(404).send("Server not found");
+
+    // Get installed mods from agent
+    const response = await fetch(`${server.agent_url}/mods/list`);
+    if (!response.ok) {
+      throw new Error('Failed to fetch installed mods');
+    }
+
+    const data = await response.json();
+    const mods = data.mods || [];
+
+    // Get loader type from server edition or detect from mods
+    let loader: 'forge' | 'fabric' | 'neoforge' | 'quilt' = 'fabric';
+    if (mods.length > 0) {
+      const loaderMod = mods.find((m: any) => m.loader && m.loader !== 'unknown');
+      if (loaderMod) {
+        loader = loaderMod.loader;
+      }
+    }
+
+    res.json({
+      name: server.name,
+      mcVersion: server.mc_version,
+      loader,
+      modsCount: mods.length,
+      enabledCount: mods.filter((m: any) => m.enabled).length,
+      mods: mods.map((m: any) => ({
+        modId: m.modId,
+        name: m.name,
+        version: m.version,
+        description: m.description,
+        enabled: m.enabled,
+        clientRequired: true, // We'll update this when we have more info
+      })),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Export modpack as .mrpack (Modrinth format)
+app.get("/api/servers/:name/modpack/export/mrpack", async (req, res) => {
+  try {
+    const { name } = req.params;
+    const registry = loadRegistry();
+    const server = registry.servers.find((s) => s.name === name);
+    if (!server) return res.status(404).send("Server not found");
+
+    // Get installed mods
+    const response = await fetch(`${server.agent_url}/mods/list`);
+    if (!response.ok) {
+      throw new Error('Failed to fetch installed mods');
+    }
+
+    const data = await response.json();
+    const mods = data.mods || [];
+
+    // Detect loader
+    let loader: 'forge' | 'fabric' | 'neoforge' | 'quilt' = 'fabric';
+    const loaderMod = mods.find((m: any) => m.loader && m.loader !== 'unknown');
+    if (loaderMod) {
+      loader = loaderMod.loader;
+    }
+
+    // Generate modpack
+    const metadata: modpack.ModpackMetadata = {
+      name: `${server.name} Modpack`,
+      summary: `Modpack for ${server.name} Minecraft server`,
+      versionId: '1.0.0',
+      mcVersion: server.mc_version,
+      loader,
+    };
+
+    const result = await modpack.generateMrpack(metadata, mods);
+
+    // Set headers for file download
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${server.name}-modpack.mrpack"`);
+    res.send(result.buffer);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Export mod list as text
+app.get("/api/servers/:name/modpack/export/list", async (req, res) => {
+  try {
+    const { name } = req.params;
+    const registry = loadRegistry();
+    const server = registry.servers.find((s) => s.name === name);
+    if (!server) return res.status(404).send("Server not found");
+
+    // Get installed mods
+    const response = await fetch(`${server.agent_url}/mods/list`);
+    if (!response.ok) {
+      throw new Error('Failed to fetch installed mods');
+    }
+
+    const data = await response.json();
+    const mods = data.mods || [];
+
+    // Detect loader
+    let loader: 'forge' | 'fabric' | 'neoforge' | 'quilt' = 'fabric';
+    const loaderMod = mods.find((m: any) => m.loader && m.loader !== 'unknown');
+    if (loaderMod) {
+      loader = loaderMod.loader;
+    }
+
+    const metadata: modpack.ModpackMetadata = {
+      name: `${server.name} Modpack`,
+      summary: `Modpack for ${server.name} Minecraft server`,
+      versionId: '1.0.0',
+      mcVersion: server.mc_version,
+      loader,
+    };
+
+    const modList = modpack.generateModList(metadata, mods);
+
+    res.setHeader('Content-Type', 'text/plain');
+    res.setHeader('Content-Disposition', `attachment; filename="${server.name}-modlist.txt"`);
+    res.send(modList);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Generate public download page HTML
+app.get("/api/servers/:name/modpack/page", async (req, res) => {
+  try {
+    const { name } = req.params;
+    const registry = loadRegistry();
+    const server = registry.servers.find((s) => s.name === name);
+    if (!server) return res.status(404).send("Server not found");
+
+    // Get installed mods
+    const response = await fetch(`${server.agent_url}/mods/list`);
+    if (!response.ok) {
+      throw new Error('Failed to fetch installed mods');
+    }
+
+    const data = await response.json();
+    const mods = data.mods || [];
+
+    // Detect loader
+    let loader: 'forge' | 'fabric' | 'neoforge' | 'quilt' = 'fabric';
+    const loaderMod = mods.find((m: any) => m.loader && m.loader !== 'unknown');
+    if (loaderMod) {
+      loader = loaderMod.loader;
+    }
+
+    const metadata: modpack.ModpackMetadata = {
+      name: `${server.name} Modpack`,
+      summary: `Modpack for ${server.name} Minecraft server`,
+      versionId: '1.0.0',
+      mcVersion: server.mc_version,
+      loader,
+    };
+
+    // Build server address
+    const serverAddress = server.public_domain ||
+      `${server.host_ip || 'localhost'}:${server.public_port || 25565}`;
+
+    const html = await modpack.generateDownloadPage(
+      server.name,
+      serverAddress,
+      metadata,
+      mods
+    );
+
+    res.setHeader('Content-Type', 'text/html');
+    res.send(html);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
+// PUBLIC MODPACK ENDPOINTS (No auth required)
+// These are designed to be accessed by players who need to download the modpack
+// ============================================================================
+
+// Public modpack download page - serves the standalone HTML
+app.get("/public/:name/modpack", async (req, res) => {
+  try {
+    const { name } = req.params;
+    const registry = loadRegistry();
+    const server = registry.servers.find((s) => s.name === name);
+    if (!server) return res.status(404).send("Server not found");
+
+    // Get installed mods
+    const response = await fetch(`${server.agent_url}/mods/list`);
+    if (!response.ok) {
+      throw new Error('Failed to fetch installed mods');
+    }
+
+    const data = await response.json();
+    const mods = data.mods || [];
+
+    // Detect loader
+    let loader: 'forge' | 'fabric' | 'neoforge' | 'quilt' = 'fabric';
+    const loaderMod = mods.find((m: any) => m.loader && m.loader !== 'unknown');
+    if (loaderMod) {
+      loader = loaderMod.loader;
+    }
+
+    const metadata: modpack.ModpackMetadata = {
+      name: `${server.name} Modpack`,
+      summary: `Modpack for ${server.name} Minecraft server`,
+      versionId: '1.0.0',
+      mcVersion: server.mc_version,
+      loader,
+    };
+
+    const serverAddress = server.public_domain ||
+      `${server.host_ip || 'localhost'}:${server.public_port || 25565}`;
+
+    const html = await modpack.generateDownloadPage(
+      server.name,
+      serverAddress,
+      metadata,
+      mods
+    );
+
+    res.setHeader('Content-Type', 'text/html');
+    res.send(html);
+  } catch (err: any) {
+    res.status(500).send(`Error: ${err.message}`);
+  }
+});
+
+// Public modpack .mrpack download
+app.get("/public/:name/modpack.mrpack", async (req, res) => {
+  try {
+    const { name } = req.params;
+    const registry = loadRegistry();
+    const server = registry.servers.find((s) => s.name === name);
+    if (!server) return res.status(404).send("Server not found");
+
+    const response = await fetch(`${server.agent_url}/mods/list`);
+    if (!response.ok) {
+      throw new Error('Failed to fetch installed mods');
+    }
+
+    const data = await response.json();
+    const mods = data.mods || [];
+
+    let loader: 'forge' | 'fabric' | 'neoforge' | 'quilt' = 'fabric';
+    const loaderMod = mods.find((m: any) => m.loader && m.loader !== 'unknown');
+    if (loaderMod) {
+      loader = loaderMod.loader;
+    }
+
+    const metadata: modpack.ModpackMetadata = {
+      name: `${server.name} Modpack`,
+      summary: `Modpack for ${server.name} Minecraft server`,
+      versionId: '1.0.0',
+      mcVersion: server.mc_version,
+      loader,
+    };
+
+    const result = await modpack.generateMrpack(metadata, mods);
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${server.name}-modpack.mrpack"`);
+    res.send(result.buffer);
+  } catch (err: any) {
+    res.status(500).send(`Error: ${err.message}`);
+  }
+});
+
+// Public mod list download
+app.get("/public/:name/modlist.txt", async (req, res) => {
+  try {
+    const { name } = req.params;
+    const registry = loadRegistry();
+    const server = registry.servers.find((s) => s.name === name);
+    if (!server) return res.status(404).send("Server not found");
+
+    const response = await fetch(`${server.agent_url}/mods/list`);
+    if (!response.ok) {
+      throw new Error('Failed to fetch installed mods');
+    }
+
+    const data = await response.json();
+    const mods = data.mods || [];
+
+    let loader: 'forge' | 'fabric' | 'neoforge' | 'quilt' = 'fabric';
+    const loaderMod = mods.find((m: any) => m.loader && m.loader !== 'unknown');
+    if (loaderMod) {
+      loader = loaderMod.loader;
+    }
+
+    const metadata: modpack.ModpackMetadata = {
+      name: `${server.name} Modpack`,
+      summary: `Modpack for ${server.name} Minecraft server`,
+      versionId: '1.0.0',
+      mcVersion: server.mc_version,
+      loader,
+    };
+
+    const modList = modpack.generateModList(metadata, mods);
+
+    res.setHeader('Content-Type', 'text/plain');
+    res.setHeader('Content-Disposition', `attachment; filename="${server.name}-modlist.txt"`);
+    res.send(modList);
+  } catch (err: any) {
+    res.status(500).send(`Error: ${err.message}`);
   }
 });
 

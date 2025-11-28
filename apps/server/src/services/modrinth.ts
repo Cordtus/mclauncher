@@ -333,3 +333,123 @@ export function checkResourceAvailability(
 
   return { sufficient: true };
 }
+
+/**
+ * Dependency information for a mod
+ */
+export interface DependencyInfo {
+  projectId: string;
+  versionId?: string;
+  dependencyType: 'required' | 'optional' | 'incompatible' | 'embedded';
+  projectName?: string;
+  projectSlug?: string;
+  downloadUrl?: string;
+  fileName?: string;
+}
+
+/**
+ * Get dependencies for a specific mod version
+ */
+export async function getModDependencies(
+  versionId: string,
+  mcVersion: string,
+  loader: string,
+  installedModIds: string[] = []
+): Promise<{
+  required: DependencyInfo[];
+  optional: DependencyInfo[];
+  incompatible: DependencyInfo[];
+}> {
+  try {
+    // Get version details
+    const response = await fetch(`${MODRINTH_API_BASE}/version/${versionId}`, {
+      headers: { 'User-Agent': USER_AGENT }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch version: ${response.statusText}`);
+    }
+
+    const version = await response.json() as ModrinthVersion;
+
+    const required: DependencyInfo[] = [];
+    const optional: DependencyInfo[] = [];
+    const incompatible: DependencyInfo[] = [];
+
+    // Process each dependency
+    for (const dep of version.dependencies || []) {
+      // Skip if already installed
+      if (installedModIds.includes(dep.project_id)) {
+        continue;
+      }
+
+      const depInfo: DependencyInfo = {
+        projectId: dep.project_id,
+        dependencyType: dep.dependency_type,
+      };
+
+      // Get project details for name and slug
+      try {
+        const projectRes = await fetch(`${MODRINTH_API_BASE}/project/${dep.project_id}`, {
+          headers: { 'User-Agent': USER_AGENT }
+        });
+
+        if (projectRes.ok) {
+          const project = await projectRes.json();
+          depInfo.projectName = project.title;
+          depInfo.projectSlug = project.slug;
+
+          // Get compatible version
+          const versions = await getModVersions(dep.project_id, mcVersion, loader);
+          if (versions.length > 0) {
+            const compatVersion = versions[0];
+            depInfo.versionId = compatVersion.id;
+            const primaryFile = compatVersion.files.find((f) => f.primary) || compatVersion.files[0];
+            if (primaryFile) {
+              depInfo.downloadUrl = primaryFile.url;
+              depInfo.fileName = primaryFile.filename;
+            }
+          }
+        }
+      } catch (err) {
+        console.warn(`Failed to get details for dependency ${dep.project_id}:`, err);
+      }
+
+      // Categorize by type
+      switch (dep.dependency_type) {
+        case 'required':
+          required.push(depInfo);
+          break;
+        case 'optional':
+          optional.push(depInfo);
+          break;
+        case 'incompatible':
+          incompatible.push(depInfo);
+          break;
+      }
+    }
+
+    return { required, optional, incompatible };
+  } catch (err) {
+    console.error('Failed to get mod dependencies:', err);
+    return { required: [], optional: [], incompatible: [] };
+  }
+}
+
+/**
+ * Get multiple projects by their IDs
+ */
+export async function getMultipleProjects(projectIds: string[]): Promise<ModrinthMod[]> {
+  if (projectIds.length === 0) return [];
+
+  const response = await fetch(
+    `${MODRINTH_API_BASE}/projects?ids=${JSON.stringify(projectIds)}`,
+    { headers: { 'User-Agent': USER_AGENT } }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch projects: ${response.statusText}`);
+  }
+
+  return await response.json();
+}
