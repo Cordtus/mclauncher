@@ -19,6 +19,7 @@ import { spawnSync, spawn } from "child_process";
 import os from "os";
 import { VersionManager } from "./managers/version.js";
 import { WorldManager } from "./managers/world.js";
+import { ProfileManager, ProfileType } from "./managers/profile.js";
 import { PaperDownloader } from "./downloaders/paper.js";
 import { VanillaDownloader } from "./downloaders/vanilla.js";
 import { pingMinecraftServer } from "./utils/mcping.js";
@@ -43,8 +44,14 @@ const upload = multer({ dest: os.tmpdir() });
 // Initialize managers
 const versionManager = new VersionManager(MC_DIR);
 const worldManager = new WorldManager(MC_DIR);
+const profileManager = new ProfileManager(MC_DIR);
 const paperDownloader = new PaperDownloader();
 const vanillaDownloader = new VanillaDownloader();
+
+// Initialize profile system on startup
+profileManager.initialize().catch(err => {
+  console.error("Failed to initialize profile system:", err);
+});
 
 // Helper: run command synchronously
 function sh(cmd: string, args: string[]): string {
@@ -1473,6 +1480,174 @@ app.get("/worlds/:worldName/export", async (req, res) => {
     res.download(outputPath, `${req.params.worldName}.zip`, (err) => {
       fs.unlinkSync(outputPath);
       if (err) console.error("Download error:", err);
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
+// PROFILE MANAGEMENT ENDPOINTS
+// Multi-profile support for different server types (Paper, Fabric, Forge, Vanilla)
+// ============================================================================
+
+// Get all profiles and their status
+app.get("/profiles", (_req, res) => {
+  try {
+    const profiles = profileManager.getProfiles();
+    const activeProfile = profileManager.getActiveProfile();
+    res.json({
+      active: activeProfile,
+      profiles,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get active profile
+app.get("/profiles/active", (_req, res) => {
+  try {
+    const active = profileManager.getActiveProfile();
+    const profiles = profileManager.getProfiles();
+    res.json({
+      active,
+      profile: profiles[active],
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get available MC versions for a profile type
+app.get("/profiles/:type/versions", async (req, res) => {
+  try {
+    const profileType = req.params.type as ProfileType;
+    if (!["paper", "fabric", "forge", "vanilla"].includes(profileType)) {
+      return res.status(400).json({ error: "Invalid profile type" });
+    }
+
+    const versions = await profileManager.getAvailableVersions(profileType);
+    res.json({ versions });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Install a profile
+app.post("/profiles/:type/install", async (req, res) => {
+  try {
+    const profileType = req.params.type as ProfileType;
+    const { mcVersion, loaderVersion } = req.body;
+
+    if (!["paper", "fabric", "forge", "vanilla"].includes(profileType)) {
+      return res.status(400).json({ error: "Invalid profile type" });
+    }
+
+    if (!mcVersion) {
+      return res.status(400).json({ error: "mcVersion is required" });
+    }
+
+    await profileManager.installProfile(profileType, mcVersion, loaderVersion);
+
+    res.json({
+      ok: true,
+      message: `${profileType} profile installed for MC ${mcVersion}`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Switch to a different profile
+app.post("/profiles/:type/switch", async (req, res) => {
+  try {
+    const profileType = req.params.type as ProfileType;
+
+    if (!["paper", "fabric", "forge", "vanilla"].includes(profileType)) {
+      return res.status(400).json({ error: "Invalid profile type" });
+    }
+
+    if (!profileManager.isProfileInstalled(profileType)) {
+      return res.status(400).json({ error: `Profile ${profileType} is not installed` });
+    }
+
+    await profileManager.switchProfile(profileType);
+
+    res.json({
+      ok: true,
+      message: `Switched to ${profileType} profile`,
+      active: profileType,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update a profile to a new version
+app.post("/profiles/:type/update", async (req, res) => {
+  try {
+    const profileType = req.params.type as ProfileType;
+    const { mcVersion, loaderVersion } = req.body;
+
+    if (!["paper", "fabric", "forge", "vanilla"].includes(profileType)) {
+      return res.status(400).json({ error: "Invalid profile type" });
+    }
+
+    if (!mcVersion) {
+      return res.status(400).json({ error: "mcVersion is required" });
+    }
+
+    await profileManager.updateProfile(profileType, mcVersion, loaderVersion);
+
+    res.json({
+      ok: true,
+      message: `${profileType} profile updated to MC ${mcVersion}`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete a profile
+app.delete("/profiles/:type", async (req, res) => {
+  try {
+    const profileType = req.params.type as ProfileType;
+
+    if (!["paper", "fabric", "forge", "vanilla"].includes(profileType)) {
+      return res.status(400).json({ error: "Invalid profile type" });
+    }
+
+    await profileManager.deleteProfile(profileType);
+
+    res.json({
+      ok: true,
+      message: `${profileType} profile deleted`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get mods/plugins directory for a profile
+app.get("/profiles/:type/mods-dir", (req, res) => {
+  try {
+    const profileType = req.params.type as ProfileType;
+
+    if (!["paper", "fabric", "forge", "vanilla"].includes(profileType)) {
+      return res.status(400).json({ error: "Invalid profile type" });
+    }
+
+    const modsDir = profileManager.getProfileModsDir(profileType);
+
+    if (!modsDir) {
+      return res.json({ hasModsDir: false, path: null });
+    }
+
+    res.json({
+      hasModsDir: true,
+      path: modsDir,
+      type: profileType === "paper" ? "plugins" : "mods",
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

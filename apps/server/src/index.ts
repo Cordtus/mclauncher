@@ -1482,6 +1482,174 @@ app.get("/public/:name/modlist.txt", async (req, res) => {
   }
 });
 
+// ============================================================================
+// PROFILE MANAGEMENT ENDPOINTS
+// Proxy routes to agent's profile management system
+// ============================================================================
+
+// Get all profiles for a server
+app.get("/api/servers/:name/profiles", async (req, res) => {
+  try {
+    const { name } = req.params;
+    const registry = loadRegistry();
+    const server = registry.servers.find((s) => s.name === name);
+    if (!server) return res.status(404).send("Server not found");
+
+    const response = await fetch(`${server.agent_url}/profiles`);
+    if (!response.ok) {
+      throw new Error('Failed to fetch profiles');
+    }
+
+    const profiles = await response.json();
+    res.json(profiles);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get active profile for a server
+app.get("/api/servers/:name/profiles/active", async (req, res) => {
+  try {
+    const { name } = req.params;
+    const registry = loadRegistry();
+    const server = registry.servers.find((s) => s.name === name);
+    if (!server) return res.status(404).send("Server not found");
+
+    const response = await fetch(`${server.agent_url}/profiles/active`);
+    if (!response.ok) {
+      throw new Error('Failed to fetch active profile');
+    }
+
+    const profile = await response.json();
+    res.json(profile);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get available versions for a profile type
+app.get("/api/servers/:name/profiles/:type/versions", async (req, res) => {
+  try {
+    const { name, type } = req.params;
+    const registry = loadRegistry();
+    const server = registry.servers.find((s) => s.name === name);
+    if (!server) return res.status(404).send("Server not found");
+
+    const response = await fetch(`${server.agent_url}/profiles/${type}/versions`);
+    if (!response.ok) {
+      throw new Error('Failed to fetch versions');
+    }
+
+    const versions = await response.json();
+    res.json(versions);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Install a profile
+app.post("/api/servers/:name/profiles/:type/install", requireAdmin, async (req, res) => {
+  try {
+    const { name, type } = req.params;
+    const { mcVersion, loaderVersion } = req.body;
+    const registry = loadRegistry();
+    const server = registry.servers.find((s) => s.name === name);
+    if (!server) return res.status(404).send("Server not found");
+
+    const response = await fetch(`${server.agent_url}/profiles/${type}/install`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mcVersion, loaderVersion }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to install profile');
+    }
+
+    const result = await response.json();
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Switch to a profile
+app.post("/api/servers/:name/profiles/:type/switch", requireAdmin, async (req, res) => {
+  try {
+    const { name, type } = req.params;
+    const registry = loadRegistry();
+    const server = registry.servers.find((s) => s.name === name);
+    if (!server) return res.status(404).send("Server not found");
+
+    const response = await fetch(`${server.agent_url}/profiles/${type}/switch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to switch profile');
+    }
+
+    const result = await response.json();
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update a profile
+app.post("/api/servers/:name/profiles/:type/update", requireAdmin, async (req, res) => {
+  try {
+    const { name, type } = req.params;
+    const { mcVersion, loaderVersion } = req.body;
+    const registry = loadRegistry();
+    const server = registry.servers.find((s) => s.name === name);
+    if (!server) return res.status(404).send("Server not found");
+
+    const response = await fetch(`${server.agent_url}/profiles/${type}/update`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mcVersion, loaderVersion }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to update profile');
+    }
+
+    const result = await response.json();
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete a profile
+app.delete("/api/servers/:name/profiles/:type", requireAdmin, async (req, res) => {
+  try {
+    const { name, type } = req.params;
+    const registry = loadRegistry();
+    const server = registry.servers.find((s) => s.name === name);
+    if (!server) return res.status(404).send("Server not found");
+
+    const response = await fetch(`${server.agent_url}/profiles/${type}`, {
+      method: 'DELETE',
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to delete profile');
+    }
+
+    const result = await response.json();
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.listen(PORT, HOST, () => {
   console.log(`Management backend listening on http://${HOST}:${PORT}`);
 });

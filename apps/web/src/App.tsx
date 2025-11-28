@@ -17,10 +17,12 @@ import {
   Terminal,
   Package2,
   Loader2,
+  Layers,
 } from "lucide-react";
 import { toast } from "sonner";
 import { ModBrowser } from "@/components/ModBrowser";
 import { ModsManagementPanel } from "@/components/ModsManagementPanel";
+import { ProfileSwitcher } from "@/components/ProfileSwitcher";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -1239,6 +1241,35 @@ export function App() {
                             {isChangingVersion ? "Changing..." : "Change Version"}
                           </Button>
                         </DialogFooter>
+                      </DialogContent>
+                    </Dialog>
+
+                    {/* Server Profiles */}
+                    <Dialog>
+                      <DialogTrigger asChild>
+                        <Button
+                          variant="outline"
+                          className="rounded-sm w-full hover:bg-amber-500/10 hover:border-amber-500 transition-all"
+                        >
+                          <Layers className="mr-2 h-4 w-4" />
+                          Server Profiles
+                        </Button>
+                      </DialogTrigger>
+                      <DialogContent className="rounded-sm max-w-4xl max-h-[90vh] overflow-y-auto">
+                        <DialogHeader>
+                          <DialogTitle>Server Profiles</DialogTitle>
+                          <DialogDescription>
+                            Switch between different server types (Paper, Fabric, Forge, Vanilla)
+                          </DialogDescription>
+                        </DialogHeader>
+                        <ProfileSwitcher
+                          serverName={server.name}
+                          currentMcVersion={server.mc_version}
+                          onProfileChange={() => {
+                            setMessage("Profile changed. Server is restarting...");
+                            refresh();
+                          }}
+                        />
                       </DialogContent>
                     </Dialog>
 
