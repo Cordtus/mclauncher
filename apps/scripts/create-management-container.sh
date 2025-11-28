@@ -4,33 +4,43 @@ set -euo pipefail
 #
 # Create Management Container
 # Runs the web UI and management backend
+#
 # Run this script ON THE LXD HOST
+#
+# Prerequisites:
+# - LXD installed and initialized with bridge network
+# - Caddy container on same bridge for reverse proxy (recommended)
+#
+# Usage:
+#   ./create-management-container.sh [name] [admin_token]
+#
+# Examples:
+#   ./create-management-container.sh mc-manager
+#   ./create-management-container.sh mc-manager my-custom-token
 #
 
 CONTAINER_NAME="${1:-mc-manager}"
-PUBLIC_PORT="${2:-8080}"
-ADMIN_TOKEN="${3:-$(openssl rand -hex 32)}"
+ADMIN_TOKEN="${2:-$(openssl rand -hex 32)}"
 
 echo "==> Creating MC Management Container"
 echo "    Name: $CONTAINER_NAME"
-echo "    Port: $PUBLIC_PORT"
+echo ""
 
 # Create container
 lxc launch images:ubuntu/22.04 "$CONTAINER_NAME"
 
 # Wait for boot
+echo "==> Waiting for container to boot..."
 sleep 5
 
 # Set resource limits
 lxc config set "$CONTAINER_NAME" limits.cpu=2
 lxc config set "$CONTAINER_NAME" limits.memory=2GB
 
-# Add proxy for web UI
-lxc config device add "$CONTAINER_NAME" web-proxy proxy \
-  listen="tcp:0.0.0.0:${PUBLIC_PORT}" \
-  connect="tcp:127.0.0.1:8080"
+# NOTE: No proxy device added - traffic routes through Caddy on same LXD bridge
 
 # Install dependencies
+echo "==> Installing dependencies..."
 lxc exec "$CONTAINER_NAME" -- bash -c "
 set -euxo pipefail
 
@@ -47,9 +57,8 @@ apt-get install -y nodejs
 # Create app user
 useradd -m -s /bin/bash mcmanager
 
-# Clone and build app
+# Create app directory
 mkdir -p /opt/mc-lxd-manager
-cd /opt/mc-lxd-manager
 "
 
 # Copy or clone repo
@@ -72,6 +81,7 @@ else
 fi
 
 # Build application
+echo "==> Building application..."
 lxc exec "$CONTAINER_NAME" -- bash -c "
 cd /opt/mc-lxd-manager
 npm install --workspaces
@@ -82,14 +92,28 @@ chown -R mcmanager:mcmanager /opt/mc-lxd-manager
 
 # Create environment file
 lxc exec "$CONTAINER_NAME" -- bash -c "cat > /opt/mc-lxd-manager/.env <<EOF
+# Server binding - accepts connections from LXD bridge
 HOST=0.0.0.0
 PORT=8080
+
+# Trust proxy headers from Caddy
 TRUST_PROXY=true
+
+# Allow access from LAN and LXD bridge
 ALLOW_CIDRS=192.168.0.0/16,10.0.0.0/8,172.16.0.0/12
+
+# Admin token for write operations
 ADMIN_TOKEN=${ADMIN_TOKEN}
+
+# Storage paths
 REGISTRY_FILE=/opt/mc-lxd-manager/servers.json
+BACKUP_DIR=/var/backups/mc-lxd-manager
 EOF
 "
+
+# Create backup directory
+lxc exec "$CONTAINER_NAME" -- mkdir -p /var/backups/mc-lxd-manager
+lxc exec "$CONTAINER_NAME" -- chown mcmanager:mcmanager /var/backups/mc-lxd-manager
 
 # Create systemd service
 lxc exec "$CONTAINER_NAME" -- bash -c "cat > /etc/systemd/system/mc-manager.service <<'EOF'
@@ -101,6 +125,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/mc-lxd-manager
+EnvironmentFile=/opt/mc-lxd-manager/.env
 Environment=NODE_ENV=production
 ExecStart=/usr/bin/node apps/server/dist/index.js
 Restart=always
@@ -120,17 +145,40 @@ lxc exec "$CONTAINER_NAME" -- systemctl start mc-manager
 
 # Wait and check status
 sleep 3
+echo ""
+echo "==> Checking service status..."
 lxc exec "$CONTAINER_NAME" -- systemctl status mc-manager --no-pager || true
 
+# Get container IP
+CONTAINER_IP=$(lxc list "$CONTAINER_NAME" -c4 --format=csv | cut -d' ' -f1)
+
 echo ""
-echo "==> Management container created!"
+echo "============================================================"
+echo "  MC Management Container Created!"
+echo "============================================================"
 echo ""
 echo "Container: $CONTAINER_NAME"
-echo "Web UI: http://<host-ip>:${PUBLIC_PORT}"
+echo "IP Address: $CONTAINER_IP"
+echo "Internal URL: http://$CONTAINER_IP:8080"
+echo ""
 echo "Admin Token: ${ADMIN_TOKEN}"
 echo ""
-echo "IMPORTANT: Save this token!"
-echo "In browser console: localStorage.setItem('ADMIN_TOKEN', '${ADMIN_TOKEN}');"
+echo "============================================================"
+echo "  IMPORTANT: Save the admin token!"
+echo "============================================================"
+echo ""
+echo "In browser console (F12):"
+echo "  localStorage.setItem('ADMIN_TOKEN', '${ADMIN_TOKEN}');"
+echo ""
+echo "============================================================"
+echo "  Next Steps"
+echo "============================================================"
+echo ""
+echo "1. Configure Caddy to proxy to $CONTAINER_IP:8080"
+echo "   See Caddyfile.example in the repo"
+echo ""
+echo "2. Create Minecraft servers:"
+echo "   sudo ./create-mc-server.sh mc-server-1 paper 1.21.3 4096 2 25565"
 echo ""
 echo "Commands:"
 echo "  lxc exec $CONTAINER_NAME -- systemctl status mc-manager"

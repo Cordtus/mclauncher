@@ -807,6 +807,39 @@ export function App() {
                   </section>
 
                   <section>
+                    <h2 className="text-lg font-bold mb-3 border-b pb-2">Server Profiles</h2>
+                    <p className="text-muted-foreground mb-3">
+                      Switch between different server types instantly without creating new containers.
+                      Worlds, player data, and settings are shared across all profiles.
+                    </p>
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <div><strong>Paper:</strong> High-performance server (plugins)</div>
+                        <div><strong>Fabric:</strong> Lightweight mod loader</div>
+                        <div><strong>Forge:</strong> Traditional mod platform</div>
+                        <div><strong>Vanilla:</strong> Pure Minecraft experience</div>
+                      </div>
+                      <div>
+                        <h3 className="font-semibold mb-1">How to Switch Profiles</h3>
+                        <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
+                          <li>Click "Server Profiles" button on your server</li>
+                          <li>Click a profile card to switch (or install if new)</li>
+                          <li>Server restarts automatically (~10 seconds)</li>
+                          <li>Your worlds and player data are preserved</li>
+                        </ul>
+                      </div>
+                      <div>
+                        <h3 className="font-semibold mb-1">Profile-Specific Content</h3>
+                        <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
+                          <li>Each profile has its own mods/plugins folder</li>
+                          <li>Switching to Fabric? Your Fabric mods are still there</li>
+                          <li>Paper plugins won't interfere with Forge mods</li>
+                        </ul>
+                      </div>
+                    </div>
+                  </section>
+
+                  <section>
                     <h2 className="text-lg font-bold mb-3 border-b pb-2">Server Settings</h2>
                     <p className="text-muted-foreground mb-3">Click "Server Settings" to configure your server before launch. Settings are saved automatically.</p>
 
@@ -878,10 +911,21 @@ export function App() {
                       <div>
                         <h3 className="font-semibold mb-1">Mods (Forge/NeoForge/Fabric only)</h3>
                         <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
-                          <li>Download .jar files from CurseForge or Modrinth</li>
-                          <li>Click "Upload Mod" and select the .jar file</li>
-                          <li>Players MUST have the same mods installed to join</li>
+                          <li>Use "Browse Mods" to search and install from Modrinth</li>
+                          <li>Or upload .jar files directly from CurseForge</li>
+                          <li>Dependencies are installed automatically</li>
                           <li>Restart server after adding mods</li>
+                        </ul>
+                      </div>
+
+                      <div>
+                        <h3 className="font-semibold mb-1">Sharing Mods with Players</h3>
+                        <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
+                          <li>Go to Server Settings → Mods tab</li>
+                          <li>Click "Export Modpack" to generate a shareable pack</li>
+                          <li>Share the download URL with your players</li>
+                          <li>Players import the .mrpack file into Prism Launcher</li>
+                          <li>This ensures everyone has the exact same mods!</li>
                         </ul>
                       </div>
 

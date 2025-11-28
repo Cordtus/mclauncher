@@ -1,12 +1,77 @@
-# Replace mc-panel.lan with your LAN DNS
-mc-panel.lan {
-  @lan remote_ip 192.168.0.0/16 10.0.0.0/8
-  respond @lan 403 {"error":"LAN only"} {
-    header Content-Type application/json
-  }
-  reverse_proxy 127.0.0.1:8080 {
-    header_up X-Forwarded-For {remote}
-    header_up X-Real-IP {remote}
-    header_up X-Forwarded-Proto {scheme}
-  }
+# MC LXD Manager - Caddy Configuration
+#
+# This Caddyfile should run in a container on the same LXD bridge as mc-manager.
+# Replace MC_MANAGER_IP with the actual IP of your mc-manager container.
+#
+# Setup:
+# 1. Create Caddy container: lxc launch images:ubuntu/22.04 caddy
+# 2. Install Caddy: https://caddyserver.com/docs/install
+# 3. Copy this to /etc/caddy/Caddyfile
+# 4. Restart: systemctl restart caddy
+
+# ============================================================
+# MC Management Panel (LAN-only access)
+# ============================================================
+mc.local:80 {
+    # Define LAN IP ranges
+    @lan {
+        remote_ip 192.168.0.0/16
+        remote_ip 10.0.0.0/8
+        remote_ip 172.16.0.0/12
+    }
+
+    # Allow LAN access
+    handle @lan {
+        reverse_proxy MC_MANAGER_IP:8080 {
+            header_up X-Forwarded-For {remote}
+            header_up X-Real-IP {remote}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    # Block non-LAN access
+    handle {
+        respond "Access denied - LAN only" 403
+    }
 }
+
+# ============================================================
+# Public Modpack Downloads (optional)
+# ============================================================
+# Uncomment if you want players to download modpacks from outside LAN
+#
+# modpacks.yourdomain.com:80 {
+#     # Only allow /public/* paths
+#     @public path /public/*
+#
+#     handle @public {
+#         reverse_proxy MC_MANAGER_IP:8080 {
+#             header_up X-Forwarded-For {remote}
+#             header_up X-Real-IP {remote}
+#         }
+#     }
+#
+#     handle {
+#         respond "Not found" 404
+#     }
+# }
+
+# ============================================================
+# HTTPS with automatic certificates (production)
+# ============================================================
+# For public HTTPS access, use your real domain:
+#
+# mc.yourdomain.com {
+#     @lan {
+#         remote_ip 192.168.0.0/16
+#         remote_ip 10.0.0.0/8
+#     }
+#
+#     handle @lan {
+#         reverse_proxy MC_MANAGER_IP:8080
+#     }
+#
+#     handle {
+#         respond "Access denied" 403
+#     }
+# }
