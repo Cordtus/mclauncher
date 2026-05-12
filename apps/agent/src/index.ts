@@ -103,6 +103,14 @@ function runRconWhenActive(command: string) {
   }
 }
 
+function hasOwn(value: object | null | undefined, key: string) {
+  return !!value && Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function asMinecraftBoolean(value: unknown): boolean {
+  return value === true || value === 1 || value === "true" || value === "1";
+}
+
 function assertSafePathSegment(value: string, label: string) {
   if (
     !value ||
@@ -302,6 +310,11 @@ app.post("/settings", async (req, res) => {
     const configPath = path.join(MC_DIR, "server.properties");
     const whitelistPath = path.join(MC_DIR, "whitelist.json");
     const opsPath = path.join(MC_DIR, "ops.json");
+    const previousOps = Array.isArray(operators)
+      ? readJsonArray<{ uuid: string; name: string; level: number }>(opsPath)
+      : [];
+    let whitelistChanged = false;
+    let nextOps: Array<{ uuid: string; name: string; level: number; bypassesPlayerLimit: boolean }> | null = null;
 
     // Update server.properties if provided
     if (properties && typeof properties === 'object') {
@@ -331,9 +344,10 @@ app.post("/settings", async (req, res) => {
 
       writeJsonArray(whitelistPath, whitelistData);
       sh("chown", ["mc:mc", whitelistPath]);
+      whitelistChanged = true;
 
       // Enable whitelist when the caller did not explicitly set the property.
-      if (whitelistData.length > 0 && !("white-list" in (properties || {}))) {
+      if (whitelistData.length > 0 && !hasOwn(properties, "white-list")) {
         updateProperties(configPath, { "white-list": true });
       }
     }
@@ -362,6 +376,7 @@ app.post("/settings", async (req, res) => {
 
       writeJsonArray(opsPath, opsData);
       sh("chown", ["mc:mc", opsPath]);
+      nextOps = opsData;
     }
 
     // Restart server if requested
@@ -369,6 +384,31 @@ app.post("/settings", async (req, res) => {
       const status = shSafe("systemctl", ["is-active", "minecraft"]);
       if (status.stdout.trim() === "active") {
         sh("systemctl", ["restart", "minecraft"]);
+      }
+    } else if (isMinecraftActive()) {
+      if (hasOwn(properties, "white-list")) {
+        runRconWhenActive(`whitelist ${asMinecraftBoolean(properties["white-list"]) ? "on" : "off"}`);
+      }
+
+      if (whitelistChanged) {
+        runRconWhenActive("whitelist reload");
+      }
+
+      if (nextOps) {
+        const previousByName = new Map(previousOps.map((op) => [op.name.toLowerCase(), op.name]));
+        const nextByName = new Map(nextOps.map((op) => [op.name.toLowerCase(), op.name]));
+
+        for (const [key, name] of nextByName) {
+          if (!previousByName.has(key)) {
+            runRconWhenActive(`op ${name}`);
+          }
+        }
+
+        for (const [key, name] of previousByName) {
+          if (!nextByName.has(key)) {
+            runRconWhenActive(`deop ${name}`);
+          }
+        }
       }
     }
 
@@ -1180,10 +1220,13 @@ app.post("/worlds/upload", upload.single("file"), (req, res) => {
 
   const worldName = path.parse(file.originalname).name;
   const worldPath = path.join(WORLDS_HOME, worldName);
+  const wasActive = isMinecraftActive();
+  let restarted = false;
 
   try {
-    // Stop server
-    shSafe("systemctl", ["stop", "minecraft"]);
+    if (wasActive) {
+      sh("systemctl", ["stop", "minecraft"]);
+    }
 
     // Create world directory
     fs.mkdirSync(WORLDS_HOME, { recursive: true });
@@ -1203,11 +1246,16 @@ app.post("/worlds/upload", upload.single("file"), (req, res) => {
     // Fix permissions
     sh("chown", ["-R", "mc:mc", worldPath]);
 
-    // Start server
-    sh("systemctl", ["start", "minecraft"]);
+    if (wasActive) {
+      sh("systemctl", ["start", "minecraft"]);
+      restarted = true;
+    }
 
     res.send(`World '${worldName}' uploaded and activated`);
   } catch (err: any) {
+    if (wasActive && !restarted) {
+      shSafe("systemctl", ["start", "minecraft"]);
+    }
     res.status(500).json({ error: err.message });
   }
 });
@@ -1221,10 +1269,13 @@ app.post("/worlds/switch", (req, res) => {
   if (!fs.existsSync(worldPath)) {
     return res.status(404).send(`World '${world_name}' not found`);
   }
+  const wasActive = isMinecraftActive();
+  let restarted = false;
 
   try {
-    // Stop server
-    sh("systemctl", ["stop", "minecraft"]);
+    if (wasActive) {
+      sh("systemctl", ["stop", "minecraft"]);
+    }
 
     // Update symlink
     if (fs.existsSync(WORLD_LINK)) {
@@ -1232,11 +1283,16 @@ app.post("/worlds/switch", (req, res) => {
     }
     fs.symlinkSync(worldPath, WORLD_LINK);
 
-    // Start server
-    sh("systemctl", ["start", "minecraft"]);
+    if (wasActive) {
+      sh("systemctl", ["start", "minecraft"]);
+      restarted = true;
+    }
 
     res.send(`Switched to world '${world_name}'`);
   } catch (err: any) {
+    if (wasActive && !restarted) {
+      shSafe("systemctl", ["start", "minecraft"]);
+    }
     res.status(500).json({ error: err.message });
   }
 });
@@ -1520,6 +1576,11 @@ app.get("/versions/forge", async (_req, res) => {
   }
 });
 
+// Get current server type/version marker
+app.get("/version/current", (_req, res) => {
+  res.json(versionManager.getServerType() || {});
+});
+
 // Get builds for Paper version
 app.get("/versions/paper/:version/builds", async (req, res) => {
   try {
@@ -1548,12 +1609,13 @@ app.post("/version/change", async (req, res) => {
 
   try {
     await versionManager.changeVersion(type, version, build);
+    const current = versionManager.getServerType();
     res.json({
       ok: true,
       message: `Server updated to ${type} ${version}`,
       type,
       version,
-      build: build || null,
+      build: current?.build || build || null,
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -1574,9 +1636,13 @@ app.post("/version/switch-type", async (req, res) => {
 
   try {
     await versionManager.switchServerType(type, version, build);
+    const current = versionManager.getServerType();
     res.json({
       ok: true,
       message: `Switched to ${type} ${version}`,
+      type,
+      version,
+      build: current?.build || build || null,
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

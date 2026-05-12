@@ -178,6 +178,9 @@ export async function generateMrpack(
 
   // Only include enabled mods
   const enabledMods = installedMods.filter((mod) => mod.enabled);
+  if (enabledMods.length > 0 && !metadata.loaderVersion) {
+    throw new Error(`Cannot generate .mrpack without a ${metadata.loader} loader version`);
+  }
 
   // Try to resolve each mod to its Modrinth project
   for (const mod of enabledMods) {

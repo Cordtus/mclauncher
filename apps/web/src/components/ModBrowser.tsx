@@ -363,6 +363,15 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
     setMessage("");
 
     try {
+      const missingRequiredDeps = dependencies?.required?.filter((dep) => !dep.downloadUrl || !dep.fileName) || [];
+      if (includeDeps && missingRequiredDeps.length > 0) {
+        throw new Error(
+          `Required dependencies are missing compatible downloads: ${missingRequiredDeps
+            .map((dep) => dep.projectName || dep.projectId)
+            .join(", ")}`
+        );
+      }
+
       // Install required dependencies first if requested
       if (includeDeps && dependencies?.required) {
         for (const dep of dependencies.required) {
@@ -435,6 +444,9 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
     if (count >= 1000) return `${(count / 1000).toFixed(1)}K`;
     return count.toString();
   }
+
+  const missingRequiredDependencies = dependencies?.required?.filter((dep) => !dep.downloadUrl || !dep.fileName) || [];
+  const installBlockedByDependencies = missingRequiredDependencies.length > 0;
 
   return (
     <div className="space-y-4">
@@ -681,7 +693,7 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
                                 className="flex items-center justify-between p-2 bg-blue-500/10 border border-blue-500/20 rounded text-xs"
                               >
                                 <span className="font-medium">{dep.projectName || dep.projectId}</span>
-                                {dep.downloadUrl ? (
+                                {dep.downloadUrl && dep.fileName ? (
                                   <Badge variant="outline" className="text-xs">Will be installed</Badge>
                                 ) : (
                                   <Badge variant="destructive" className="text-xs">Not found</Badge>
@@ -690,8 +702,18 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
                             ))}
                           </div>
                           <p className="text-xs text-muted-foreground">
-                            These dependencies will be installed automatically
+                            {installBlockedByDependencies
+                              ? "Install is blocked until every required dependency has a compatible download."
+                              : "These dependencies will be installed automatically"}
                           </p>
+                          {installBlockedByDependencies && (
+                            <div className="flex gap-2 p-2 bg-destructive/10 border border-destructive/20 rounded text-xs">
+                              <AlertTriangle className="h-3 w-3 text-destructive flex-shrink-0 mt-0.5" />
+                              <span>
+                                Missing compatible downloads: {missingRequiredDependencies.map((dep) => dep.projectName || dep.projectId).join(", ")}
+                              </span>
+                            </div>
+                          )}
                         </div>
                       )}
 
@@ -743,7 +765,7 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
                               e.stopPropagation();
                               installMod(version);
                             }}
-                            disabled={!compatibility?.compatible || !compatibility?.resourceAvailable || isInstalling}
+                            disabled={!compatibility?.compatible || !compatibility?.resourceAvailable || installBlockedByDependencies || isInstalling}
                             className="rounded-sm"
                           >
                             <Download className="h-3 w-3 mr-1" />

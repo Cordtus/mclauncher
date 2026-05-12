@@ -94,4 +94,28 @@ describe('modpack service', () => {
     expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
     expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;');
   });
+
+  it('rejects modded mrpack exports when the loader version is unknown', async () => {
+    await expect(generateMrpack(
+      {
+        name: 'Broken Pack',
+        summary: 'Test',
+        versionId: '1.0.0',
+        mcVersion: '1.20.1',
+        loader: 'fabric',
+      },
+      [
+        {
+          fileName: 'example.jar',
+          modId: 'example',
+          name: 'Example',
+          version: '1.0.0',
+          loader: 'fabric',
+          enabled: true,
+          modrinthProjectId: 'project-1',
+          modrinthVersionId: 'version-1',
+        },
+      ]
+    )).rejects.toThrow('loader version');
+  });
 });

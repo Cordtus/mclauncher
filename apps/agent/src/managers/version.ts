@@ -48,6 +48,7 @@ export class VersionManager {
     const jarBackupPath = fs.existsSync(currentJar)
       ? path.join(this.mcDir, `server.jar.backup.${Date.now()}`)
       : null;
+    const serviceBackup = this.readServiceFile();
 
     try {
       await this.stopServer();
@@ -71,6 +72,7 @@ export class VersionManager {
       await this.monitorStartup();
     } catch (error) {
       console.error("JAR replacement failed:", error);
+      this.restoreServiceFile(serviceBackup);
       if (jarBackupPath && fs.existsSync(jarBackupPath)) {
         fs.copyFileSync(jarBackupPath, currentJar);
         execSync(`chown mc:mc ${currentJar}`);
@@ -86,6 +88,7 @@ export class VersionManager {
     build?: number | string
   ): Promise<void> {
     const tempJar = `/tmp/server-${Date.now()}.jar`;
+    let resolvedBuild: number | string = build || "latest";
 
     try {
       switch (serverType) {
@@ -105,9 +108,13 @@ export class VersionManager {
 
         case "fabric":
           // Fabric uses a direct download, not an installer
+          const fabricLoaderVersion = typeof build === "string" && build
+            ? build
+            : await this.fabricDownloader.getLatestLoaderVersion();
+          resolvedBuild = fabricLoaderVersion;
           await this.fabricDownloader.downloadServerJar(
             version,
-            typeof build === "string" ? build : "latest",
+            fabricLoaderVersion,
             tempJar
           );
           await this.replaceServerJar(tempJar, serverType);
@@ -120,13 +127,21 @@ export class VersionManager {
         case "forge":
           // Forge uses an installer that runs in the MC directory
           const backup = await this.createFullBackup();
+          const serviceBackup = this.readServiceFile();
           try {
+            const forgeVersion = typeof build === "string" && build
+              ? build
+              : await this.forgeDownloader.getRecommendedForgeVersion(version);
+            if (!forgeVersion) {
+              throw new Error(`No Forge version available for Minecraft ${version}`);
+            }
+            resolvedBuild = forgeVersion;
             await this.stopServer();
             await this.waitForServerStop();
             await this.forgeDownloader.installForgeServer(
               this.mcDir,
               version,
-              typeof build === "string" ? build : undefined
+              forgeVersion
             );
             // Create mods folder if it doesn't exist
             const forgeModsDir = path.join(this.mcDir, "mods");
@@ -136,6 +151,7 @@ export class VersionManager {
             await this.startServer();
             await this.monitorStartup();
           } catch (error) {
+            this.restoreServiceFile(serviceBackup);
             await this.restoreBackup(backup);
             throw error;
           }
@@ -151,7 +167,7 @@ export class VersionManager {
       fs.writeFileSync(markerPath, JSON.stringify({
         type: serverType,
         mcVersion: version,
-        build: build || "latest",
+        build: resolvedBuild,
         installedAt: new Date().toISOString(),
       }));
 
@@ -183,7 +199,12 @@ export class VersionManager {
 
     // Try to detect based on files
     if (this.forgeDownloader.isForgeInstalled(this.mcDir)) {
-      return { type: "forge" };
+      const forgeInfo = this.forgeDownloader.getInstalledForgeInfo(this.mcDir);
+      return {
+        type: "forge",
+        mcVersion: forgeInfo?.mcVersion,
+        build: forgeInfo?.forgeVersion,
+      };
     }
 
     return null;
@@ -268,6 +289,19 @@ export class VersionManager {
 
     serviceContent = serviceContent.replace(/ExecStart=.*/, execStart);
     fs.writeFileSync(serviceFile, serviceContent);
+    execSync("systemctl daemon-reload", { stdio: "pipe" });
+  }
+
+  private readServiceFile(): string | null {
+    const serviceFile = "/etc/systemd/system/minecraft.service";
+    return fs.existsSync(serviceFile) ? fs.readFileSync(serviceFile, "utf8") : null;
+  }
+
+  private restoreServiceFile(content: string | null): void {
+    if (content === null) return;
+
+    const serviceFile = "/etc/systemd/system/minecraft.service";
+    fs.writeFileSync(serviceFile, content);
     execSync("systemctl daemon-reload", { stdio: "pipe" });
   }
 
