@@ -8,6 +8,10 @@ import { ForgeDownloader } from "../downloaders/forge.js";
 
 type ServerType = "paper" | "vanilla" | "fabric" | "forge";
 
+function isConcreteLoaderBuild(build: number | string | undefined): build is string {
+  return typeof build === "string" && build.trim() !== "" && build.toLowerCase() !== "latest";
+}
+
 export class VersionManager {
   private paperDownloader: PaperDownloader;
   private vanillaDownloader: VanillaDownloader;
@@ -108,7 +112,7 @@ export class VersionManager {
 
         case "fabric":
           // Fabric uses a direct download, not an installer
-          const fabricLoaderVersion = typeof build === "string" && build
+          const fabricLoaderVersion = isConcreteLoaderBuild(build)
             ? build
             : await this.fabricDownloader.getLatestLoaderVersion();
           resolvedBuild = fabricLoaderVersion;
@@ -129,7 +133,7 @@ export class VersionManager {
           const backup = await this.createFullBackup();
           const serviceBackup = this.readServiceFile();
           try {
-            const forgeVersion = typeof build === "string" && build
+            const forgeVersion = isConcreteLoaderBuild(build)
               ? build
               : await this.forgeDownloader.getRecommendedForgeVersion(version);
             if (!forgeVersion) {
