@@ -19,7 +19,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import { jsonAuthHeaders } from "@/lib/auth";
+import { authHeaders, jsonAuthHeaders } from "@/lib/auth";
 
 interface ModBrowserProps {
   serverName: string;
@@ -216,7 +216,9 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
 
   async function fetchInstalledMods() {
     try {
-      const response = await fetch(`/api/servers/${serverName}/mods/installed`);
+      const response = await fetch(`/api/servers/${serverName}/mods/installed`, {
+        headers: authHeaders(),
+      });
       if (!response.ok) {
         throw new Error("Failed to fetch installed mods");
       }

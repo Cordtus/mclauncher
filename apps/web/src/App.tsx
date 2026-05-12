@@ -155,6 +155,7 @@ export function App() {
   const [authConfig, setAuthConfig] = useState<any | null>(null);
   const [passkeyName, setPasskeyName] = useState("Admin passkey");
   const [isPasskeyBusy, setIsPasskeyBusy] = useState(false);
+  const hasAdminAccess = Boolean(savedAdminToken || adminSession);
 
   // Version management state
   const [versionType, setVersionType] = useState<"paper" | "vanilla" | "fabric" | "forge">("paper");
@@ -430,7 +431,9 @@ export function App() {
     });
 
     try {
-      const response = await fetch(`/api/servers/${serverName}/check-public`);
+      const response = await fetch(`/api/servers/${serverName}/check-public`, {
+        headers: authHeaders(),
+      });
       const data = await response.json();
       setPublicAccess(prev => {
         const next = new Map(prev);
@@ -480,9 +483,9 @@ export function App() {
 
     try {
       const [settingsRes, bansRes, jvmRes] = await Promise.all([
-        fetch(`/api/servers/${server.name}/settings`),
-        fetch(`/api/servers/${server.name}/settings/bans`),
-        fetch(`/api/servers/${server.name}/jvm/settings`),
+        fetch(`/api/servers/${server.name}/settings`, { headers: authHeaders() }),
+        fetch(`/api/servers/${server.name}/settings/bans`, { headers: authHeaders() }),
+        fetch(`/api/servers/${server.name}/jvm/settings`, { headers: authHeaders() }),
       ]);
 
       const settings = settingsRes.ok ? await settingsRes.json() : {};
@@ -529,9 +532,19 @@ export function App() {
   async function refresh() {
     setIsRefreshing(true);
     try {
-      const res = await fetch("/api/servers");
+      const res = await fetch("/api/servers", { headers: authHeaders() });
+      if (res.status === 401 || res.status === 403 || res.status === 503) {
+        setServers([]);
+        setLogs("");
+        setMessage("Admin access is required to view and manage servers.");
+        return;
+      }
+      if (!res.ok) {
+        throw new Error(`Failed to fetch servers: ${res.statusText}`);
+      }
       const serverData = await res.json();
-      setServers(serverData);
+      setServers(Array.isArray(serverData) ? serverData : []);
+      setMessage("");
     } catch (err) {
       setMessage("Failed to fetch servers");
     } finally {
@@ -545,7 +558,12 @@ export function App() {
 
     setIsLoadingLogs(true);
     try {
-      const response = await fetch(`/api/servers/${servers[0].name}/logs`);
+      const response = await fetch(`/api/servers/${servers[0].name}/logs`, {
+        headers: authHeaders(),
+      });
+      if (!response.ok) {
+        throw new Error("Failed to fetch logs");
+      }
       const logText = await response.text();
 
       // Get last 100 lines for scrolling
@@ -698,7 +716,9 @@ export function App() {
   // Fetch bans when settings dialog opens
   const fetchBans = async (serverName: string) => {
     try {
-      const response = await fetch(`/api/servers/${serverName}/settings/bans`);
+      const response = await fetch(`/api/servers/${serverName}/settings/bans`, {
+        headers: authHeaders(),
+      });
       if (!response.ok) throw new Error('Failed to fetch bans');
       const data = await response.json();
       setServerSettings(prev => ({
@@ -822,7 +842,9 @@ export function App() {
   // Fetch TPS for a server
   const fetchTps = async (serverName: string) => {
     try {
-      const response = await fetch(`/api/servers/${serverName}/tps`);
+      const response = await fetch(`/api/servers/${serverName}/tps`, {
+        headers: authHeaders(),
+      });
       if (response.ok) {
         const data = await response.json();
         setServerTps(prev => new Map(prev).set(serverName, data.tps));
@@ -845,7 +867,9 @@ export function App() {
   // Fetch JVM settings
   const fetchJvmSettings = async (serverName: string) => {
     try {
-      const response = await fetch(`/api/servers/${serverName}/jvm/settings`);
+      const response = await fetch(`/api/servers/${serverName}/jvm/settings`, {
+        headers: authHeaders(),
+      });
       if (response.ok) {
         const data = await response.json();
         setServerSettings({
@@ -955,6 +979,7 @@ export function App() {
       localStorage.setItem("ADMIN_TOKEN", token);
       setSavedAdminToken(token);
       toast.success("Admin access token saved");
+      setTimeout(() => refresh(), 0);
     } else {
       localStorage.removeItem("ADMIN_TOKEN");
       setSavedAdminToken("");
@@ -983,6 +1008,7 @@ export function App() {
       setAdminSession(localStorage.getItem("ADMIN_SESSION") || "");
       toast.success("Signed in with passkey");
       await loadAuthConfig();
+      await refresh();
     } catch (err: any) {
       toast.error(err.message || "Passkey sign-in failed");
     } finally {
@@ -1013,7 +1039,6 @@ export function App() {
     return "destructive";
   };
 
-  const hasAdminAccess = Boolean(savedAdminToken || adminSession);
   const passkeyConfig = authConfig?.passkeys;
   const canUsePasskeys = passkeysAvailable();
 
@@ -1141,7 +1166,7 @@ export function App() {
                     </p>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    Read-only status remains visible without a token. Start, stop, uploads, settings, mods, and console commands require admin access.
+                    Server status, settings, mods, logs, and commands require admin access. Public player setup links remain separate.
                   </p>
                 </div>
                 <DialogFooter>

@@ -96,7 +96,9 @@ export function ModsManagementPanel({
     setIsLoading(true);
     setMessage("");
     try {
-      const response = await fetch(`/api/servers/${serverName}/mods/installed`);
+      const response = await fetch(`/api/servers/${serverName}/mods/installed`, {
+        headers: authHeaders(),
+      });
       if (!response.ok) {
         throw new Error("Failed to load mods");
       }
@@ -193,7 +195,9 @@ export function ModsManagementPanel({
     const encodedModId = encodeURIComponent(modId);
     try {
       // First, check if there are config files for this mod
-      const response = await fetch(`/api/servers/${serverName}/mods/${encodedModId}/configs`);
+      const response = await fetch(`/api/servers/${serverName}/mods/${encodedModId}/configs`, {
+        headers: authHeaders(),
+      });
       if (!response.ok) {
         throw new Error("Failed to check for config files");
       }
@@ -245,7 +249,9 @@ export function ModsManagementPanel({
 
   async function copyFriendManifest() {
     try {
-      const response = await fetch(`/api/servers/${serverName}/mods/manifest`);
+      const response = await fetch(`/api/servers/${serverName}/mods/manifest`, {
+        headers: authHeaders(),
+      });
       if (!response.ok) {
         throw new Error("Failed to build mod setup guide");
       }

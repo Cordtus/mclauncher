@@ -141,4 +141,35 @@ describe('management gateway routes', () => {
       'fabric-loader': '0.16.9',
     });
   });
+
+  it('requires admin auth for sensitive server inventory routes', async () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'mc-gateway-test-'));
+    tempDirs.push(tempDir);
+    const registryFile = path.join(tempDir, 'servers.json');
+    writeFileSync(registryFile, JSON.stringify({ servers: [] }));
+
+    process.env.REGISTRY_FILE = registryFile;
+    process.env.ADMIN_TOKEN = 'test-token';
+    process.env.ALLOW_CIDRS = '127.0.0.0/8';
+    process.env.WEB_DIST_DIR = tempDir;
+
+    const { app } = await import('./index.js');
+    const gateway = createServer(app);
+    await listen(gateway);
+    servers.push(gateway);
+
+    const noAuthResponse = await fetch(`${baseUrl(gateway)}/api/servers`);
+    expect(noAuthResponse.status).toBe(401);
+
+    const badAuthResponse = await fetch(`${baseUrl(gateway)}/api/servers`, {
+      headers: { Authorization: 'Bearer wrong-token' },
+    });
+    expect(badAuthResponse.status).toBe(401);
+
+    const adminResponse = await fetch(`${baseUrl(gateway)}/api/servers`, {
+      headers: { Authorization: 'Bearer test-token' },
+    });
+    expect(adminResponse.status).toBe(200);
+    expect(await adminResponse.json()).toEqual([]);
+  });
 });

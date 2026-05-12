@@ -397,7 +397,7 @@ app.post("/api/auth/logout", (req, res) => {
 });
 
 // List servers
-app.get("/api/servers", async (_req, res) => {
+app.get("/api/servers", requireAdmin, async (_req, res) => {
   const registry = loadRegistry();
   const results = [];
 
@@ -616,7 +616,7 @@ app.post("/api/servers/:name/restart", requireAdmin, async (req, res) => {
 });
 
 // Get logs
-app.get("/api/servers/:name/logs", async (req, res) => {
+app.get("/api/servers/:name/logs", requireAdmin, async (req, res) => {
   const { name } = req.params;
   const registry = loadRegistry();
   const server = registry.servers.find((s) => s.name === name);
@@ -632,7 +632,7 @@ app.get("/api/servers/:name/logs", async (req, res) => {
 });
 
 // Get TPS
-app.get("/api/servers/:name/tps", async (req, res) => {
+app.get("/api/servers/:name/tps", requireAdmin, async (req, res) => {
   const { name } = req.params;
   const registry = loadRegistry();
   const server = registry.servers.find((s) => s.name === name);
@@ -648,7 +648,7 @@ app.get("/api/servers/:name/tps", async (req, res) => {
 });
 
 // Get JVM settings
-app.get("/api/servers/:name/jvm/settings", async (req, res) => {
+app.get("/api/servers/:name/jvm/settings", requireAdmin, async (req, res) => {
   const { name } = req.params;
   const registry = loadRegistry();
   const server = registry.servers.find((s) => s.name === name);
@@ -684,7 +684,7 @@ app.post("/api/servers/:name/jvm/settings", requireAdmin, async (req, res) => {
 });
 
 // Check if public connection is accessible
-app.get("/api/servers/:name/check-public", async (req, res) => {
+app.get("/api/servers/:name/check-public", requireAdmin, async (req, res) => {
   const { name } = req.params;
   const registry = loadRegistry();
   const server = registry.servers.find((s) => s.name === name);
@@ -720,7 +720,7 @@ app.get("/api/servers/:name/check-public", async (req, res) => {
 });
 
 // Get config
-app.get("/api/servers/:name/config", async (req, res) => {
+app.get("/api/servers/:name/config", requireAdmin, async (req, res) => {
   const { name } = req.params;
   const registry = loadRegistry();
   const server = registry.servers.find((s) => s.name === name);
@@ -760,7 +760,7 @@ app.post("/api/servers/:name/config", requireAdmin, async (req, res) => {
 // ============================================================================
 
 // Get structured server settings
-app.get("/api/servers/:name/settings", async (req, res) => {
+app.get("/api/servers/:name/settings", requireAdmin, async (req, res) => {
   const { name } = req.params;
   const registry = loadRegistry();
   const server = registry.servers.find((s) => s.name === name);
@@ -796,7 +796,7 @@ app.post("/api/servers/:name/settings", requireAdmin, async (req, res) => {
 });
 
 // Get whitelist
-app.get("/api/servers/:name/settings/whitelist", async (req, res) => {
+app.get("/api/servers/:name/settings/whitelist", requireAdmin, async (req, res) => {
   const { name } = req.params;
   const registry = loadRegistry();
   const server = registry.servers.find((s) => s.name === name);
@@ -852,7 +852,7 @@ app.post("/api/servers/:name/settings/whitelist/remove", requireAdmin, async (re
 });
 
 // Get operators
-app.get("/api/servers/:name/settings/operators", async (req, res) => {
+app.get("/api/servers/:name/settings/operators", requireAdmin, async (req, res) => {
   const { name } = req.params;
   const registry = loadRegistry();
   const server = registry.servers.find((s) => s.name === name);
@@ -912,7 +912,7 @@ app.post("/api/servers/:name/settings/operators/remove", requireAdmin, async (re
 // ============================================================================
 
 // Get all bans
-app.get("/api/servers/:name/settings/bans", async (req, res) => {
+app.get("/api/servers/:name/settings/bans", requireAdmin, async (req, res) => {
   const { name } = req.params;
   const registry = loadRegistry();
   const server = registry.servers.find((s) => s.name === name);
@@ -1087,7 +1087,7 @@ app.post("/api/servers/:name/luckperms", requireAdmin, async (req, res) => {
 });
 
 // List worlds
-app.get("/api/servers/:name/worlds", async (req, res) => {
+app.get("/api/servers/:name/worlds", requireAdmin, async (req, res) => {
   const { name } = req.params;
   const registry = loadRegistry();
   const server = registry.servers.find((s) => s.name === name);
@@ -1421,7 +1421,7 @@ app.post("/api/servers/:name/plugins/recommended", requireAdmin, async (req, res
   }
 });
 
-app.get("/api/servers/:name/mods/manifest", async (req, res) => {
+app.get("/api/servers/:name/mods/manifest", requireAdmin, async (req, res) => {
   try {
     const { name } = req.params;
     const registry = loadRegistry();
@@ -1454,7 +1454,7 @@ app.get("/api/servers/:name/mods/manifest", async (req, res) => {
 });
 
 // List installed mods
-app.get("/api/servers/:name/mods/installed", async (req, res) => {
+app.get("/api/servers/:name/mods/installed", requireAdmin, async (req, res) => {
   try {
     const { name } = req.params;
     const registry = loadRegistry();
@@ -1502,7 +1502,7 @@ app.delete("/api/servers/:name/mods/:fileName", requireAdmin, async (req, res) =
 });
 
 // Get mod metadata
-app.get("/api/servers/:name/mods/:fileName/metadata", async (req, res) => {
+app.get("/api/servers/:name/mods/:fileName/metadata", requireAdmin, async (req, res) => {
   try {
     const { name, fileName } = req.params;
     assertSafePathSegment(fileName, "fileName");
@@ -1571,7 +1571,7 @@ app.patch("/api/servers/:name/mods/:fileName/toggle", requireAdmin, async (req, 
 });
 
 // List mod config files
-app.get("/api/servers/:name/mods/:modId/configs", async (req, res) => {
+app.get("/api/servers/:name/mods/:modId/configs", requireAdmin, async (req, res) => {
   try {
     const { name, modId } = req.params;
     assertSafePathSegment(modId, "modId");
@@ -1592,7 +1592,7 @@ app.get("/api/servers/:name/mods/:modId/configs", async (req, res) => {
 });
 
 // Get mod config file
-app.get("/api/servers/:name/mods/:modId/config/:fileName", async (req, res) => {
+app.get("/api/servers/:name/mods/:modId/config/:fileName", requireAdmin, async (req, res) => {
   try {
     const { name, modId, fileName } = req.params;
     assertSafePathSegment(modId, "modId");
@@ -1646,7 +1646,7 @@ app.post("/api/servers/:name/mods/:modId/config/:fileName", requireAdmin, async 
 // ============================================================================
 
 // Get modpack info (metadata + mod list for export)
-app.get("/api/servers/:name/modpack", async (req, res) => {
+app.get("/api/servers/:name/modpack", requireAdmin, async (req, res) => {
   try {
     const { name } = req.params;
     const registry = loadRegistry();
@@ -1678,7 +1678,7 @@ app.get("/api/servers/:name/modpack", async (req, res) => {
 });
 
 // Export modpack as .mrpack (Modrinth format)
-app.get("/api/servers/:name/modpack/export/mrpack", async (req, res) => {
+app.get("/api/servers/:name/modpack/export/mrpack", requireAdmin, async (req, res) => {
   try {
     const { name } = req.params;
     const registry = loadRegistry();
@@ -1699,7 +1699,7 @@ app.get("/api/servers/:name/modpack/export/mrpack", async (req, res) => {
 });
 
 // Export mod list as text
-app.get("/api/servers/:name/modpack/export/list", async (req, res) => {
+app.get("/api/servers/:name/modpack/export/list", requireAdmin, async (req, res) => {
   try {
     const { name } = req.params;
     const registry = loadRegistry();
@@ -1719,7 +1719,7 @@ app.get("/api/servers/:name/modpack/export/list", async (req, res) => {
 });
 
 // Generate public download page HTML
-app.get("/api/servers/:name/modpack/page", async (req, res) => {
+app.get("/api/servers/:name/modpack/page", requireAdmin, async (req, res) => {
   try {
     const { name } = req.params;
     const registry = loadRegistry();

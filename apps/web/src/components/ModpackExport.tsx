@@ -36,8 +36,8 @@ export function ModpackExport({
   const gatewayOrigin = apiBaseUrl || window.location.origin;
   const publicUrl = `${gatewayOrigin}/public/${serverName}/modpack`;
   const connectionAddress = publicAddress || "the server address from the admin";
-  const mrpackUrl = `${apiBaseUrl}/api/servers/${serverName}/modpack/export/mrpack`;
-  const modlistUrl = `${apiBaseUrl}/api/servers/${serverName}/modpack/export/list`;
+  const mrpackUrl = `${gatewayOrigin}/public/${serverName}/modpack.mrpack`;
+  const modlistUrl = `${gatewayOrigin}/public/${serverName}/modlist.txt`;
 
   async function copyPublicLink() {
     try {
