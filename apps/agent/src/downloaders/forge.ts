@@ -144,6 +144,9 @@ export class ForgeDownloader {
     if (fs.existsSync(runSh) || fs.existsSync(runBat)) {
       // Modern Forge uses a run script, we need to create a wrapper or use it directly
       console.log("Modern Forge installation detected. Using run script.");
+      if (fs.existsSync(runSh)) {
+        fs.chmodSync(runSh, 0o755);
+      }
 
       // Create a symlink or marker file so we know this is a Forge server
       const forgeMarker = path.join(mcDir, ".forge-server");

@@ -225,8 +225,11 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
       const installed = mods
         .map((mod: any) => mod.modId || mod.name || mod.fileName)
         .filter((name: unknown): name is string => typeof name === "string" && name.length > 0);
+      const installedProjectIds = mods
+        .map((mod: any) => mod.modrinthProjectId || mod.projectId || mod.modId || mod.name || mod.fileName)
+        .filter((name: unknown): name is string => typeof name === "string" && name.length > 0);
       setInstalledMods(installed);
-      setInstalledModIds(installed);
+      setInstalledModIds(installedProjectIds);
     } catch (err) {
       console.error("Failed to fetch installed mods:", err);
     }
@@ -364,7 +367,7 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
       if (includeDeps && dependencies?.required) {
         for (const dep of dependencies.required) {
           if (dep.downloadUrl && dep.fileName) {
-            await fetch(`/api/servers/${serverName}/mods/install`, {
+            const depResponse = await fetch(`/api/servers/${serverName}/mods/install`, {
               method: 'POST',
               headers: jsonAuthHeaders(),
               body: JSON.stringify({
@@ -375,6 +378,10 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
                 projectType: type,
               }),
             });
+            const depResult = await depResponse.json().catch(() => ({}));
+            if (!depResponse.ok) {
+              throw new Error(`Dependency install failed for ${dep.projectName || dep.projectId}: ${depResult.error || depResponse.statusText}`);
+            }
           }
         }
       }

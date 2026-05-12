@@ -44,6 +44,12 @@ export interface ModpackFile {
   fileSize: number;
 }
 
+type ResolvedModrinthFile = {
+  projectId: string;
+  versionId: string;
+  file: modrinth.ModrinthFile;
+};
+
 export interface ModrinthPackIndex {
   formatVersion: 1;
   game: 'minecraft';
@@ -57,6 +63,56 @@ export interface ModrinthPackIndex {
   };
 }
 
+function loaderDependencyId(loader: ModpackMetadata['loader']): string {
+  switch (loader) {
+    case 'fabric':
+      return 'fabric-loader';
+    case 'quilt':
+      return 'quilt-loader';
+    case 'forge':
+      return 'forge';
+    case 'neoforge':
+      return 'neoforge';
+  }
+}
+
+function fileHashes(file: modrinth.ModrinthFile): { sha1: string; sha512: string } | null {
+  const hashes = file.hashes;
+  if (hashes?.sha1 && hashes?.sha512) {
+    return { sha1: hashes.sha1, sha512: hashes.sha512 };
+  }
+  return null;
+}
+
+function packDependencies(metadata: ModpackMetadata): ModrinthPackIndex['dependencies'] {
+  const dependencies: ModrinthPackIndex['dependencies'] = {
+    minecraft: metadata.mcVersion,
+  };
+  if (metadata.loaderVersion) {
+    dependencies[loaderDependencyId(metadata.loader)] = metadata.loaderVersion;
+  }
+  return dependencies;
+}
+
+export function escapeHtml(value: unknown): string {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function safeExternalHref(value: string | undefined): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Try to find Modrinth project info for an installed mod by searching
  */
@@ -65,7 +121,7 @@ export async function findModrinthProject(
   modId: string,
   mcVersion: string,
   loader: string
-): Promise<{ projectId: string; versionId: string; file: modrinth.ModrinthFile } | null> {
+): Promise<ResolvedModrinthFile | null> {
   try {
     // Search for the mod on Modrinth
     const results = await modrinth.searchMods({
@@ -125,6 +181,8 @@ export async function generateMrpack(
 
   // Try to resolve each mod to its Modrinth project
   for (const mod of enabledMods) {
+    let resolved: ResolvedModrinthFile | null = null;
+
     // If we already have Modrinth info stored
     if (mod.modrinthProjectId && mod.modrinthVersionId) {
       try {
@@ -133,39 +191,37 @@ export async function generateMrpack(
 
         if (version) {
           const file = version.files.find((f) => f.primary) || version.files[0];
-          files.push({
-            path: `mods/${file.filename}`,
-            hashes: {
-              sha1: '', // Would need to compute or get from Modrinth
-              sha512: '',
-            },
-            downloads: [file.url],
-            fileSize: file.size,
-          });
-          continue;
+          resolved = {
+            projectId: mod.modrinthProjectId,
+            versionId: mod.modrinthVersionId,
+            file,
+          };
         }
       } catch (err) {
         console.warn(`Failed to fetch stored Modrinth info for ${mod.name}`);
       }
     }
 
-    // Try to find the mod on Modrinth
-    const modrinthInfo = await findModrinthProject(
-      mod.name,
-      mod.modId,
-      metadata.mcVersion,
-      metadata.loader
-    );
+    if (!resolved) {
+      resolved = await findModrinthProject(
+        mod.name,
+        mod.modId,
+        metadata.mcVersion,
+        metadata.loader
+      );
+    }
 
-    if (modrinthInfo) {
+    if (resolved) {
+      const hashes = fileHashes(resolved.file);
+      if (!hashes) {
+        unmatchedMods.push(mod.name);
+        continue;
+      }
       files.push({
-        path: `mods/${modrinthInfo.file.filename}`,
-        hashes: {
-          sha1: '',
-          sha512: '',
-        },
-        downloads: [modrinthInfo.file.url],
-        fileSize: modrinthInfo.file.size,
+        path: `mods/${resolved.file.filename}`,
+        hashes,
+        downloads: [resolved.file.url],
+        fileSize: resolved.file.size,
       });
     } else {
       // Mod not found on Modrinth - will need manual download
@@ -181,10 +237,7 @@ export async function generateMrpack(
     name: metadata.name,
     summary: metadata.summary,
     files,
-    dependencies: {
-      minecraft: metadata.mcVersion,
-      [metadata.loader]: metadata.loaderVersion || '*',
-    },
+    dependencies: packDependencies(metadata),
   };
 
   // Create the ZIP archive
@@ -304,13 +357,17 @@ export async function generateDownloadPage(
 
   const requiredMods = modLinks.filter((m) => m.clientRequired);
   const optionalMods = modLinks.filter((m) => !m.clientRequired);
+  const safeServerName = escapeHtml(serverName);
+  const safeServerAddress = escapeHtml(serverAddress);
+  const safeMcVersion = escapeHtml(metadata.mcVersion);
+  const safeLoader = escapeHtml(metadata.loader);
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${serverName} - Mod Pack</title>
+  <title>${safeServerName} - Mod Pack</title>
   <style>
     :root {
       --bg: #1a1a2e;
@@ -482,22 +539,22 @@ export async function generateDownloadPage(
 <body>
   <div class="container">
     <header>
-      <h1>${serverName}</h1>
+      <h1>${safeServerName}</h1>
       <p class="subtitle">Download and install the mod pack to join our server</p>
     </header>
 
     <div class="server-info">
       <div class="info-item">
         <div class="info-label">Server Address</div>
-        <div class="info-value">${serverAddress}</div>
+        <div class="info-value">${safeServerAddress}</div>
       </div>
       <div class="info-item">
         <div class="info-label">Minecraft Version</div>
-        <div class="info-value">${metadata.mcVersion}</div>
+        <div class="info-value">${safeMcVersion}</div>
       </div>
       <div class="info-item">
         <div class="info-label">Mod Loader</div>
-        <div class="info-value">${metadata.loader}</div>
+        <div class="info-value">${safeLoader}</div>
       </div>
       <div class="info-item">
         <div class="info-label">Total Mods</div>
@@ -520,15 +577,18 @@ export async function generateDownloadPage(
       You must install these mods to connect to the server
     </p>
     <div class="mod-list">
-      ${requiredMods.map((mod) => `
+      ${requiredMods.map((mod) => {
+        const modrinthUrl = safeExternalHref(mod.modrinthUrl);
+        return `
         <div class="mod-card">
           <div class="mod-info">
-            <div class="mod-name">${mod.name} <span class="mod-version">v${mod.version}</span></div>
-            ${mod.description ? `<div class="mod-desc">${mod.description}</div>` : ''}
+            <div class="mod-name">${escapeHtml(mod.name)} <span class="mod-version">v${escapeHtml(mod.version)}</span></div>
+            ${mod.description ? `<div class="mod-desc">${escapeHtml(mod.description)}</div>` : ''}
           </div>
-          ${mod.modrinthUrl ? `<a href="${mod.modrinthUrl}" target="_blank" class="mod-link">Modrinth</a>` : ''}
+          ${modrinthUrl ? `<a href="${escapeHtml(modrinthUrl)}" target="_blank" rel="noopener noreferrer" class="mod-link">Modrinth</a>` : ''}
         </div>
-      `).join('')}
+      `;
+      }).join('')}
     </div>
     ` : ''}
 
@@ -538,15 +598,18 @@ export async function generateDownloadPage(
       These mods run on the server only - you don't need to install them
     </p>
     <div class="mod-list">
-      ${optionalMods.map((mod) => `
+      ${optionalMods.map((mod) => {
+        const modrinthUrl = safeExternalHref(mod.modrinthUrl);
+        return `
         <div class="mod-card">
           <div class="mod-info">
-            <div class="mod-name">${mod.name} <span class="mod-version">v${mod.version}</span></div>
-            ${mod.description ? `<div class="mod-desc">${mod.description}</div>` : ''}
+            <div class="mod-name">${escapeHtml(mod.name)} <span class="mod-version">v${escapeHtml(mod.version)}</span></div>
+            ${mod.description ? `<div class="mod-desc">${escapeHtml(mod.description)}</div>` : ''}
           </div>
-          ${mod.modrinthUrl ? `<a href="${mod.modrinthUrl}" target="_blank" class="mod-link">Modrinth</a>` : ''}
+          ${modrinthUrl ? `<a href="${escapeHtml(modrinthUrl)}" target="_blank" rel="noopener noreferrer" class="mod-link">Modrinth</a>` : ''}
         </div>
-      `).join('')}
+      `;
+      }).join('')}
     </div>
     ` : ''}
 
@@ -556,7 +619,7 @@ export async function generateDownloadPage(
         <li>Download and install <a href="https://prismlauncher.org/" target="_blank" style="color: var(--highlight);">Prism Launcher</a> (recommended) or your preferred Minecraft launcher</li>
         <li>Click the <strong>Download Modpack</strong> button above</li>
         <li>In Prism Launcher: <code>Add Instance</code> → <code>Import</code> → Select the downloaded .mrpack file</li>
-        <li>Launch the instance and connect to <code>${serverAddress}</code></li>
+        <li>Launch the instance and connect to <code>${safeServerAddress}</code></li>
       </ol>
       <p style="margin-top: 1rem; color: var(--text-muted);">
         <strong>Alternative:</strong> If using a different launcher, download each mod from the list above and place them in your mods folder.

@@ -150,13 +150,14 @@ export function App() {
   const hasAutoStartedTour = useRef(false);
   const [adminAccessDialog, setAdminAccessDialog] = useState(false);
   const [adminToken, setAdminToken] = useState(() => localStorage.getItem("ADMIN_TOKEN") || "");
+  const [savedAdminToken, setSavedAdminToken] = useState(() => localStorage.getItem("ADMIN_TOKEN") || "");
   const [adminSession, setAdminSession] = useState(() => localStorage.getItem("ADMIN_SESSION") || "");
   const [authConfig, setAuthConfig] = useState<any | null>(null);
   const [passkeyName, setPasskeyName] = useState("Admin passkey");
   const [isPasskeyBusy, setIsPasskeyBusy] = useState(false);
 
   // Version management state
-  const [versionType, setVersionType] = useState<"paper" | "vanilla">("paper");
+  const [versionType, setVersionType] = useState<"paper" | "vanilla" | "fabric" | "forge">("paper");
   const [newVersion, setNewVersion] = useState("");
   const [isChangingVersion, setIsChangingVersion] = useState(false);
 
@@ -359,19 +360,6 @@ export function App() {
   useEffect(() => {
     loadAuthConfig();
   }, []);
-
-  // Load network settings from server registry when servers are loaded
-  useEffect(() => {
-    if (servers.length > 0) {
-      setServerSettings(prev => ({
-        ...prev,
-        hostIp: servers[0].host_ip || "",
-        publicDomain: servers[0].public_domain || "",
-        publicPort: servers[0].public_port || 25565,
-        hostProxyPort: servers[0].host_proxy_port || servers[0].public_port || 25565,
-      }));
-    }
-  }, [servers]);
 
   async function loadAuthConfig() {
     try {
@@ -965,9 +953,11 @@ export function App() {
     const token = adminToken.trim();
     if (token) {
       localStorage.setItem("ADMIN_TOKEN", token);
+      setSavedAdminToken(token);
       toast.success("Admin access token saved");
     } else {
       localStorage.removeItem("ADMIN_TOKEN");
+      setSavedAdminToken("");
       toast.success("Admin access token cleared");
     }
     setAdminAccessDialog(false);
@@ -1010,6 +1000,7 @@ export function App() {
     }
     setAdminSession("");
     setAdminToken("");
+    setSavedAdminToken("");
     localStorage.removeItem("ADMIN_TOKEN");
     setAdminAccessDialog(false);
     toast.success("Admin access cleared");
@@ -1022,7 +1013,7 @@ export function App() {
     return "destructive";
   };
 
-  const hasAdminAccess = Boolean(adminToken.trim() || adminSession);
+  const hasAdminAccess = Boolean(savedAdminToken || adminSession);
   const passkeyConfig = authConfig?.passkeys;
   const canUsePasskeys = passkeysAvailable();
 
@@ -1046,7 +1037,10 @@ export function App() {
           <div className="flex gap-2 w-full sm:w-auto">
             <Dialog open={adminAccessDialog} onOpenChange={(open) => {
               setAdminAccessDialog(open);
-              if (open) loadAuthConfig();
+              if (open) {
+                setAdminToken(savedAdminToken);
+                loadAuthConfig();
+              }
             }}>
               <DialogTrigger asChild>
                 <Button
@@ -1119,6 +1113,7 @@ export function App() {
                           onClick={async () => {
                             await logoutPasskeySession();
                             setAdminSession("");
+                            localStorage.removeItem("ADMIN_SESSION");
                             toast.success("Passkey session cleared");
                           }}
                         >
@@ -1686,21 +1681,17 @@ export function App() {
                           </DialogDescription>
                         </DialogHeader>
                         <div className="space-y-4">
-                          <div className="flex gap-2">
-                            <Button
-                              variant={versionType === "paper" ? "default" : "outline"}
-                              className="rounded-sm flex-1"
-                              onClick={() => setVersionType("paper")}
-                            >
-                              Paper
-                            </Button>
-                            <Button
-                              variant={versionType === "vanilla" ? "default" : "outline"}
-                              className="rounded-sm flex-1"
-                              onClick={() => setVersionType("vanilla")}
-                            >
-                              Vanilla
-                            </Button>
+                          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                            {(["paper", "vanilla", "fabric", "forge"] as const).map((type) => (
+                              <Button
+                                key={type}
+                                variant={versionType === type ? "default" : "outline"}
+                                className="rounded-sm"
+                                onClick={() => setVersionType(type)}
+                              >
+                                {type[0].toUpperCase() + type.slice(1)}
+                              </Button>
+                            ))}
                           </div>
                           <Input
                             placeholder="e.g., 1.21.3"
@@ -2704,6 +2695,7 @@ export function App() {
                                 mcVersion={server.mc_version}
                                 loader={server.edition.toLowerCase() as 'forge' | 'fabric' | 'neoforge'}
                                 serverMemoryMB={server.memory_mb}
+                                publicAddress={getPublicJoinAddress(server) || undefined}
                               />
                             </TabsContent>
                           )}

@@ -12,15 +12,19 @@ EDITION="${2:-paper}"           # paper or vanilla
 MC_VERSION="${3:-1.21.1}"
 MEMORY_MB="${4:-2048}"
 CPU_LIMIT="${5:-2}"
-PUBLIC_PORT="${6:-34567}"        # Non-standard port to avoid botnet scans
-RCON_PORT="${7:-34568}"
+PUBLIC_PORT="${6:-34567}"        # Host proxy port for Minecraft traffic
+RCON_PORT="${7:-25575}"
 RCON_PASSWORD="${8:-$(openssl rand -hex 16)}"
 MANAGER_CONTAINER="${9:-mc-manager}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+AGENT_DIR="$REPO_ROOT/apps/agent"
+CONTAINER_MEMORY_MB=$((MEMORY_MB + 1024))
 
 if [ -z "$CONTAINER_NAME" ]; then
   echo "Usage: $0 <container_name> [edition] [mc_version] [memory_mb] [cpu_limit] [public_port] [rcon_port] [rcon_password] [manager_container]"
   echo ""
-  echo "Example: $0 mc-server-1 paper 1.21.1 4096 2 25565 25575 mypassword mc-manager"
+  echo "Example: $0 mc-server-1 paper 1.21.1 4096 2 34567 25575 mypassword mc-manager"
   exit 1
 fi
 
@@ -28,6 +32,7 @@ echo "==> Creating Minecraft Server Container"
 echo "    Name: $CONTAINER_NAME"
 echo "    Edition: $EDITION $MC_VERSION"
 echo "    Memory: ${MEMORY_MB}MB"
+echo "    Container Memory Limit: ${CONTAINER_MEMORY_MB}MB"
 echo "    CPU: $CPU_LIMIT cores"
 echo "    Public Port: $PUBLIC_PORT"
 echo "    RCON Port: $RCON_PORT"
@@ -40,19 +45,12 @@ sleep 5
 
 # Set limits
 lxc config set "$CONTAINER_NAME" limits.cpu="$CPU_LIMIT"
-lxc config set "$CONTAINER_NAME" limits.memory="${MEMORY_MB}MB"
+lxc config set "$CONTAINER_NAME" limits.memory="${CONTAINER_MEMORY_MB}MB"
 
 # Add proxy for Minecraft port
 lxc config device add "$CONTAINER_NAME" mc-proxy proxy \
   listen="tcp:0.0.0.0:${PUBLIC_PORT}" \
   connect="tcp:127.0.0.1:25565"
-
-# Add proxy for RCON if enabled
-if [ -n "$RCON_PASSWORD" ]; then
-  lxc config device add "$CONTAINER_NAME" rcon-proxy proxy \
-    listen="tcp:0.0.0.0:${RCON_PORT}" \
-    connect="tcp:127.0.0.1:25575"
-fi
 
 # Install base dependencies and control agent
 lxc exec "$CONTAINER_NAME" -- bash -c "
@@ -88,20 +86,21 @@ install -d /opt/mc-agent
 "
 
 # Copy control agent
-if [ -d "../../apps/agent" ]; then
+if [ -d "$AGENT_DIR" ]; then
   echo "==> Copying control agent..."
-  tar czf /tmp/agent.tar.gz -C ../../apps/agent .
+  tar czf /tmp/agent.tar.gz -C "$AGENT_DIR" .
   lxc file push /tmp/agent.tar.gz "$CONTAINER_NAME/tmp/"
   lxc exec "$CONTAINER_NAME" -- bash -c "
     cd /opt/mc-agent
     tar xzf /tmp/agent.tar.gz
     rm /tmp/agent.tar.gz
-    npm install --omit=dev
+    npm install
     npm run build
+    npm prune --omit=dev
   "
   rm /tmp/agent.tar.gz
 else
-  echo "ERROR: Control agent not found at ../../apps/agent"
+  echo "ERROR: Control agent not found at $AGENT_DIR"
   exit 1
 fi
 
@@ -136,7 +135,7 @@ difficulty=normal
 online-mode=true
 spawn-protection=0
 enable-rcon=true
-rcon.port=25575
+rcon.port=$RCON_PORT
 rcon.password=$RCON_PASSWORD
 EOF
 
@@ -183,7 +182,7 @@ Type=simple
 WorkingDirectory=/opt/mc-agent
 Environment=AGENT_PORT=9090
 Environment=MC_DIR=/opt/minecraft
-Environment=RCON_PORT=25575
+Environment=RCON_PORT=$RCON_PORT
 ExecStart=/usr/bin/node dist/index.js
 Restart=always
 RestartSec=3
@@ -242,7 +241,7 @@ echo "  Local Network: $HOST_IP:$PUBLIC_PORT"
 echo "  (Only players on your WiFi can use this)"
 echo ""
 echo "RCON:"
-echo "  Port: $RCON_PORT"
+echo "  Internal Port: $RCON_PORT (not exposed on the host)"
 echo "  Password: $RCON_PASSWORD"
 echo ""
 echo "Management Commands:"

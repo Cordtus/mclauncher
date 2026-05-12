@@ -39,6 +39,7 @@ interface ModsManagementPanelProps {
   mcVersion: string;
   loader: 'forge' | 'fabric' | 'neoforge';
   serverMemoryMB: number;
+  publicAddress?: string;
 }
 
 export function ModsManagementPanel({
@@ -46,6 +47,7 @@ export function ModsManagementPanel({
   mcVersion,
   loader,
   serverMemoryMB,
+  publicAddress,
 }: ModsManagementPanelProps) {
   const [mods, setMods] = useState<InstalledMod[]>([]);
   const [filteredMods, setFilteredMods] = useState<InstalledMod[]>([]);
@@ -309,6 +311,7 @@ export function ModsManagementPanel({
             mcVersion={mcVersion}
             loader={loader}
             modsCount={mods.length}
+            publicAddress={publicAddress}
           />
           <input
             type="file"

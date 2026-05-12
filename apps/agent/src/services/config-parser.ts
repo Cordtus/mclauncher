@@ -240,6 +240,8 @@ export async function updateConfigFile(
       parsed = TOML.parse(content);
       break;
     case 'json5':
+      parsed = JSON5.parse(content);
+      break;
     case 'json':
       parsed = JSON.parse(content);
       break;

@@ -97,15 +97,23 @@ export class WorldManager {
     }
 
     await this.stopServer();
+    let restarted = false;
 
-    if (fs.existsSync(this.worldLink)) {
-      fs.unlinkSync(this.worldLink);
+    try {
+      if (fs.existsSync(this.worldLink)) {
+        fs.unlinkSync(this.worldLink);
+      }
+      fs.symlinkSync(worldPath, this.worldLink);
+
+      execSync(`chown -R mc:mc ${worldPath}`);
+
+      await this.startServer();
+      restarted = true;
+    } finally {
+      if (!restarted) {
+        await this.startServer();
+      }
     }
-    fs.symlinkSync(worldPath, this.worldLink);
-
-    execSync(`chown -R mc:mc ${worldPath}`);
-
-    await this.startServer();
 
     console.log(`Switched to world: ${worldName}`);
   }

@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "test": "vitest --run"
   },
   "dependencies": {
     "@types/form-data": "^2.2.1",
@@ -23,6 +24,7 @@
     "@types/multer": "^1.4.12",
     "@types/node": "^22.7.4",
     "tsx": "^4.19.1",
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "vitest": "^4.0.6"
   }
 }

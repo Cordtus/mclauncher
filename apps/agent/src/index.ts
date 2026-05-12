@@ -21,6 +21,8 @@ import { VersionManager } from "./managers/version.js";
 import { WorldManager } from "./managers/world.js";
 import { PaperDownloader } from "./downloaders/paper.js";
 import { VanillaDownloader } from "./downloaders/vanilla.js";
+import { FabricDownloader } from "./downloaders/fabric.js";
+import { ForgeDownloader } from "./downloaders/forge.js";
 import { pingMinecraftServer } from "./utils/mcping.js";
 import { extractModMetadata, extractModIcon } from "./services/jar-metadata.js";
 import { parseConfigFile, updateConfigFile, listConfigFiles, detectFormat } from "./services/config-parser.js";
@@ -45,6 +47,10 @@ const versionManager = new VersionManager(MC_DIR);
 const worldManager = new WorldManager(MC_DIR);
 const paperDownloader = new PaperDownloader();
 const vanillaDownloader = new VanillaDownloader();
+const fabricDownloader = new FabricDownloader();
+const forgeDownloader = new ForgeDownloader();
+const supportedServerTypes = ["paper", "vanilla", "fabric", "forge"] as const;
+type SupportedServerType = typeof supportedServerTypes[number];
 
 // Helper: run command synchronously
 function sh(cmd: string, args: string[]): string {
@@ -85,6 +91,18 @@ function runRcon(command: string, password?: string) {
   ]);
 }
 
+function isMinecraftActive() {
+  return shSafe("systemctl", ["is-active", "minecraft"]).stdout.trim() === "active";
+}
+
+function runRconWhenActive(command: string) {
+  if (!isMinecraftActive()) return;
+  const result = runRcon(command);
+  if (result.code !== 0) {
+    throw new Error(result.stderr || result.stdout || `RCON command failed: ${command}`);
+  }
+}
+
 function assertSafePathSegment(value: string, label: string) {
   if (
     !value ||
@@ -112,8 +130,39 @@ function safeChildPath(root: string, ...segments: string[]) {
   return resolvedPath;
 }
 
+type InstalledModrinthMetadata = {
+  projectId?: string;
+  versionId?: string;
+  downloadUrl?: string;
+};
+
+function modrinthManifestPath() {
+  return path.join(MC_DIR, "mods", ".mclauncher-modrinth.json");
+}
+
+function readModrinthManifest(): Record<string, InstalledModrinthMetadata> {
+  const manifestPath = modrinthManifestPath();
+  if (!fs.existsSync(manifestPath)) return {};
+  try {
+    return JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function writeModrinthManifest(manifest: Record<string, InstalledModrinthMetadata>) {
+  const manifestPath = modrinthManifestPath();
+  fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+  shSafe("chown", ["mc:mc", manifestPath]);
+}
+
 function statusForError(err: any) {
   return typeof err?.message === "string" && err.message.startsWith("Invalid") ? 400 : 500;
+}
+
+function isSupportedServerType(type: unknown): type is SupportedServerType {
+  return typeof type === "string" && supportedServerTypes.includes(type as SupportedServerType);
 }
 
 // Health check
@@ -376,11 +425,7 @@ app.post("/settings/whitelist/add", async (req, res) => {
     const configPath = path.join(MC_DIR, "server.properties");
     updateProperties(configPath, { "white-list": true });
 
-    // Reload whitelist in-game if server is running
-    const status = shSafe("systemctl", ["is-active", "minecraft"]);
-    if (status.stdout.trim() === "active") {
-      runRcon("whitelist reload");
-    }
+    runRconWhenActive("whitelist reload");
 
     res.json({ success: true, message: `Player ${profile.name} added to whitelist` });
   } catch (err: any) {
@@ -411,11 +456,7 @@ app.post("/settings/whitelist/remove", async (req, res) => {
     writeJsonArray(whitelistPath, filtered);
     sh("chown", ["mc:mc", whitelistPath]);
 
-    // Reload whitelist in-game if server is running
-    const status = shSafe("systemctl", ["is-active", "minecraft"]);
-    if (status.stdout.trim() === "active") {
-      runRcon("whitelist reload");
-    }
+    runRconWhenActive("whitelist reload");
 
     res.json({ success: true, message: `Player ${username} removed from whitelist` });
   } catch (err: any) {
@@ -467,6 +508,7 @@ app.post("/settings/operators/add", async (req, res) => {
     });
     writeJsonArray(opsPath, ops);
     sh("chown", ["mc:mc", opsPath]);
+    runRconWhenActive(`op ${profile.name}`);
 
     res.json({ success: true, message: `Player ${profile.name} added as operator` });
   } catch (err: any) {
@@ -496,6 +538,7 @@ app.post("/settings/operators/remove", async (req, res) => {
 
     writeJsonArray(opsPath, filtered);
     sh("chown", ["mc:mc", opsPath]);
+    runRconWhenActive(`deop ${username}`);
 
     res.json({ success: true, message: `Player ${username} removed from operators` });
   } catch (err: any) {
@@ -753,6 +796,15 @@ app.post("/mods", upload.single("file"), (req, res) => {
     fs.mkdirSync(modsDir, { recursive: true });
     fs.copyFileSync(file.path, dest);
     fs.unlinkSync(file.path);
+    if (req.body?.projectId || req.body?.versionId) {
+      const manifest = readModrinthManifest();
+      manifest[file.originalname] = {
+        projectId: req.body.projectId,
+        versionId: req.body.versionId,
+        downloadUrl: req.body.downloadUrl,
+      };
+      writeModrinthManifest(manifest);
+    }
     sh("chown", ["-R", "mc:mc", modsDir]);
     res.send(`Mod ${file.originalname} uploaded. Restart server to load.`);
   } catch (err: any) {
@@ -769,6 +821,7 @@ app.get("/mods/list", async (_req, res) => {
     }
 
     const files = fs.readdirSync(modsDir);
+    const modrinthManifest = readModrinthManifest();
     const mods = [];
 
     for (const file of files) {
@@ -779,6 +832,7 @@ app.get("/mods/list", async (_req, res) => {
       const filePath = path.join(modsDir, file);
       const enabled = file.endsWith(".jar");
       const metadata = await extractModMetadata(filePath);
+      const modrinthMetadata = modrinthManifest[file] || modrinthManifest[file.replace(/\.disabled$/, '')];
 
       if (metadata) {
         mods.push({
@@ -790,6 +844,8 @@ app.get("/mods/list", async (_req, res) => {
           authors: metadata.authors,
           loader: metadata.loader,
           enabled,
+          modrinthProjectId: modrinthMetadata?.projectId,
+          modrinthVersionId: modrinthMetadata?.versionId,
         });
       } else {
         // Fallback for mods without proper metadata
@@ -799,6 +855,8 @@ app.get("/mods/list", async (_req, res) => {
           name: file.replace(/\.jar(\.disabled)?$/, ''),
           version: 'unknown',
           enabled,
+          modrinthProjectId: modrinthMetadata?.projectId,
+          modrinthVersionId: modrinthMetadata?.versionId,
         });
       }
     }
@@ -876,6 +934,12 @@ app.patch("/mods/:fileName/toggle", (req, res) => {
     }
 
     fs.renameSync(currentPath, newPath);
+    const manifest = readModrinthManifest();
+    if (manifest[fileName]) {
+      manifest[path.basename(newPath)] = manifest[fileName];
+      delete manifest[fileName];
+      writeModrinthManifest(manifest);
+    }
     res.json({ ok: true, message: enabled ? "Mod enabled" : "Mod disabled", newFileName: path.basename(newPath) });
   } catch (err: any) {
     res.status(statusForError(err)).json({ error: err.message });
@@ -910,6 +974,11 @@ app.delete("/mods/:fileName", async (req, res) => {
 
     // Delete the mod file
     fs.unlinkSync(filePath);
+    const manifest = readModrinthManifest();
+    if (manifest[fileName]) {
+      delete manifest[fileName];
+      writeModrinthManifest(manifest);
+    }
 
     // Remove config files if we have metadata
     if (metadata) {
@@ -1251,6 +1320,21 @@ function parseTpsOutput(output: string): number | null {
   return null;
 }
 
+function hasForgeRunScript() {
+  return fs.existsSync(path.join(MC_DIR, "run.sh")) && fs.existsSync(path.join(MC_DIR, ".forge-server"));
+}
+
+function readJvmFlagsFromService(serviceContent: string) {
+  const execStartMatch = serviceContent.match(/ExecStart=([^\n]+)/);
+  if (!execStartMatch) return null;
+  const customFlagsMatch = execStartMatch[1].match(/java\s+(.*?)\s+-jar/);
+  return customFlagsMatch ? customFlagsMatch[1].trim() : "";
+}
+
+function writeMinecraftExecStart(serviceContent: string, execStart: string) {
+  return serviceContent.replace(/ExecStart=.*/, `ExecStart=${execStart}`);
+}
+
 // Get current JVM settings
 app.get("/jvm/settings", (_req, res) => {
   try {
@@ -1260,23 +1344,20 @@ app.get("/jvm/settings", (_req, res) => {
     }
 
     const serviceContent = fs.readFileSync(serviceFile, "utf8");
-    const execStartMatch = serviceContent.match(/ExecStart=([^\n]+)/);
+    const userJvmArgsPath = path.join(MC_DIR, "user_jvm_args.txt");
+    const allFlags = hasForgeRunScript() && fs.existsSync(userJvmArgsPath)
+      ? fs.readFileSync(userJvmArgsPath, "utf8").split(/\r?\n/).filter((line) => !line.trim().startsWith("#")).join(" ").trim()
+      : readJvmFlagsFromService(serviceContent);
 
-    if (!execStartMatch) {
+    if (allFlags === null) {
       return res.status(500).json({ error: "Could not parse ExecStart from service file" });
     }
 
-    const execStart = execStartMatch[1];
-
     // Parse JVM flags
-    const xmsMatch = execStart.match(/-Xms(\d+)([MG])/);
-    const xmxMatch = execStart.match(/-Xmx(\d+)([MG])/);
-    const g1gcMatch = execStart.includes("-XX:+UseG1GC");
-    const zgcMatch = execStart.includes("-XX:+UseZGC");
-
-    // Extract custom flags (everything between java and -jar)
-    const customFlagsMatch = execStart.match(/java\s+(.*?)\s+-jar/);
-    const allFlags = customFlagsMatch ? customFlagsMatch[1] : "";
+    const xmsMatch = allFlags.match(/-Xms(\d+)([MG])/);
+    const xmxMatch = allFlags.match(/-Xmx(\d+)([MG])/);
+    const g1gcMatch = allFlags.includes("-XX:+UseG1GC");
+    const zgcMatch = allFlags.includes("-XX:+UseZGC");
 
     // Remove known flags to get custom ones
     let customFlags = allFlags
@@ -1330,12 +1411,14 @@ app.post("/jvm/settings", (req, res) => {
       jvmFlags += " " + customFlags.trim();
     }
 
-    // Replace ExecStart line
-    const newExecStart = `/usr/bin/java ${jvmFlags} -jar server.jar nogui`;
-    serviceContent = serviceContent.replace(
-      /ExecStart=.*/,
-      `ExecStart=${newExecStart}`
-    );
+    if (hasForgeRunScript()) {
+      const userJvmArgsPath = path.join(MC_DIR, "user_jvm_args.txt");
+      fs.writeFileSync(userJvmArgsPath, `${jvmFlags}\n`);
+      shSafe("chown", ["mc:mc", userJvmArgsPath]);
+      serviceContent = writeMinecraftExecStart(serviceContent, "/usr/bin/env bash run.sh nogui");
+    } else {
+      serviceContent = writeMinecraftExecStart(serviceContent, `/usr/bin/java ${jvmFlags} -jar server.jar nogui`);
+    }
 
     // Write updated service file
     fs.writeFileSync(serviceFile, serviceContent);
@@ -1355,6 +1438,7 @@ app.post("/jvm/settings", (req, res) => {
 
 // Create backup
 app.post("/backup", (_req, res) => {
+  let stoppedForBackup = false;
   try {
     const timestamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 15);
     const backupDir = "/var/backups/minecraft";
@@ -1364,16 +1448,22 @@ app.post("/backup", (_req, res) => {
 
     // Stop server for consistent backup
     sh("systemctl", ["stop", "minecraft"]);
+    stoppedForBackup = true;
 
     // Create tarball
     sh("tar", ["-czf", backupFile, "-C", MC_DIR, "."]);
 
     // Start server
     sh("systemctl", ["start", "minecraft"]);
+    stoppedForBackup = false;
 
     res.send(`Backup created: ${backupFile}`);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  } finally {
+    if (stoppedForBackup) {
+      shSafe("systemctl", ["start", "minecraft"]);
+    }
   }
 });
 
@@ -1403,6 +1493,33 @@ app.get("/versions/vanilla", async (_req, res) => {
   }
 });
 
+// Get available Fabric game versions and loader versions
+app.get("/versions/fabric", async (_req, res) => {
+  try {
+    const [versions, loaders] = await Promise.all([
+      fabricDownloader.getAvailableVersions(),
+      fabricDownloader.getLoaderVersions(),
+    ]);
+    res.json({
+      versions,
+      latestLoader: loaders.find((loader) => loader.stable)?.version || loaders[0]?.version || null,
+      loaders,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get available Forge game versions
+app.get("/versions/forge", async (_req, res) => {
+  try {
+    const versions = await forgeDownloader.getAvailableVersions();
+    res.json({ versions });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Get builds for Paper version
 app.get("/versions/paper/:version/builds", async (req, res) => {
   try {
@@ -1421,8 +1538,8 @@ app.get("/versions/paper/:version/builds", async (req, res) => {
 app.post("/version/change", async (req, res) => {
   const { type, version, build } = req.body;
 
-  if (!["paper", "vanilla"].includes(type)) {
-    return res.status(400).send("Invalid type. Must be paper or vanilla");
+  if (!isSupportedServerType(type)) {
+    return res.status(400).send(`Invalid type. Must be ${supportedServerTypes.join(", ")}`);
   }
 
   if (!version) {
@@ -1436,19 +1553,23 @@ app.post("/version/change", async (req, res) => {
       message: `Server updated to ${type} ${version}`,
       type,
       version,
-      build: type === "paper" ? build : null,
+      build: build || null,
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Switch server type (Paper ↔ Vanilla)
+// Switch server type
 app.post("/version/switch-type", async (req, res) => {
   const { type, version, build } = req.body;
 
-  if (!["paper", "vanilla"].includes(type)) {
-    return res.status(400).send("Invalid type");
+  if (!isSupportedServerType(type)) {
+    return res.status(400).send(`Invalid type. Must be ${supportedServerTypes.join(", ")}`);
+  }
+
+  if (!version) {
+    return res.status(400).send("Version is required");
   }
 
   try {

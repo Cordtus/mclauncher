@@ -19,6 +19,7 @@ interface ModpackExportProps {
   loader: string;
   modsCount: number;
   apiBaseUrl?: string;
+  publicAddress?: string;
 }
 
 export function ModpackExport({
@@ -27,11 +28,14 @@ export function ModpackExport({
   loader,
   modsCount,
   apiBaseUrl = '',
+  publicAddress,
 }: ModpackExportProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  const publicUrl = `${window.location.origin}/public/${serverName}/modpack`;
+  const gatewayOrigin = apiBaseUrl || window.location.origin;
+  const publicUrl = `${gatewayOrigin}/public/${serverName}/modpack`;
+  const connectionAddress = publicAddress || "the server address from the admin";
   const mrpackUrl = `${apiBaseUrl}/api/servers/${serverName}/modpack/export/mrpack`;
   const modlistUrl = `${apiBaseUrl}/api/servers/${serverName}/modpack/export/list`;
 
@@ -89,7 +93,7 @@ export function ModpackExport({
           <div className="space-y-3">
             <h3 className="font-semibold text-sm">Public Download Page</h3>
             <p className="text-sm text-muted-foreground">
-              Share this link with players - they can view all required mods and download the modpack
+              Share this link when the gateway exposes public modpack pages. Players connect to {connectionAddress}.
             </p>
             <div className="flex gap-2">
               <div className="flex-1 px-3 py-2 bg-muted rounded-md text-sm font-mono truncate">
@@ -179,7 +183,7 @@ export function ModpackExport({
               <li>Download and install <strong>Prism Launcher</strong> (free, open source)</li>
               <li>Download the .mrpack file from the link above</li>
               <li>In Prism: Add Instance → Import → Select the .mrpack file</li>
-              <li>Launch and connect to the server</li>
+              <li>Launch and connect to <strong>{connectionAddress}</strong></li>
             </ol>
           </div>
         </div>

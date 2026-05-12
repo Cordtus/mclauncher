@@ -44,17 +44,17 @@ export class VersionManager {
     serverType: ServerType
   ): Promise<void> {
     const backupPath = await this.createBackup();
+    const currentJar = path.join(this.mcDir, "server.jar");
+    const jarBackupPath = fs.existsSync(currentJar)
+      ? path.join(this.mcDir, `server.jar.backup.${Date.now()}`)
+      : null;
 
     try {
       await this.stopServer();
       await this.waitForServerStop();
 
-      const currentJar = path.join(this.mcDir, "server.jar");
-      if (fs.existsSync(currentJar)) {
-        fs.copyFileSync(
-          currentJar,
-          path.join(this.mcDir, `server.jar.backup.${Date.now()}`)
-        );
+      if (jarBackupPath) {
+        fs.copyFileSync(currentJar, jarBackupPath);
       }
 
       fs.copyFileSync(newJarPath, currentJar);
@@ -66,10 +66,15 @@ export class VersionManager {
         throw new Error("Invalid JAR file");
       }
 
+      this.configureServiceForServerType(serverType);
       await this.startServer();
       await this.monitorStartup();
     } catch (error) {
       console.error("JAR replacement failed:", error);
+      if (jarBackupPath && fs.existsSync(jarBackupPath)) {
+        fs.copyFileSync(jarBackupPath, currentJar);
+        execSync(`chown mc:mc ${currentJar}`);
+      }
       await this.restoreBackup(backupPath);
       throw error;
     }
@@ -114,20 +119,26 @@ export class VersionManager {
 
         case "forge":
           // Forge uses an installer that runs in the MC directory
-          await this.stopServer();
-          await this.waitForServerStop();
-          await this.createFullBackup();
-          await this.forgeDownloader.installForgeServer(
-            this.mcDir,
-            version,
-            typeof build === "string" ? build : undefined
-          );
-          // Create mods folder if it doesn't exist
-          const forgeModsDir = path.join(this.mcDir, "mods");
-          fs.mkdirSync(forgeModsDir, { recursive: true });
-          execSync(`chown -R mc:mc ${this.mcDir}`);
-          await this.startServer();
-          await this.monitorStartup();
+          const backup = await this.createFullBackup();
+          try {
+            await this.stopServer();
+            await this.waitForServerStop();
+            await this.forgeDownloader.installForgeServer(
+              this.mcDir,
+              version,
+              typeof build === "string" ? build : undefined
+            );
+            // Create mods folder if it doesn't exist
+            const forgeModsDir = path.join(this.mcDir, "mods");
+            fs.mkdirSync(forgeModsDir, { recursive: true });
+            execSync(`chown -R mc:mc ${this.mcDir}`);
+            this.configureServiceForServerType("forge");
+            await this.startServer();
+            await this.monitorStartup();
+          } catch (error) {
+            await this.restoreBackup(backup);
+            throw error;
+          }
           break;
       }
 
@@ -233,6 +244,33 @@ export class VersionManager {
     execSync("systemctl start minecraft", { stdio: "pipe" });
   }
 
+  private configureServiceForServerType(serverType: ServerType): void {
+    const serviceFile = "/etc/systemd/system/minecraft.service";
+    if (!fs.existsSync(serviceFile)) return;
+
+    let serviceContent = fs.readFileSync(serviceFile, "utf8");
+    const existingUserJvmArgs = path.join(this.mcDir, "user_jvm_args.txt");
+    const currentFlags = fs.existsSync(existingUserJvmArgs)
+      ? fs.readFileSync(existingUserJvmArgs, "utf8").split(/\r?\n/).filter((line) => !line.trim().startsWith("#")).join(" ").trim()
+      : serviceContent.match(/ExecStart=\/usr\/bin\/java\s+(.*?)\s+-jar/)?.[1] ||
+      "-Xms512M -Xmx2048M";
+    const execStart = serverType === "forge" && fs.existsSync(path.join(this.mcDir, "run.sh"))
+      ? "ExecStart=/usr/bin/env bash run.sh nogui"
+      : `ExecStart=/usr/bin/java ${currentFlags} -jar server.jar nogui`;
+
+    if (serverType === "forge" && fs.existsSync(path.join(this.mcDir, "run.sh"))) {
+      const userJvmArgs = path.join(this.mcDir, "user_jvm_args.txt");
+      if (!fs.existsSync(userJvmArgs)) {
+        fs.writeFileSync(userJvmArgs, `${currentFlags}\n`);
+        execSync(`chown mc:mc ${userJvmArgs}`, { stdio: "pipe" });
+      }
+    }
+
+    serviceContent = serviceContent.replace(/ExecStart=.*/, execStart);
+    fs.writeFileSync(serviceFile, serviceContent);
+    execSync("systemctl daemon-reload", { stdio: "pipe" });
+  }
+
   private async waitForServerStop(timeout: number = 60000): Promise<void> {
     const start = Date.now();
     while (Date.now() - start < timeout) {
@@ -324,7 +362,9 @@ export class VersionManager {
   private async restoreBackup(backupPath: string): Promise<void> {
     console.log(`Restoring backup: ${backupPath}`);
     await this.stopServer();
-    execSync(`tar -xzf ${backupPath} -C ${this.mcDir}`, { stdio: "pipe" });
+    if (fs.existsSync(backupPath) && fs.statSync(backupPath).size > 0) {
+      execSync(`tar -xzf ${backupPath} -C ${this.mcDir}`, { stdio: "pipe" });
+    }
     await this.startServer();
   }
 

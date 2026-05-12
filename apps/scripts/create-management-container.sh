@@ -30,14 +30,15 @@ lxc config set "$CONTAINER_NAME" limits.memory=2GB
 # Add proxy for web UI
 lxc config device add "$CONTAINER_NAME" web-proxy proxy \
   listen="tcp:0.0.0.0:${PUBLIC_PORT}" \
-  connect="tcp:127.0.0.1:8080"
+  connect="tcp:127.0.0.1:8080" \
+  nat=true
 
 # Install dependencies
 lxc exec "$CONTAINER_NAME" -- bash -c "
 set -euxo pipefail
 
 apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y curl git
+DEBIAN_FRONTEND=noninteractive apt-get install -y curl git ca-certificates gnupg
 
 # Install Node.js 20.x
 mkdir -p /etc/apt/keyrings
@@ -87,7 +88,7 @@ lxc exec "$CONTAINER_NAME" -- bash -c "cat > /opt/mc-lxd-manager/.env <<EOF
 HOST=0.0.0.0
 PORT=8080
 TRUST_PROXY=false
-ALLOW_CIDRS=127.0.0.0/8,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12
+ALLOW_CIDRS=127.0.0.0/8,192.168.0.0/24,10.70.48.0/24
 ADMIN_TOKEN=${ADMIN_TOKEN}
 ADMIN_AUTH_METHODS=token,passkey
 PASSKEYS_ENABLED=true

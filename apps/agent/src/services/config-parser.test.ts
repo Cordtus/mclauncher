@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { detectFormat, extractConstraints, detectFieldType, isPlainObject } from './config-parser.js';
+import { mkdtemp, readFile, rm, writeFile } from 'fs/promises';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { detectFormat, extractConstraints, detectFieldType, isPlainObject, updateConfigFile } from './config-parser.js';
 
 describe('Config Parser', () => {
   describe('detectFormat', () => {
@@ -113,6 +116,34 @@ describe('Config Parser', () => {
     it('should return undefined for undefined comment', () => {
       const constraints = extractConstraints(undefined);
       expect(constraints).toBeUndefined();
+    });
+  });
+
+  describe('updateConfigFile', () => {
+    it('should update JSON5 files that contain comments', async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'mc-config-parser-'));
+      const filePath = join(dir, 'example.json5');
+
+      try {
+        await writeFile(filePath, `{
+          // JSON5 comments are valid in many mod configs
+          enabled: true,
+          nested: {
+            count: 2,
+          },
+        }`);
+
+        await updateConfigFile(filePath, {
+          enabled: false,
+          'nested.count': 4,
+        });
+
+        const content = await readFile(filePath, 'utf8');
+        expect(content).toContain('enabled: false');
+        expect(content).toContain('count: 4');
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
     });
   });
 });

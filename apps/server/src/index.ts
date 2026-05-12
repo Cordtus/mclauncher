@@ -20,7 +20,7 @@ const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number(process.env.PORT || 8080);
 const REGISTRY_FILE = process.env.REGISTRY_FILE || "/opt/mc-lxd-manager/servers.json";
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
-const ALLOW_CIDRS = (process.env.ALLOW_CIDRS ?? "127.0.0.0/8,192.168.0.0/16,10.0.0.0/8")
+const ALLOW_CIDRS = (process.env.ALLOW_CIDRS ?? "127.0.0.0/8,192.168.0.0/24,10.70.48.0/24")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
@@ -1248,6 +1248,9 @@ app.post("/api/servers/:name/mods/install", requireAdmin, async (req, res) => {
     const form = new FormData();
     const blob = bufferToBlob(modData);
     form.append('file', blob, fileName);
+    if (projectId) form.append("projectId", projectId);
+    if (versionId) form.append("versionId", versionId);
+    form.append("downloadUrl", downloadUrl);
 
     const uploadResponse = await fetch(`${server.agent_url}${target}`, {
       method: 'POST',

@@ -59,6 +59,10 @@ export interface ModrinthFile {
   primary: boolean;
   size: number;
   file_type?: string;
+  hashes?: {
+    sha1?: string;
+    sha512?: string;
+  };
 }
 
 export interface ModSearchParams {
