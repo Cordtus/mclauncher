@@ -263,9 +263,13 @@ export function generateModList(
 
   let output = `# ${metadata.name} Mod List\n\n`;
   output += `**Minecraft Version:** ${metadata.mcVersion}\n`;
-  output += `**Mod Loader:** ${metadata.loader}\n`;
+  output += `**Mod Loader:** ${enabledMods.length > 0 ? metadata.loader : 'None required'}\n`;
   output += `**Total Mods:** ${enabledMods.length}\n\n`;
   output += `## Required Mods\n\n`;
+
+  if (enabledMods.length === 0) {
+    output += `No client mods are required for this server.\n`;
+  }
 
   for (const mod of enabledMods) {
     output += `- **${mod.name}** v${mod.version}`;
@@ -276,10 +280,15 @@ export function generateModList(
   }
 
   output += `\n## Installation Instructions\n\n`;
-  output += `1. Install ${metadata.loader} for Minecraft ${metadata.mcVersion}\n`;
-  output += `2. Download all mods listed above from Modrinth or CurseForge\n`;
-  output += `3. Place the .jar files in your mods folder\n`;
-  output += `4. Launch Minecraft with the ${metadata.loader} profile\n`;
+  if (enabledMods.length === 0) {
+    output += `1. Launch Minecraft ${metadata.mcVersion}\n`;
+    output += `2. Join the server address provided by the admin\n`;
+  } else {
+    output += `1. Install ${metadata.loader} for Minecraft ${metadata.mcVersion}\n`;
+    output += `2. Download all mods listed above from Modrinth or CurseForge\n`;
+    output += `3. Place the .jar files in your mods folder\n`;
+    output += `4. Launch Minecraft with the ${metadata.loader} profile\n`;
+  }
 
   return output;
 }
@@ -360,7 +369,8 @@ export async function generateDownloadPage(
   const safeServerName = escapeHtml(serverName);
   const safeServerAddress = escapeHtml(serverAddress);
   const safeMcVersion = escapeHtml(metadata.mcVersion);
-  const safeLoader = escapeHtml(metadata.loader);
+  const hasClientMods = enabledMods.length > 0;
+  const safeLoader = escapeHtml(hasClientMods ? metadata.loader : 'None required');
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -562,6 +572,7 @@ export async function generateDownloadPage(
       </div>
     </div>
 
+    ${hasClientMods ? `
     <div class="download-section">
       <h2 style="border: none; margin: 0 0 1rem;">Quick Install</h2>
       <p style="margin-bottom: 1rem; color: var(--text-muted);">
@@ -570,6 +581,15 @@ export async function generateDownloadPage(
       <a href="modpack.mrpack" class="download-btn">Download Modpack (.mrpack)</a>
       <a href="modlist.txt" class="download-btn secondary">Download Mod List</a>
     </div>
+    ` : `
+    <div class="download-section">
+      <h2 style="border: none; margin: 0 0 1rem;">No Client Mods Required</h2>
+      <p style="color: var(--text-muted);">
+        Open Minecraft ${safeMcVersion} and connect to ${safeServerAddress}.
+      </p>
+      <a href="modlist.txt" class="download-btn secondary">Download Server Info</a>
+    </div>
+    `}
 
     ${requiredMods.length > 0 ? `
     <h2>Required Mods <span class="badge">${requiredMods.length}</span></h2>
@@ -615,6 +635,7 @@ export async function generateDownloadPage(
 
     <div class="instructions">
       <h2 style="margin-top: 0;">Installation Instructions</h2>
+      ${hasClientMods ? `
       <ol>
         <li>Download and install <a href="https://prismlauncher.org/" target="_blank" style="color: var(--highlight);">Prism Launcher</a> (recommended) or your preferred Minecraft launcher</li>
         <li>Click the <strong>Download Modpack</strong> button above</li>
@@ -624,6 +645,13 @@ export async function generateDownloadPage(
       <p style="margin-top: 1rem; color: var(--text-muted);">
         <strong>Alternative:</strong> If using a different launcher, download each mod from the list above and place them in your mods folder.
       </p>
+      ` : `
+      <ol>
+        <li>Open Minecraft: Java Edition ${safeMcVersion}</li>
+        <li>Choose <code>Multiplayer</code>, then <code>Add Server</code></li>
+        <li>Enter <code>${safeServerAddress}</code> and join</li>
+      </ol>
+      `}
     </div>
 
     <footer>
