@@ -10,12 +10,14 @@ set -euo pipefail
 CONTAINER_NAME="${1:-mc-manager}"
 PUBLIC_PORT="${2:-8080}"
 ADMIN_TOKEN="${3:-$(openssl rand -hex 32)}"
+PUBLIC_LISTEN="${PUBLIC_LISTEN:-127.0.0.1}"
+ADMIN_ALLOW_CIDRS="${ADMIN_ALLOW_CIDRS:-127.0.0.0/8,192.168.0.0/24,10.70.48.0/24}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 echo "==> Creating MC Management Container"
 echo "    Name: $CONTAINER_NAME"
-echo "    Port: $PUBLIC_PORT"
+echo "    Listen: ${PUBLIC_LISTEN}:${PUBLIC_PORT}"
 
 # Create container
 lxc launch images:ubuntu/22.04 "$CONTAINER_NAME"
@@ -29,9 +31,8 @@ lxc config set "$CONTAINER_NAME" limits.memory=2GB
 
 # Add proxy for web UI
 lxc config device add "$CONTAINER_NAME" web-proxy proxy \
-  listen="tcp:0.0.0.0:${PUBLIC_PORT}" \
-  connect="tcp:127.0.0.1:8080" \
-  nat=true
+  listen="tcp:${PUBLIC_LISTEN}:${PUBLIC_PORT}" \
+  connect="tcp:127.0.0.1:8080"
 
 # Install dependencies
 lxc exec "$CONTAINER_NAME" -- bash -c "
@@ -88,7 +89,7 @@ lxc exec "$CONTAINER_NAME" -- bash -c "cat > /opt/mc-lxd-manager/.env <<EOF
 HOST=0.0.0.0
 PORT=8080
 TRUST_PROXY=false
-ALLOW_CIDRS=127.0.0.0/8,192.168.0.0/24,10.70.48.0/24
+ALLOW_CIDRS=${ADMIN_ALLOW_CIDRS}
 ADMIN_TOKEN=${ADMIN_TOKEN}
 ADMIN_AUTH_METHODS=token,passkey
 PASSKEYS_ENABLED=true
@@ -133,11 +134,12 @@ echo ""
 echo "==> Management container created!"
 echo ""
 echo "Container: $CONTAINER_NAME"
-echo "Web UI: http://<host-ip>:${PUBLIC_PORT}"
+echo "Web UI: http://${PUBLIC_LISTEN}:${PUBLIC_PORT}"
 echo "Admin Token: ${ADMIN_TOKEN}"
 echo ""
 echo "IMPORTANT: Save this token!"
 echo "Open Admin Access in the gateway and paste this token. You can register a passkey there when serving the gateway over HTTPS or localhost."
+echo "For LAN access, put Caddy or another trusted reverse proxy in front of the management container and keep admin routes LAN-only."
 echo ""
 echo "Commands:"
 echo "  lxc exec $CONTAINER_NAME -- systemctl status mc-manager"
