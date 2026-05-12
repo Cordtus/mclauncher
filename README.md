@@ -22,7 +22,7 @@ No Docker, no host services. Everything runs in LXD containers.
 - Packwiz modpack sync
 - One-click LuckPerms installation
 - Snapshot backups
-- LAN-only access with token authentication
+- Configurable admin access with token and passkey authentication
 
 ## Quick Start
 
@@ -61,11 +61,9 @@ Parameters:
 ### 3. Access Web UI
 
 1. Navigate to `http://<host-ip>:8080`
-2. Open browser console and set your token:
-   ```js
-   localStorage.setItem('ADMIN_TOKEN', 'your-token-here');
-   ```
-3. Refresh the page
+2. Open **Admin Access** in the header
+3. Paste the admin token printed by setup
+4. Optional: register a passkey from the same dialog when the gateway is served over HTTPS or localhost. The admin token is required to bootstrap the first passkey.
 
 ## Management
 
@@ -122,14 +120,36 @@ apps/
 - Management backend binds to 0.0.0.0:8080 inside container
 - LXD proxy exposes port 8080 on host
 - CIDR filtering restricts access to LAN ranges
-- Admin token required for write operations
+- Admin token or passkey session required for write operations
+- Passkeys use WebAuthn and require a secure browser context: HTTPS or localhost
+- If `PASSKEY_RP_ID` is configured for a public domain, also set `PASSKEY_ORIGIN` to the exact HTTPS origin
+- If the gateway is exposed behind Caddy and CIDR filtering should use the browser client IP, set `TRUST_PROXY=true` and restrict `TRUST_PROXY_CIDRS` to the proxy network
 - Control agents (port 9090) are NOT exposed outside containers
 
 ## Networking
 
 - Management UI: `host:8080` → `mc-manager:8080`
-- Minecraft servers: `host:25565+` → `mc-server-N:25565`
+- Minecraft servers: `host:<proxy-port>` → `mc-server-N:25565`
 - Control agents: Internal only (`mc-server-N:9090`)
+
+For the cleanest player experience, expose Minecraft on the default Java Edition
+port, TCP `25565`. Players can then join with only the DNS name, for example
+`mc.basementnodes.ca`, without appending a port. If you use any other external
+port, the admin panel will show and copy the required `host:port` address.
+
+Recommended public setup:
+
+1. DNS: point `mc.basementnodes.ca` to the WAN IP.
+2. Router: forward WAN TCP `25565` to the LXD host proxy port for the server.
+3. LXD proxy: forward the host proxy port to the Minecraft container on TCP `25565`.
+4. Manager registry: set Public Domain to `mc.basementnodes.ca`, WAN Port to `25565`, and Host Proxy Port to the actual LXD host proxy port.
+
+On the current `nodev2` deployment, the reachable Minecraft LXD proxy is host
+TCP `34567`, so the router rule is WAN TCP `25565` →
+`192.168.0.170:34567`. Players still enter only `mc.basementnodes.ca`.
+
+Do not expose the admin gateway to WAN. Keep the admin hostname restricted to
+LAN ranges and share only the Minecraft join address with players.
 
 ## Troubleshooting
 
@@ -139,7 +159,7 @@ apps/
 - Check network: `lxc list` (verify container IPs)
 
 **Cannot upload files:**
-- Verify admin token is set in browser localStorage
+- Verify Admin Access has a valid token or active passkey session
 - Check browser console for errors
 
 **Minecraft won't start:**

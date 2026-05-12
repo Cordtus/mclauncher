@@ -17,6 +17,9 @@ import {
   Terminal,
   Package2,
   Loader2,
+  KeyRound,
+  Fingerprint,
+  LogOut,
 } from "lucide-react";
 import { toast } from "sonner";
 import { ModBrowser } from "@/components/ModBrowser";
@@ -57,6 +60,22 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { authHeaders, jsonAuthHeaders } from "@/lib/auth";
+import {
+  buildPlayerInviteText,
+  formatMinecraftAddress,
+  getHostProxyPort,
+  getLocalJoinAddress,
+  getPublicJoinAddress,
+  isDefaultMinecraftPort,
+  requiresClientMods,
+} from "@/lib/minecraft";
+import {
+  loginWithPasskey,
+  logoutPasskeySession,
+  passkeysAvailable,
+  registerPasskey,
+} from "@/lib/passkeys";
 
 type ServerRow = {
   name: string;
@@ -64,6 +83,7 @@ type ServerRow = {
   local_ip: string;
   local_port: number;
   host_ip?: string; // LXD host IP for local network connections
+  host_proxy_port?: number; // LXD host proxy port router forwards to
   public_port: number;
   public_domain: string | null;
   memory_mb: number;
@@ -83,12 +103,12 @@ type ServerRow = {
   } | null;
 };
 
-function authHeaders(): HeadersInit {
-  const h: Record<string, string> = {};
-  const t = localStorage.getItem("ADMIN_TOKEN");
-  if (t) h["Authorization"] = "Bearer " + t;
-  return h;
-}
+type PublicAccessState = {
+  accessible: boolean | null;
+  checking: boolean;
+  reason?: string | null;
+  checkedAt?: string;
+};
 
 function copyToClipboard(text: string) {
   // Use Clipboard API if available (HTTPS), otherwise use fallback (HTTP)
@@ -120,6 +140,7 @@ export function App() {
   const [selectedServer, setSelectedServer] = useState<string | null>(null);
   const [message, setMessage] = useState<string>("");
   const [serverTps, setServerTps] = useState<Map<string, number | null>>(new Map());
+  const [publicAccess, setPublicAccess] = useState<Map<string, PublicAccessState>>(new Map());
   const [helpDialog, setHelpDialog] = useState(false);
 
   // Tour state
@@ -127,6 +148,12 @@ export function App() {
   const [tourStep, setTourStep] = useState(0);
   const [tourElementRect, setTourElementRect] = useState<DOMRect | null>(null);
   const hasAutoStartedTour = useRef(false);
+  const [adminAccessDialog, setAdminAccessDialog] = useState(false);
+  const [adminToken, setAdminToken] = useState(() => localStorage.getItem("ADMIN_TOKEN") || "");
+  const [adminSession, setAdminSession] = useState(() => localStorage.getItem("ADMIN_SESSION") || "");
+  const [authConfig, setAuthConfig] = useState<any | null>(null);
+  const [passkeyName, setPasskeyName] = useState("Admin passkey");
+  const [isPasskeyBusy, setIsPasskeyBusy] = useState(false);
 
   // Version management state
   const [versionType, setVersionType] = useState<"paper" | "vanilla">("paper");
@@ -135,7 +162,10 @@ export function App() {
 
   // Settings management state
   const [isSavingSettings, setIsSavingSettings] = useState(false);
-  const [serverSettingsDialog, setServerSettingsDialog] = useState(false);
+  const [serverSettingsDialog, setServerSettingsDialog] = useState<string | null>(null);
+  const [adminCommand, setAdminCommand] = useState("");
+  const [adminCommandOutput, setAdminCommandOutput] = useState("");
+  const [isRunningCommand, setIsRunningCommand] = useState(false);
 
   // Server configuration state (persisted in localStorage)
   const [serverSettings, setServerSettings] = useState(() => {
@@ -151,6 +181,8 @@ export function App() {
       // Network
       hostIp: "",
       publicDomain: "",
+      publicPort: 25565,
+      hostProxyPort: 25565,
 
       // Server Properties
       motd: "A Minecraft Server",
@@ -164,7 +196,6 @@ export function App() {
       allowFlight: false,
 
       // Security
-      serverPassword: "",
       enforceWhitelist: false,
       whitelist: [] as string[],
       newWhitelistPlayer: "",
@@ -220,7 +251,7 @@ export function App() {
     {
       target: "[data-tour='connection-public']",
       title: "Public Internet Connection",
-      content: "This shows the address for players connecting from the internet. You'll need to set up port forwarding and configure your public domain in Server Settings.",
+      content: "This shows the address for players connecting from the internet. Use port 25565 when possible so players can join with only the domain name.",
     },
     {
       target: "[data-tour='settings-button']",
@@ -325,16 +356,32 @@ export function App() {
     localStorage.setItem('mc-server-settings', JSON.stringify(serverSettings));
   }, [serverSettings]);
 
+  useEffect(() => {
+    loadAuthConfig();
+  }, []);
+
   // Load network settings from server registry when servers are loaded
   useEffect(() => {
     if (servers.length > 0) {
       setServerSettings(prev => ({
         ...prev,
         hostIp: servers[0].host_ip || "",
-        publicDomain: servers[0].public_domain || ""
+        publicDomain: servers[0].public_domain || "",
+        publicPort: servers[0].public_port || 25565,
+        hostProxyPort: servers[0].host_proxy_port || servers[0].public_port || 25565,
       }));
     }
   }, [servers]);
+
+  async function loadAuthConfig() {
+    try {
+      const response = await fetch("/api/auth/config");
+      if (!response.ok) return;
+      setAuthConfig(await response.json());
+    } catch {
+      // Auth config is convenience-only; write endpoints still return concrete errors.
+    }
+  }
 
   // Fetch TPS for running servers periodically
   useEffect(() => {
@@ -345,19 +392,149 @@ export function App() {
     }
   }, [servers]);
 
+  useEffect(() => {
+    servers
+      .filter((server) => server.public_domain)
+      .forEach((server) => checkPublicAccess(server.name));
+  }, [servers.map((server) => `${server.name}:${server.public_domain || ""}:${server.public_port}`).join("|")]);
+
   // Save network settings to backend when they change
   async function saveNetworkConfig(serverName: string, field: string, value: string) {
+    let payloadValue: string | number | null = value.trim();
+
+    if (field === "public_port" || field === "local_port" || field === "host_proxy_port") {
+      const port = Number(payloadValue);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        toast.error("Port must be an integer from 1 to 65535");
+        return false;
+      }
+      payloadValue = port;
+    } else {
+      payloadValue = payloadValue || null;
+    }
+
     try {
       const response = await fetch(`/api/servers/${serverName}/config`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ [field]: value || null })
+        headers: jsonAuthHeaders(),
+        body: JSON.stringify({ [field]: payloadValue })
       });
-      if (response.ok) {
-        await refresh(); // Refresh to get updated server data
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ error: response.statusText }));
+        throw new Error(error.error || `Failed to save ${field}`);
       }
-    } catch (err) {
-      console.error(`Failed to save ${field}:`, err);
+      await refresh(); // Refresh to get updated server data
+      return true;
+    } catch (err: any) {
+      toast.error(err.message || `Failed to save ${field}`);
+      return false;
+    }
+  }
+
+  async function checkPublicAccess(serverName: string) {
+    setPublicAccess(prev => {
+      const next = new Map(prev);
+      next.set(serverName, {
+        ...(next.get(serverName) || { accessible: null }),
+        checking: true,
+      });
+      return next;
+    });
+
+    try {
+      const response = await fetch(`/api/servers/${serverName}/check-public`);
+      const data = await response.json();
+      setPublicAccess(prev => {
+        const next = new Map(prev);
+        next.set(serverName, {
+          accessible: data.accessible === true,
+          checking: false,
+          reason: data.reason,
+          checkedAt: new Date().toISOString(),
+        });
+        return next;
+      });
+    } catch (err: any) {
+      setPublicAccess(prev => {
+        const next = new Map(prev);
+        next.set(serverName, {
+          accessible: false,
+          checking: false,
+          reason: err.message || "External status check failed",
+          checkedAt: new Date().toISOString(),
+        });
+        return next;
+      });
+    }
+  }
+
+  async function loadServerSettings(server: ServerRow) {
+    setSelectedServer(server.name);
+    setAdminCommand("");
+    setAdminCommandOutput("");
+    setServerSettings(prev => ({
+      ...prev,
+      hostIp: server.host_ip || "",
+      publicDomain: server.public_domain || "",
+      publicPort: server.public_port || 25565,
+      hostProxyPort: server.host_proxy_port || server.public_port || 25565,
+    }));
+
+    const toBool = (value: unknown, fallback: boolean) => {
+      if (typeof value === "boolean") return value;
+      if (typeof value === "string") return value.toLowerCase() === "true";
+      return fallback;
+    };
+    const toNumber = (value: unknown, fallback: number) => {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : fallback;
+    };
+
+    try {
+      const [settingsRes, bansRes, jvmRes] = await Promise.all([
+        fetch(`/api/servers/${server.name}/settings`),
+        fetch(`/api/servers/${server.name}/settings/bans`),
+        fetch(`/api/servers/${server.name}/jvm/settings`),
+      ]);
+
+      const settings = settingsRes.ok ? await settingsRes.json() : {};
+      const bans = bansRes.ok ? await bansRes.json() : {};
+      const jvm = jvmRes.ok ? await jvmRes.json() : {};
+      const props = settings.properties || {};
+
+      setServerSettings(prev => ({
+        ...prev,
+        hostIp: server.host_ip || "",
+        publicDomain: server.public_domain || "",
+        publicPort: server.public_port || 25565,
+        hostProxyPort: server.host_proxy_port || server.public_port || 25565,
+        motd: props.motd ?? prev.motd,
+        maxPlayers: toNumber(props["max-players"], prev.maxPlayers),
+        gamemode: props.gamemode ?? prev.gamemode,
+        difficulty: props.difficulty ?? prev.difficulty,
+        pvp: toBool(props.pvp, prev.pvp),
+        spawnProtection: toNumber(props["spawn-protection"], prev.spawnProtection),
+        viewDistance: toNumber(props["view-distance"], prev.viewDistance),
+        onlineMode: toBool(props["online-mode"], prev.onlineMode),
+        allowFlight: toBool(props["allow-flight"], prev.allowFlight),
+        enforceWhitelist: toBool(props["white-list"] ?? props["enforce-whitelist"], prev.enforceWhitelist),
+        whitelist: Array.isArray(settings.whitelist)
+          ? settings.whitelist.map((entry: any) => entry.name).filter(Boolean)
+          : prev.whitelist,
+        operators: Array.isArray(settings.operators)
+          ? settings.operators.map((entry: any) => entry.name).filter(Boolean)
+          : prev.operators,
+        bannedPlayers: bans.players || [],
+        bannedIps: bans.ips || [],
+        jvmXms: jvm.xms ?? prev.jvmXms,
+        jvmXmsUnit: jvm.xmsUnit ?? prev.jvmXmsUnit,
+        jvmXmx: jvm.xmx ?? prev.jvmXmx,
+        jvmXmxUnit: jvm.xmxUnit ?? prev.jvmXmxUnit,
+        jvmGc: jvm.gc ?? prev.jvmGc,
+        jvmCustomFlags: jvm.customFlags ?? prev.jvmCustomFlags,
+      }));
+    } catch (err: any) {
+      toast.error(err.message || "Failed to load server settings");
     }
   }
 
@@ -414,10 +591,38 @@ export function App() {
         headers: authHeaders(),
       });
       const msg = await res.text();
+      if (!res.ok) {
+        throw new Error(msg || `Failed to ${action} server`);
+      }
       setMessage(msg);
       setTimeout(() => refresh(), 2000);
-    } catch (err) {
-      setMessage(`Failed to ${action} server`);
+    } catch (err: any) {
+      setMessage(err.message || `Failed to ${action} server`);
+    }
+  };
+
+  const runAdminCommand = async (serverName: string) => {
+    const command = adminCommand.trim();
+    if (!command) return;
+
+    setIsRunningCommand(true);
+    setAdminCommandOutput("");
+    try {
+      const response = await fetch(`/api/servers/${serverName}/command`, {
+        method: "POST",
+        headers: jsonAuthHeaders(),
+        body: JSON.stringify({ command }),
+      });
+      const text = await response.text();
+      setAdminCommandOutput(text.trim() || "Command completed with no output.");
+      if (!response.ok) {
+        throw new Error(text || "Command failed");
+      }
+      setAdminCommand("");
+    } catch (err: any) {
+      setAdminCommandOutput(err.message || "Command failed");
+    } finally {
+      setIsRunningCommand(false);
     }
   };
 
@@ -439,6 +644,7 @@ export function App() {
           'view-distance': serverSettings.viewDistance,
           'online-mode': serverSettings.onlineMode,
           'allow-flight': serverSettings.allowFlight,
+          'white-list': serverSettings.enforceWhitelist,
           'enforce-whitelist': serverSettings.enforceWhitelist,
         },
         whitelist: serverSettings.whitelist,
@@ -448,10 +654,7 @@ export function App() {
 
       const response = await fetch(`/api/servers/${serverName}/settings`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...authHeaders()
-        },
+        headers: jsonAuthHeaders(),
         body: JSON.stringify(payload)
       });
 
@@ -462,7 +665,39 @@ export function App() {
 
       const data = await response.json();
       toast.success(data.message || 'Settings applied successfully');
-      setServerSettingsDialog(false);
+
+      const requestedPlugins = Object.entries(serverSettings.plugins)
+        .filter(([, enabled]) => enabled)
+        .map(([plugin]) => plugin);
+
+      if (requestedPlugins.length > 0) {
+        const pluginResponse = await fetch(`/api/servers/${serverName}/plugins/recommended`, {
+          method: "POST",
+          headers: jsonAuthHeaders(),
+          body: JSON.stringify({ plugins: requestedPlugins }),
+        });
+        const pluginResult = await pluginResponse.json();
+
+        if (!pluginResponse.ok || pluginResult.failed?.length > 0) {
+          const failed = pluginResult.failed
+            ?.map((entry: any) => `${entry.plugin}: ${entry.error}`)
+            .join("; ");
+          throw new Error(failed || pluginResult.error || "Failed to install selected plugins");
+        }
+
+        toast.success(`Installed plugins: ${pluginResult.installed.join(", ")}`);
+        setServerSettings(prev => ({
+          ...prev,
+          plugins: {
+            luckperms: false,
+            essentialsx: false,
+            vault: false,
+            worldedit: false,
+          },
+        }));
+      }
+
+      setServerSettingsDialog(null);
 
       setTimeout(() => refresh(), 2000);
     } catch (err: any) {
@@ -478,11 +713,11 @@ export function App() {
       const response = await fetch(`/api/servers/${serverName}/settings/bans`);
       if (!response.ok) throw new Error('Failed to fetch bans');
       const data = await response.json();
-      setServerSettings({
-        ...serverSettings,
+      setServerSettings(prev => ({
+        ...prev,
         bannedPlayers: data.players || [],
         bannedIps: data.ips || []
-      });
+      }));
     } catch (err: any) {
       toast.error(err.message || 'Failed to fetch bans');
     }
@@ -495,10 +730,7 @@ export function App() {
     try {
       const response = await fetch(`/api/servers/${serverName}/settings/bans/player/add`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...authHeaders()
-        },
+        headers: jsonAuthHeaders(),
         body: JSON.stringify({
           username: serverSettings.newBanPlayer.trim(),
           reason: serverSettings.newBanPlayerReason.trim() || 'Banned by an operator'
@@ -528,10 +760,7 @@ export function App() {
     try {
       const response = await fetch(`/api/servers/${serverName}/settings/bans/player/remove`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...authHeaders()
-        },
+        headers: jsonAuthHeaders(),
         body: JSON.stringify({ username })
       });
 
@@ -555,10 +784,7 @@ export function App() {
     try {
       const response = await fetch(`/api/servers/${serverName}/settings/bans/ip/add`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...authHeaders()
-        },
+        headers: jsonAuthHeaders(),
         body: JSON.stringify({
           ip: serverSettings.newBanIp.trim(),
           reason: serverSettings.newBanIpReason.trim() || 'Banned by an operator'
@@ -588,10 +814,7 @@ export function App() {
     try {
       const response = await fetch(`/api/servers/${serverName}/settings/bans/ip/remove`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...authHeaders()
-        },
+        headers: jsonAuthHeaders(),
         body: JSON.stringify({ ip })
       });
 
@@ -657,10 +880,7 @@ export function App() {
     try {
       const response = await fetch(`/api/servers/${serverName}/jvm/settings`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...authHeaders()
-        },
+        headers: jsonAuthHeaders(),
         body: JSON.stringify({
           xms: serverSettings.jvmXms,
           xmsUnit: serverSettings.jvmXmsUnit,
@@ -701,9 +921,13 @@ export function App() {
         body: fd,
       });
       const msg = await res.text();
+      if (!res.ok) {
+        throw new Error(msg || `Failed to upload ${file.name}`);
+      }
       setMessage(msg);
-    } catch (err) {
-      setMessage(`Failed to upload ${file.name}`);
+      event.target.value = "";
+    } catch (err: any) {
+      setMessage(err.message || `Failed to upload ${file.name}`);
     }
   };
 
@@ -717,21 +941,78 @@ export function App() {
     try {
       const res = await fetch(`/api/servers/${serverName}/version/change`, {
         method: "POST",
-        headers: { ...authHeaders(), "Content-Type": "application/json" },
+        headers: jsonAuthHeaders(),
         body: JSON.stringify({
           type: versionType,
           version: newVersion,
         }),
       });
       const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to change version");
+      }
       setMessage(data.message || "Version changed successfully");
       setNewVersion("");
       setTimeout(() => refresh(), 3000);
-    } catch (err) {
-      setMessage("Failed to change version");
+    } catch (err: any) {
+      setMessage(err.message || "Failed to change version");
     } finally {
       setIsChangingVersion(false);
     }
+  };
+
+  const saveAdminToken = () => {
+    const token = adminToken.trim();
+    if (token) {
+      localStorage.setItem("ADMIN_TOKEN", token);
+      toast.success("Admin access token saved");
+    } else {
+      localStorage.removeItem("ADMIN_TOKEN");
+      toast.success("Admin access token cleared");
+    }
+    setAdminAccessDialog(false);
+  };
+
+  const handleRegisterPasskey = async () => {
+    setIsPasskeyBusy(true);
+    try {
+      await registerPasskey(passkeyName.trim() || "Admin passkey");
+      toast.success("Passkey registered");
+      await loadAuthConfig();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to register passkey");
+    } finally {
+      setIsPasskeyBusy(false);
+    }
+  };
+
+  const handlePasskeyLogin = async () => {
+    setIsPasskeyBusy(true);
+    try {
+      await loginWithPasskey();
+      setAdminSession(localStorage.getItem("ADMIN_SESSION") || "");
+      toast.success("Signed in with passkey");
+      await loadAuthConfig();
+    } catch (err: any) {
+      toast.error(err.message || "Passkey sign-in failed");
+    } finally {
+      setIsPasskeyBusy(false);
+    }
+  };
+
+  const clearAdminAccess = async () => {
+    try {
+      if (localStorage.getItem("ADMIN_SESSION")) {
+        await logoutPasskeySession();
+      }
+    } catch {
+      localStorage.removeItem("ADMIN_SESSION");
+    }
+    setAdminSession("");
+    setAdminToken("");
+    localStorage.removeItem("ADMIN_TOKEN");
+    setAdminAccessDialog(false);
+    toast.success("Admin access cleared");
   };
 
   const getStatusColor = (status: string) => {
@@ -740,6 +1021,10 @@ export function App() {
     if (statusLower.includes("stopped")) return "secondary";
     return "destructive";
   };
+
+  const hasAdminAccess = Boolean(adminToken.trim() || adminSession);
+  const passkeyConfig = authConfig?.passkeys;
+  const canUsePasskeys = passkeysAvailable();
 
   return (
     <TooltipProvider>
@@ -759,6 +1044,125 @@ export function App() {
             </div>
           </div>
           <div className="flex gap-2 w-full sm:w-auto">
+            <Dialog open={adminAccessDialog} onOpenChange={(open) => {
+              setAdminAccessDialog(open);
+              if (open) loadAuthConfig();
+            }}>
+              <DialogTrigger asChild>
+                <Button
+                  variant={hasAdminAccess ? "default" : "outline"}
+                  size="sm"
+                  className="rounded-sm flex-1 sm:flex-none"
+                >
+                  <KeyRound className="mr-1 sm:mr-2 h-4 w-4" />
+                  <span className="text-xs sm:text-sm">Admin Access</span>
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="rounded-sm max-w-[95vw] sm:max-w-md">
+                <DialogHeader>
+                  <DialogTitle>Admin Access</DialogTitle>
+                  <DialogDescription>
+                    Use a passkey or token for server changes from this browser.
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4">
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-medium">Passkeys</p>
+                        <p className="text-xs text-muted-foreground">
+                          {passkeyConfig?.hasPasskeys ? "Passkey sign-in is available." : "Register a passkey after saving an admin token."}
+                        </p>
+                      </div>
+                      <Badge variant={adminSession ? "default" : "outline"}>
+                        {adminSession ? "Signed in" : "Optional"}
+                      </Badge>
+                    </div>
+                    {!canUsePasskeys && (
+                      <p className="rounded-sm border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-300">
+                        Passkeys require HTTPS or localhost in this browser.
+                      </p>
+                    )}
+                    <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
+                      <Input
+                        value={passkeyName}
+                        onChange={(event) => setPasskeyName(event.target.value)}
+                        placeholder="Passkey name"
+                        className="rounded-sm"
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="rounded-sm"
+                        onClick={handleRegisterPasskey}
+                        disabled={!canUsePasskeys || isPasskeyBusy}
+                      >
+                        <Fingerprint className="mr-2 h-4 w-4" />
+                        Set Up
+                      </Button>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        className="rounded-sm"
+                        onClick={handlePasskeyLogin}
+                        disabled={!canUsePasskeys || !passkeyConfig?.hasPasskeys || isPasskeyBusy}
+                      >
+                        <Fingerprint className="mr-2 h-4 w-4" />
+                        Sign In With Passkey
+                      </Button>
+                      {adminSession && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="rounded-sm"
+                          onClick={async () => {
+                            await logoutPasskeySession();
+                            setAdminSession("");
+                            toast.success("Passkey session cleared");
+                          }}
+                        >
+                          <LogOut className="mr-2 h-4 w-4" />
+                          Sign Out
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+
+                  <Separator />
+
+                  <div>
+                    <Label htmlFor="adminToken">Admin Token</Label>
+                    <Input
+                      id="adminToken"
+                      type="password"
+                      value={adminToken}
+                      onChange={(event) => setAdminToken(event.target.value)}
+                      placeholder="Paste admin token"
+                      className="rounded-sm"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Token access is the bootstrap and fallback method. Use it once to register a passkey.
+                    </p>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Read-only status remains visible without a token. Start, stop, uploads, settings, mods, and console commands require admin access.
+                  </p>
+                </div>
+                <DialogFooter>
+                  <Button
+                    variant="outline"
+                    className="rounded-sm"
+                    onClick={clearAdminAccess}
+                  >
+                    Clear
+                  </Button>
+                  <Button className="rounded-sm" onClick={saveAdminToken}>
+                    Save
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
             <Dialog open={helpDialog} onOpenChange={setHelpDialog}>
               <DialogTrigger asChild>
                 <Button data-tour="help-button" variant="outline" size="sm" className="rounded-sm hover:bg-green-500/10 hover:border-green-500 transition-all flex-1 sm:flex-none">
@@ -806,14 +1210,16 @@ export function App() {
 
                   <section>
                     <h2 className="text-lg font-bold mb-3 border-b pb-2">Server Settings</h2>
-                    <p className="text-muted-foreground mb-3">Click "Server Settings" to configure your server before launch. Settings are saved automatically.</p>
+                    <p className="text-muted-foreground mb-3">Click "Server Settings" to configure your server before launch, then save to apply changes.</p>
 
                     <div className="space-y-3">
                       <div>
                         <h3 className="font-semibold mb-1">Network Tab</h3>
                         <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
                           <li><strong>Host IP:</strong> Set to your LXD host's local IP (e.g., 192.168.0.170) for local network access</li>
-                          <li><strong>Public Domain:</strong> Set your public domain name for internet access (optional)</li>
+                          <li><strong>Public Domain:</strong> Set the player-facing DNS name, such as mc.basementnodes.ca</li>
+                          <li><strong>WAN Port:</strong> Use 25565 when possible so players do not need to type a port</li>
+                          <li><strong>Host Proxy Port:</strong> The reachable nodev2 LXC proxy port your router forwards to</li>
                         </ul>
                       </div>
 
@@ -841,7 +1247,6 @@ export function App() {
                       <div>
                         <h3 className="font-semibold mb-1">Security Tab</h3>
                         <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
-                          <li><strong>Server Password:</strong> Optional password players must enter to join</li>
                           <li><strong>Whitelist:</strong> Only allow approved players (recommended for private servers)</li>
                           <li>Add players by username, remove them with the X button</li>
                         </ul>
@@ -923,7 +1328,7 @@ export function App() {
                       </div>
                       <div>
                         <h3 className="font-semibold mb-1">Public Internet</h3>
-                        <p className="text-muted-foreground text-xs">Shows status for players connecting from the internet. Requires public domain and port forwarding.</p>
+                        <p className="text-muted-foreground text-xs">Shows the player join address for friends outside your house. With port 25565, players enter only the domain name.</p>
                       </div>
                     </div>
                   </section>
@@ -951,9 +1356,10 @@ export function App() {
                       <div>
                         <h3 className="font-semibold mb-1">Can't connect from internet</h3>
                         <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
-                          <li>Configure port forwarding on your router (port 25565)</li>
-                          <li>Set up DNS A record pointing to your public IP</li>
-                          <li>Add public domain in Server Settings → Network tab</li>
+                          <li>Forward WAN TCP 25565 to the reachable nodev2 LXC proxy port shown in Server Settings → Network</li>
+                          <li>Set the DNS A record for mc.basementnodes.ca to your public IP</li>
+                          <li>Set Public Domain to mc.basementnodes.ca, WAN Port to 25565, and Host Proxy Port to the nodev2 proxy port</li>
+                          <li>Share only the Minecraft join address with players, not the admin panel URL</li>
                           <li>Wait for DNS propagation (can take up to 24 hours)</li>
                         </ul>
                       </div>
@@ -973,7 +1379,7 @@ export function App() {
                     <h2 className="text-sm font-bold mb-2">Important Notes</h2>
                     <ul className="list-disc list-inside space-y-1 text-xs text-muted-foreground">
                       <li>Always back up your world before major changes</li>
-                      <li>Settings are saved automatically when you change them</li>
+                      <li>Use Save & Apply in Server Settings to write configuration changes</li>
                       <li>Keep Online Mode ON to prevent unauthorized access</li>
                       <li>Only give operator status to people you completely trust</li>
                       <li>Monitor the Console panel for errors and warnings</li>
@@ -1062,13 +1468,13 @@ export function App() {
                           </div>
                           <div className="flex items-center gap-1 sm:gap-2 mb-2">
                             <code className="bg-black/80 text-green-400 px-2 py-2 sm:px-4 sm:py-3 rounded text-sm sm:text-lg font-bold flex-1 text-center border-2 border-green-500/30 break-all">
-                              {server.host_ip || server.local_ip}:{server.public_port}
+                              {getLocalJoinAddress(server) || "Not configured"}
                             </code>
                             <Button
                               variant="ghost"
                               size="icon"
                               className="h-8 w-8 sm:h-10 sm:w-10 flex-shrink-0"
-                              onClick={() => copyToClipboard(`${server.host_ip || server.local_ip}:${server.public_port}`)}
+                              onClick={() => copyToClipboard(getLocalJoinAddress(server))}
                               title="Copy to clipboard"
                             >
                              <Copy className="h-4 w-4 sm:h-5 sm:w-5" />
@@ -1076,7 +1482,7 @@ export function App() {
                           </div>
                           {server.host_ip ? (
                             <p className="text-xs sm:text-sm text-center">
-                              <span className="font-semibold text-green-600">✓ Ready!</span>{" "}
+                              <span className="font-semibold text-green-600">Ready on LAN</span>{" "}
                             </p>
                           ) : (
                             <p className="text-xs sm:text-sm text-center text-amber-600 font-semibold">
@@ -1093,10 +1499,12 @@ export function App() {
                               <span className="text-sm sm:text-base font-bold">Public Internet</span>
                             </div>
                             {server.public_domain ? (
-                              server.minecraft?.online ? (
-                                <Badge className="bg-green-500 hover:bg-green-600 text-xs sm:text-sm font-bold px-2 sm:px-3 py-0.5 sm:py-1">✓ RUNNING</Badge>
+                              publicAccess.get(server.name)?.checking ? (
+                                <Badge variant="outline" className="text-xs sm:text-sm font-bold px-2 sm:px-3 py-0.5 sm:py-1">Checking WAN</Badge>
+                              ) : publicAccess.get(server.name)?.accessible ? (
+                                <Badge className="bg-green-500 hover:bg-green-600 text-xs sm:text-sm font-bold px-2 sm:px-3 py-0.5 sm:py-1">WAN verified</Badge>
                               ) : (
-                                <Badge variant="destructive" className="text-xs sm:text-sm font-bold px-2 sm:px-3 py-0.5 sm:py-1">✗ STOPPED</Badge>
+                                <Badge variant="destructive" className="text-xs sm:text-sm font-bold px-2 sm:px-3 py-0.5 sm:py-1">WAN blocked</Badge>
                               )
                             ) : (
                               <Badge variant="outline" className="text-xs sm:text-sm font-bold px-2 sm:px-3 py-0.5 sm:py-1">Not configured</Badge>
@@ -1106,21 +1514,43 @@ export function App() {
                             <>
                               <div className="flex items-center gap-1 sm:gap-2 mb-2">
                                 <code className="bg-black/80 text-cyan-400 px-2 py-2 sm:px-4 sm:py-3 rounded text-sm sm:text-lg font-bold flex-1 text-center border-2 border-cyan-500/30 break-all">
-                                  {server.public_domain}:{server.public_port}
+                                  {getPublicJoinAddress(server)}
                                 </code>
                                 <Button
                                   variant="ghost"
                                   size="icon"
                                   className="h-8 w-8 sm:h-10 sm:w-10 flex-shrink-0"
-                                  onClick={() => copyToClipboard(`${server.public_domain}:${server.public_port}`)}
+                                  onClick={() => copyToClipboard(getPublicJoinAddress(server))}
                                   title="Copy to clipboard"
                                 >
                                   <Copy className="h-4 w-4 sm:h-5 sm:w-5" />
                                 </Button>
                               </div>
-                              <p className="text-xs sm:text-sm text-center">
-                                <span className="font-semibold text-cyan-600">✓ Ready!</span>{" "}
+                              <p className="text-xs sm:text-sm text-center text-muted-foreground">
+                                {isDefaultMinecraftPort(server.public_port) ? (
+                                  <span>No port needed; Minecraft uses 25565 automatically.</span>
+                                ) : (
+                                  <span>Custom port required: include :{server.public_port} when sharing.</span>
+                                )}
                               </p>
+                              <div className="mt-2 flex justify-center">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-7 rounded-sm text-xs"
+                                  onClick={() => checkPublicAccess(server.name)}
+                                  disabled={publicAccess.get(server.name)?.checking}
+                                >
+                                  <RefreshCw className={`mr-1.5 h-3 w-3 ${publicAccess.get(server.name)?.checking ? "animate-spin" : ""}`} />
+                                  Check WAN
+                                </Button>
+                              </div>
+                              {publicAccess.get(server.name)?.accessible === false && (
+                                <p className="mt-2 text-xs text-center text-amber-600">
+                                  External check failed. Forward WAN TCP {server.public_port} to {server.host_ip || "nodev2"}:{getHostProxyPort(server)}.
+                                  {publicAccess.get(server.name)?.reason ? ` ${publicAccess.get(server.name)?.reason}` : ""}
+                                </p>
+                              )}
                             </>
                           ) : (
                             <>
@@ -1136,6 +1566,55 @@ export function App() {
                           )}
                         </div>
                       </div>
+
+                      {server.public_domain && (
+                        <div className="mt-4 rounded-sm border bg-muted/40 p-3 sm:p-4">
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                            <div className="space-y-1">
+                              <h3 className="text-sm sm:text-base font-semibold">Player join sheet</h3>
+                              <p className="text-xs sm:text-sm text-muted-foreground">
+                                Share this address with players. Do not share the admin panel URL.
+                              </p>
+                            </div>
+                            <Button
+                              variant="outline"
+                              className="rounded-sm sm:w-auto"
+                              onClick={() => {
+                                copyToClipboard(buildPlayerInviteText(server));
+                                toast.success("Player join instructions copied.");
+                              }}
+                            >
+                              <Copy className="mr-2 h-4 w-4" />
+                              Copy Instructions
+                            </Button>
+                          </div>
+                          <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
+                            <div>
+                              <p className="text-xs font-medium text-muted-foreground">Address players enter</p>
+                              <code className="mt-1 block rounded-sm border bg-background px-3 py-2 text-base font-semibold break-all">
+                                {getPublicJoinAddress(server)}
+                              </code>
+                            </div>
+                            <ol className="space-y-1 text-xs sm:text-sm text-muted-foreground list-decimal ml-4">
+                              <li>Open Minecraft: Java Edition.</li>
+                              <li>Choose Multiplayer, then Add Server.</li>
+                              <li>Paste the server address and join.</li>
+                              <li>
+                                {requiresClientMods(server.edition)
+                                  ? `Install ${server.edition} for Minecraft ${server.mc_version} and the matching mod list before joining.`
+                                  : `Use Minecraft ${server.mc_version}; server plugins do not require client setup.`}
+                              </li>
+                            </ol>
+                          </div>
+                          {publicAccess.get(server.name)?.accessible === false && (
+                            <div className="mt-3 rounded-sm border border-amber-500/30 bg-amber-500/10 p-3 text-xs sm:text-sm text-amber-700 dark:text-amber-300">
+                              WAN is not reachable yet. Finish the router/firewall forward before sending the invite:
+                              WAN TCP {server.public_port} to {server.host_ip || "nodev2"}:{getHostProxyPort(server)}.
+                              {publicAccess.get(server.name)?.reason ? ` ${publicAccess.get(server.name)?.reason}` : ""}
+                            </div>
+                          )}
+                        </div>
+                      )}
 
                       {/* Player Info */}
                       {server.minecraft?.online && server.minecraft.players && (
@@ -1409,11 +1888,12 @@ export function App() {
                     </Tooltip>
 
                     {/* Server Settings */}
-                    <Dialog open={serverSettingsDialog} onOpenChange={(open) => {
-                      setServerSettingsDialog(open);
+                    <Dialog open={serverSettingsDialog === server.name} onOpenChange={(open) => {
                       if (open) {
-                        fetchBans(server.name);
-                        fetchJvmSettings(server.name);
+                        setServerSettingsDialog(server.name);
+                        loadServerSettings(server);
+                      } else if (serverSettingsDialog === server.name) {
+                        setServerSettingsDialog(null);
                       }
                     }}>
                       <DialogTrigger asChild>
@@ -1435,7 +1915,7 @@ export function App() {
                         </DialogHeader>
 
                         <Tabs defaultValue="properties" className="w-full">
-                          <TabsList className={`grid w-full ${['forge', 'neoforge', 'fabric'].includes(server.edition.toLowerCase()) ? 'grid-cols-9' : 'grid-cols-8'}`}>
+                          <TabsList className="grid w-full grid-cols-3 sm:grid-cols-5 gap-1 h-auto">
                             <TabsTrigger value="network">Network</TabsTrigger>
                             <TabsTrigger value="properties">Properties</TabsTrigger>
                             <TabsTrigger value="gameplay">Gameplay</TabsTrigger>
@@ -1444,6 +1924,7 @@ export function App() {
                             <TabsTrigger value="plugins">Plugins</TabsTrigger>
                             <TabsTrigger value="admins">Admins</TabsTrigger>
                             <TabsTrigger value="bans">Bans</TabsTrigger>
+                            <TabsTrigger value="console">Console</TabsTrigger>
                             {['forge', 'neoforge', 'fabric'].includes(server.edition.toLowerCase()) && (
                               <TabsTrigger value="mods">Mods</TabsTrigger>
                             )}
@@ -1468,31 +1949,112 @@ export function App() {
                                 </p>
                               </div>
 
-                              <div>
-                                <Label htmlFor="publicDomain">Public Domain (Optional)</Label>
-                                <Input
-                                  id="publicDomain"
-                                  type="text"
-                                  value={serverSettings.publicDomain}
-                                  onChange={(e) => setServerSettings({...serverSettings, publicDomain: e.target.value})}
-                                  onBlur={(e) => saveNetworkConfig(server.name, 'public_domain', e.target.value)}
-                                  placeholder="mc.yourdomain.com"
-                                  className="rounded-sm"
-                                />
-                                <p className="text-xs text-muted-foreground mt-1">
-                                  Set your public domain name to enable public connection monitoring and display the correct connection info
-                                </p>
+                              <div className="grid gap-4 sm:grid-cols-[1fr_140px_160px]">
+                                <div>
+                                  <Label htmlFor="publicDomain">Public Domain (WAN)</Label>
+                                  <Input
+                                    id="publicDomain"
+                                    type="text"
+                                    value={serverSettings.publicDomain}
+                                    onChange={(e) => setServerSettings({...serverSettings, publicDomain: e.target.value})}
+                                    onBlur={(e) => saveNetworkConfig(server.name, 'public_domain', e.target.value)}
+                                    placeholder="mc.yourdomain.com"
+                                    className="rounded-sm"
+                                  />
+                                  <p className="text-xs text-muted-foreground mt-1">
+                                    The DNS name friends outside your network will enter in Minecraft.
+                                  </p>
+                                </div>
+                                <div>
+                                  <Label htmlFor="publicPort">WAN Port</Label>
+                                  <Input
+                                    id="publicPort"
+                                    type="number"
+                                    value={serverSettings.publicPort}
+                                    onChange={(e) => setServerSettings({...serverSettings, publicPort: e.target.value})}
+                                    onBlur={async (e) => {
+                                      const saved = await saveNetworkConfig(server.name, 'public_port', e.target.value);
+                                      if (!saved) {
+                                        setServerSettings(prev => ({...prev, publicPort: server.public_port || 25565}));
+                                      }
+                                    }}
+                                    className="rounded-sm"
+                                  />
+                                  <p className="text-xs text-muted-foreground mt-1">
+                                    25565 lets players omit the port.
+                                  </p>
+                                </div>
+                                <div>
+                                  <Label htmlFor="hostProxyPort">Host Proxy Port</Label>
+                                  <Input
+                                    id="hostProxyPort"
+                                    type="number"
+                                    value={serverSettings.hostProxyPort}
+                                    onChange={(e) => setServerSettings({...serverSettings, hostProxyPort: e.target.value})}
+                                    onBlur={async (e) => {
+                                      const saved = await saveNetworkConfig(server.name, 'host_proxy_port', e.target.value);
+                                      if (!saved) {
+                                        setServerSettings(prev => ({
+                                          ...prev,
+                                          hostProxyPort: server.host_proxy_port || server.public_port || 25565,
+                                        }));
+                                      }
+                                    }}
+                                    className="rounded-sm"
+                                  />
+                                  <p className="text-xs text-muted-foreground mt-1">
+                                    Router forwards to this nodev2 port.
+                                  </p>
+                                </div>
                               </div>
 
                               <Separator />
 
-                              <div className="bg-muted/50 p-3 rounded-lg">
-                                <p className="text-sm font-semibold mb-1">How to set up public access:</p>
-                                <ol className="text-xs text-muted-foreground space-y-1 list-decimal ml-4">
-                                  <li>Configure port forwarding on your router: External port {server.public_port} → {server.host_ip || 'your LXD host'}:{server.public_port}</li>
-                                  <li>Set up DNS A record pointing to your public IP address</li>
-                                  <li>Enter your domain name above</li>
-                                  <li>Public connection status will update automatically</li>
+                              <div className="rounded-sm border bg-muted/40 p-3">
+                                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                  <div>
+                                    <p className="text-sm font-semibold">Player address to share</p>
+                                    <code className="mt-1 block rounded-sm border bg-background px-3 py-2 text-sm font-semibold break-all">
+                                      {formatMinecraftAddress(
+                                        serverSettings.publicDomain || server.public_domain,
+                                        serverSettings.publicPort || server.public_port
+                                      ) || "Set a public domain first"}
+                                    </code>
+                                    <p className="mt-1 text-xs text-muted-foreground">
+                                      {isDefaultMinecraftPort(serverSettings.publicPort || server.public_port)
+                                        ? "No :25565 suffix is needed in Minecraft."
+                                        : "This custom port must be included when players join."}
+                                    </p>
+                                  </div>
+                                  <Button
+                                    variant="outline"
+                                    className="rounded-sm"
+                                    onClick={() => {
+                                      copyToClipboard(buildPlayerInviteText({
+                                        ...server,
+                                        public_domain: serverSettings.publicDomain || server.public_domain,
+                                        public_port: serverSettings.publicPort || server.public_port,
+                                        host_proxy_port: serverSettings.hostProxyPort || server.host_proxy_port,
+                                        host_ip: serverSettings.hostIp || server.host_ip,
+                                      }));
+                                      toast.success("Player join instructions copied.");
+                                    }}
+                                  >
+                                    <Copy className="mr-2 h-4 w-4" />
+                                    Copy Player Instructions
+                                  </Button>
+                                </div>
+
+                                <ol className="mt-3 text-xs text-muted-foreground space-y-1 list-decimal ml-4">
+                                  <li>Forward WAN TCP {serverSettings.publicPort || server.public_port} to {serverSettings.hostIp || server.host_ip || 'the nodev2 host'}:{serverSettings.hostProxyPort || server.host_proxy_port || server.public_port}.</li>
+                                  <li>The LXC proxy forwards host port {serverSettings.hostProxyPort || server.host_proxy_port || server.public_port} to the Minecraft container on port {server.local_port || 25565}.</li>
+                                  <li>Point DNS for {serverSettings.publicDomain || server.public_domain || 'your public domain'} to your public IP address.</li>
+                                  <li>Share the Minecraft address above with players. Do not share the admin panel URL.</li>
+                                  <li>
+                                    {requiresClientMods(server.edition)
+                                      ? "Use the Mods tab Friend Setup button to copy the exact client mod list."
+                                      : "Paper plugins run on the server; players do not install them locally."}
+                                  </li>
                                 </ol>
                               </div>
                             </div>
@@ -1631,23 +2193,6 @@ export function App() {
                           <TabsContent value="security" className="space-y-4">
                             <div className="space-y-4">
                               <div>
-                                <Label htmlFor="serverPassword">Server Password (Optional)</Label>
-                                <Input
-                                  id="serverPassword"
-                                  type="password"
-                                  value={serverSettings.serverPassword}
-                                  onChange={(e) => setServerSettings({...serverSettings, serverPassword: e.target.value})}
-                                  placeholder="Leave blank for no password"
-                                  className="rounded-sm"
-                                />
-                                <p className="text-xs text-muted-foreground mt-1">
-                                  Players must enter this password to join
-                                </p>
-                              </div>
-
-                              <Separator />
-
-                              <div>
                                 <div className="flex items-center space-x-2 mb-3">
                                   <Checkbox
                                     id="enforceWhitelist"
@@ -1747,7 +2292,7 @@ export function App() {
                                   <li>• Use whitelist for private servers with friends</li>
                                   <li>• Keep Online Mode ON to prevent fake accounts</li>
                                   <li>• Only give OP to people you trust completely</li>
-                                  <li>• Server password is extra protection (optional)</li>
+                                  <li>• Use the whitelist for private WAN servers</li>
                                 </ul>
                               </div>
                             </div>
@@ -2162,13 +2707,47 @@ export function App() {
                               />
                             </TabsContent>
                           )}
+
+                          <TabsContent value="console" className="space-y-4">
+                            <div className="space-y-3">
+                              <div>
+                                <Label htmlFor="adminCommand">Server Command</Label>
+                                <div className="flex gap-2">
+                                  <Input
+                                    id="adminCommand"
+                                    value={adminCommand}
+                                    onChange={(e) => setAdminCommand(e.target.value)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter") {
+                                        runAdminCommand(server.name);
+                                      }
+                                    }}
+                                    placeholder="say Server restarting soon"
+                                    className="rounded-sm font-mono"
+                                  />
+                                  <Button
+                                    className="rounded-sm"
+                                    onClick={() => runAdminCommand(server.name)}
+                                    disabled={isRunningCommand}
+                                  >
+                                    {isRunningCommand ? "Running..." : "Run"}
+                                  </Button>
+                                </div>
+                              </div>
+                              {adminCommandOutput && (
+                                <pre className="max-h-48 overflow-auto rounded-sm bg-black/90 p-3 text-xs text-green-400 whitespace-pre-wrap">
+                                  {adminCommandOutput}
+                                </pre>
+                              )}
+                            </div>
+                          </TabsContent>
                         </Tabs>
 
                         <DialogFooter>
                           <Button
                             variant="outline"
                             className="rounded-sm"
-                            onClick={() => setServerSettingsDialog(false)}
+                            onClick={() => setServerSettingsDialog(null)}
                             disabled={isSavingSettings}
                           >
                             Cancel

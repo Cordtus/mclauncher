@@ -59,6 +59,63 @@ function shSafe(cmd: string, args: string[]) {
   return { stdout: res.stdout, stderr: res.stderr, code: res.status ?? -1 };
 }
 
+function readRconPassword(): string | null {
+  const propsPath = path.join(MC_DIR, "server.properties");
+  if (!fs.existsSync(propsPath)) return null;
+  const props = parseProperties(propsPath);
+  return props["rcon.password"] || null;
+}
+
+function runRcon(command: string, password?: string) {
+  const rconPassword = password || readRconPassword();
+  if (!rconPassword) {
+    return {
+      stdout: "",
+      stderr: "RCON not configured in server.properties",
+      code: 1,
+    };
+  }
+
+  return shSafe("mcrcon", [
+    "-P",
+    String(RCON_PORT),
+    "-p",
+    rconPassword,
+    command,
+  ]);
+}
+
+function assertSafePathSegment(value: string, label: string) {
+  if (
+    !value ||
+    value.includes("/") ||
+    value.includes("\\") ||
+    value === "." ||
+    value === ".." ||
+    value.includes("..")
+  ) {
+    throw new Error(`Invalid ${label}`);
+  }
+}
+
+function safeChildPath(root: string, ...segments: string[]) {
+  for (const segment of segments) {
+    assertSafePathSegment(segment, "path segment");
+  }
+
+  const resolvedRoot = path.resolve(root);
+  const resolvedPath = path.resolve(resolvedRoot, ...segments);
+  if (resolvedPath !== resolvedRoot && !resolvedPath.startsWith(`${resolvedRoot}${path.sep}`)) {
+    throw new Error("Invalid path");
+  }
+
+  return resolvedPath;
+}
+
+function statusForError(err: any) {
+  return typeof err?.message === "string" && err.message.startsWith("Invalid") ? 400 : 500;
+}
+
 // Health check
 app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "mc-agent" });
@@ -163,6 +220,25 @@ app.post("/config", (req, res) => {
 // ============================================================================
 
 /**
+ * Get structured server settings
+ */
+app.get("/settings", (_req, res) => {
+  try {
+    const configPath = path.join(MC_DIR, "server.properties");
+    const whitelistPath = path.join(MC_DIR, "whitelist.json");
+    const opsPath = path.join(MC_DIR, "ops.json");
+
+    res.json({
+      properties: parseProperties(configPath),
+      whitelist: readJsonArray<{ uuid: string; name: string }>(whitelistPath),
+      operators: readJsonArray<{ uuid: string; name: string; level: number }>(opsPath),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * Apply structured server settings
  * Updates server.properties, whitelist.json, and ops.json
  */
@@ -207,8 +283,8 @@ app.post("/settings", async (req, res) => {
       writeJsonArray(whitelistPath, whitelistData);
       sh("chown", ["mc:mc", whitelistPath]);
 
-      // Enable whitelist in properties if not empty
-      if (whitelistData.length > 0) {
+      // Enable whitelist when the caller did not explicitly set the property.
+      if (whitelistData.length > 0 && !("white-list" in (properties || {}))) {
         updateProperties(configPath, { "white-list": true });
       }
     }
@@ -303,8 +379,7 @@ app.post("/settings/whitelist/add", async (req, res) => {
     // Reload whitelist in-game if server is running
     const status = shSafe("systemctl", ["is-active", "minecraft"]);
     if (status.stdout.trim() === "active") {
-      // Use RCON to reload whitelist
-      shSafe("mcrcon", ["-H", "localhost", "-P", String(RCON_PORT), "-p", "admin", "whitelist reload"]);
+      runRcon("whitelist reload");
     }
 
     res.json({ success: true, message: `Player ${profile.name} added to whitelist` });
@@ -339,7 +414,7 @@ app.post("/settings/whitelist/remove", async (req, res) => {
     // Reload whitelist in-game if server is running
     const status = shSafe("systemctl", ["is-active", "minecraft"]);
     if (status.stdout.trim() === "active") {
-      shSafe("mcrcon", ["-H", "localhost", "-P", String(RCON_PORT), "-p", "admin", "whitelist reload"]);
+      runRcon("whitelist reload");
     }
 
     res.json({ success: true, message: `Player ${username} removed from whitelist` });
@@ -651,14 +726,15 @@ app.post("/plugins", upload.single("file"), (req, res) => {
   }
 
   try {
-    const dest = path.join(MC_DIR, "plugins", file.originalname);
-    fs.mkdirSync(path.join(MC_DIR, "plugins"), { recursive: true });
+    const pluginsDir = path.join(MC_DIR, "plugins");
+    const dest = safeChildPath(pluginsDir, file.originalname);
+    fs.mkdirSync(pluginsDir, { recursive: true });
     fs.copyFileSync(file.path, dest);
     fs.unlinkSync(file.path);
-    sh("chown", ["-R", "mc:mc", path.join(MC_DIR, "plugins")]);
+    sh("chown", ["-R", "mc:mc", pluginsDir]);
     res.send(`Plugin ${file.originalname} uploaded. Restart server to load.`);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(statusForError(err)).json({ error: err.message });
   }
 });
 
@@ -672,14 +748,15 @@ app.post("/mods", upload.single("file"), (req, res) => {
   }
 
   try {
-    const dest = path.join(MC_DIR, "mods", file.originalname);
-    fs.mkdirSync(path.join(MC_DIR, "mods"), { recursive: true });
+    const modsDir = path.join(MC_DIR, "mods");
+    const dest = safeChildPath(modsDir, file.originalname);
+    fs.mkdirSync(modsDir, { recursive: true });
     fs.copyFileSync(file.path, dest);
     fs.unlinkSync(file.path);
-    sh("chown", ["-R", "mc:mc", path.join(MC_DIR, "mods")]);
+    sh("chown", ["-R", "mc:mc", modsDir]);
     res.send(`Mod ${file.originalname} uploaded. Restart server to load.`);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(statusForError(err)).json({ error: err.message });
   }
 });
 
@@ -736,7 +813,7 @@ app.get("/mods/list", async (_req, res) => {
 app.get("/mods/:fileName/metadata", async (req, res) => {
   try {
     const { fileName } = req.params;
-    const filePath = path.join(MC_DIR, "mods", fileName);
+    const filePath = safeChildPath(path.join(MC_DIR, "mods"), fileName);
 
     if (!fs.existsSync(filePath)) {
       return res.status(404).json({ error: "Mod not found" });
@@ -749,7 +826,7 @@ app.get("/mods/:fileName/metadata", async (req, res) => {
 
     res.json(metadata);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(statusForError(err)).json({ error: err.message });
   }
 });
 
@@ -757,7 +834,7 @@ app.get("/mods/:fileName/metadata", async (req, res) => {
 app.get("/mods/:fileName/icon", async (req, res) => {
   try {
     const { fileName } = req.params;
-    const filePath = path.join(MC_DIR, "mods", fileName);
+    const filePath = safeChildPath(path.join(MC_DIR, "mods"), fileName);
 
     if (!fs.existsSync(filePath)) {
       return res.status(404).json({ error: "Mod not found" });
@@ -770,7 +847,7 @@ app.get("/mods/:fileName/icon", async (req, res) => {
 
     res.contentType('image/png').send(icon);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(statusForError(err)).json({ error: err.message });
   }
 });
 
@@ -781,7 +858,7 @@ app.patch("/mods/:fileName/toggle", (req, res) => {
     const { enabled } = req.body;
 
     const modsDir = path.join(MC_DIR, "mods");
-    const currentPath = path.join(modsDir, fileName);
+    const currentPath = safeChildPath(modsDir, fileName);
 
     if (!fs.existsSync(currentPath)) {
       return res.status(404).json({ error: "Mod not found" });
@@ -790,10 +867,10 @@ app.patch("/mods/:fileName/toggle", (req, res) => {
     let newPath: string;
     if (enabled && fileName.endsWith(".disabled")) {
       // Enable: remove .disabled extension
-      newPath = path.join(modsDir, fileName.replace(/\.disabled$/, ''));
+      newPath = safeChildPath(modsDir, fileName.replace(/\.disabled$/, ''));
     } else if (!enabled && !fileName.endsWith(".disabled")) {
       // Disable: add .disabled extension
-      newPath = currentPath + ".disabled";
+      newPath = safeChildPath(modsDir, `${fileName}.disabled`);
     } else {
       return res.json({ ok: true, message: "Already in desired state" });
     }
@@ -801,7 +878,7 @@ app.patch("/mods/:fileName/toggle", (req, res) => {
     fs.renameSync(currentPath, newPath);
     res.json({ ok: true, message: enabled ? "Mod enabled" : "Mod disabled", newFileName: path.basename(newPath) });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(statusForError(err)).json({ error: err.message });
   }
 });
 
@@ -815,7 +892,7 @@ app.delete("/mods/:fileName", async (req, res) => {
     const { removeConfigs } = req.query;
 
     const modsDir = path.join(MC_DIR, "mods");
-    const filePath = path.join(modsDir, fileName);
+    const filePath = safeChildPath(modsDir, fileName);
 
     if (!fs.existsSync(filePath)) {
       return res.status(404).json({ error: "Mod not found" });
@@ -837,10 +914,10 @@ app.delete("/mods/:fileName", async (req, res) => {
     // Remove config files if we have metadata
     if (metadata) {
       const configDir = path.join(MC_DIR, "config");
-      const modConfigDir = path.join(configDir, metadata.modId);
-      const modConfigFile = path.join(configDir, `${metadata.modId}.toml`);
 
       try {
+        const modConfigDir = safeChildPath(configDir, metadata.modId);
+        const modConfigFile = safeChildPath(configDir, `${metadata.modId}.toml`);
         if (fs.existsSync(modConfigDir)) {
           fs.rmSync(modConfigDir, { recursive: true, force: true });
         }
@@ -854,7 +931,7 @@ app.delete("/mods/:fileName", async (req, res) => {
 
     res.json({ ok: true, message: "Mod removed" });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(statusForError(err)).json({ error: err.message });
   }
 });
 
@@ -862,6 +939,7 @@ app.delete("/mods/:fileName", async (req, res) => {
 app.get("/mods/:modId/configs", async (req, res) => {
   try {
     const { modId } = req.params;
+    assertSafePathSegment(modId, "modId");
     const configDir = path.join(MC_DIR, "config");
 
     if (!fs.existsSync(configDir)) {
@@ -875,7 +953,7 @@ app.get("/mods/:modId/configs", async (req, res) => {
 
     res.json({ configs: modConfigs });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(statusForError(err)).json({ error: err.message });
   }
 });
 
@@ -883,14 +961,16 @@ app.get("/mods/:modId/configs", async (req, res) => {
 app.get("/mods/:modId/config/:fileName", async (req, res) => {
   try {
     const { modId, fileName } = req.params;
+    assertSafePathSegment(modId, "modId");
+    assertSafePathSegment(fileName, "fileName");
     const configDir = path.join(MC_DIR, "config");
 
     // Try different possible paths
     const possiblePaths = [
-      path.join(configDir, fileName),
-      path.join(configDir, modId, fileName),
-      path.join(configDir, `${modId}.toml`),
-      path.join(configDir, `${modId}.json`),
+      safeChildPath(configDir, fileName),
+      safeChildPath(configDir, modId, fileName),
+      safeChildPath(configDir, `${modId}.toml`),
+      safeChildPath(configDir, `${modId}.json`),
     ];
 
     let filePath: string | null = null;
@@ -908,7 +988,7 @@ app.get("/mods/:modId/config/:fileName", async (req, res) => {
     const parsed = await parseConfigFile(filePath);
     res.json(parsed);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(statusForError(err)).json({ error: err.message });
   }
 });
 
@@ -917,6 +997,8 @@ app.post("/mods/:modId/config/:fileName", async (req, res) => {
   try {
     const { modId, fileName } = req.params;
     const { updates } = req.body;
+    assertSafePathSegment(modId, "modId");
+    assertSafePathSegment(fileName, "fileName");
 
     if (!updates || typeof updates !== 'object') {
       return res.status(400).json({ error: "Missing updates object" });
@@ -926,10 +1008,10 @@ app.post("/mods/:modId/config/:fileName", async (req, res) => {
 
     // Try different possible paths
     const possiblePaths = [
-      path.join(configDir, fileName),
-      path.join(configDir, modId, fileName),
-      path.join(configDir, `${modId}.toml`),
-      path.join(configDir, `${modId}.json`),
+      safeChildPath(configDir, fileName),
+      safeChildPath(configDir, modId, fileName),
+      safeChildPath(configDir, `${modId}.toml`),
+      safeChildPath(configDir, `${modId}.json`),
     ];
 
     let filePath: string | null = null;
@@ -958,7 +1040,7 @@ app.post("/mods/:modId/config/:fileName", async (req, res) => {
       throw err;
     }
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(statusForError(err)).json({ error: err.message });
   }
 });
 
@@ -1093,17 +1175,11 @@ app.post("/worlds/switch", (req, res) => {
 // RCON command
 app.post("/command", (req, res) => {
   const { rcon_password, command } = req.body;
-  if (!rcon_password || !command) {
-    return res.status(400).send("Missing rcon_password or command");
+  if (!command) {
+    return res.status(400).send("Missing command");
   }
 
-  const result = shSafe("mcrcon", [
-    "-P",
-    String(RCON_PORT),
-    "-p",
-    rcon_password,
-    command,
-  ]);
+  const result = runRcon(command, rcon_password);
 
   res.type("text/plain").send(result.stdout + "\n" + result.stderr);
 });
@@ -1111,15 +1187,7 @@ app.post("/command", (req, res) => {
 // Get TPS (Paper/Spigot servers)
 app.get("/tps", (req, res) => {
   try {
-    // Read RCON password from server.properties
-    const propsPath = path.join(MC_DIR, "server.properties");
-    if (!fs.existsSync(propsPath)) {
-      return res.status(500).json({ error: "server.properties not found" });
-    }
-
-    const props = parseProperties(propsPath);
-    const rconPassword = props["rcon.password"];
-
+    const rconPassword = readRconPassword();
     if (!rconPassword) {
       return res.status(500).json({ error: "RCON not configured in server.properties" });
     }

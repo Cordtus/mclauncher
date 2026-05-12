@@ -19,6 +19,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import { jsonAuthHeaders } from "@/lib/auth";
 
 interface ModBrowserProps {
   serverName: string;
@@ -148,6 +149,16 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
       { slug: "dynmap", name: "Dynmap", description: "Real-time web-based map", category: "Utility" },
       { slug: "papi", name: "PlaceholderAPI", description: "Placeholder system for plugins", category: "Library" },
     ],
+    purpur: [
+      { slug: "luckperms", name: "LuckPerms", description: "Advanced permissions plugin", category: "Admin Tools" },
+      { slug: "essentialsx", name: "EssentialsX", description: "Essential server commands and features", category: "Admin Tools" },
+      { slug: "worldedit", name: "WorldEdit", description: "In-game map editor", category: "World Management" },
+      { slug: "worldguard", name: "WorldGuard", description: "Region protection and management", category: "World Management" },
+      { slug: "vault", name: "Vault", description: "Economy and permissions API", category: "Library" },
+      { slug: "coreprotect", name: "CoreProtect", description: "Block logging and rollback", category: "Admin Tools" },
+      { slug: "dynmap", name: "Dynmap", description: "Real-time web-based map", category: "Utility" },
+      { slug: "papi", name: "PlaceholderAPI", description: "Placeholder system for plugins", category: "Library" },
+    ],
     bukkit: [
       { slug: "luckperms", name: "LuckPerms", description: "Advanced permissions plugin", category: "Admin Tools" },
       { slug: "essentialsx", name: "EssentialsX", description: "Essential server commands and features", category: "Admin Tools" },
@@ -185,6 +196,7 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
     { value: "newest", label: "Newest" },
     { value: "updated", label: "Recently Updated" },
   ];
+  const recommendedMods = popularMods[loader] || popularMods.paper;
 
   useEffect(() => {
     fetchInstalledMods();
@@ -205,10 +217,16 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
   async function fetchInstalledMods() {
     try {
       const response = await fetch(`/api/servers/${serverName}/mods/installed`);
+      if (!response.ok) {
+        throw new Error("Failed to fetch installed mods");
+      }
       const data = await response.json();
       const mods = data.mods || [];
-      setInstalledMods(mods);
-      setInstalledModIds(mods.map((m: any) => m.modId));
+      const installed = mods
+        .map((mod: any) => mod.modId || mod.name || mod.fileName)
+        .filter((name: unknown): name is string => typeof name === "string" && name.length > 0);
+      setInstalledMods(installed);
+      setInstalledModIds(installed);
     } catch (err) {
       console.error("Failed to fetch installed mods:", err);
     }
@@ -248,6 +266,7 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
         query: slug,
         mcVersion: mcVersion,
         loader: loader,
+        projectType: type,
         limit: "1",
         sort: "relevance",
       });
@@ -286,6 +305,13 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
           }),
         }),
       ]);
+
+      if (!versionsRes.ok) {
+        throw new Error("Failed to load compatible versions");
+      }
+      if (!compatRes.ok) {
+        throw new Error("Failed to check compatibility");
+      }
 
       const versions = await versionsRes.json();
       const compat = await compatRes.json();
@@ -340,15 +366,13 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
           if (dep.downloadUrl && dep.fileName) {
             await fetch(`/api/servers/${serverName}/mods/install`, {
               method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${localStorage.getItem('ADMIN_TOKEN')}`,
-              },
+              headers: jsonAuthHeaders(),
               body: JSON.stringify({
                 projectId: dep.projectId,
                 versionId: dep.versionId,
                 downloadUrl: dep.downloadUrl,
                 fileName: dep.fileName,
+                projectType: type,
               }),
             });
           }
@@ -360,15 +384,13 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
 
       const response = await fetch(`/api/servers/${serverName}/mods/install`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('ADMIN_TOKEN')}`,
-        },
+        headers: jsonAuthHeaders(),
         body: JSON.stringify({
           projectId: selectedMod.project_id,
           versionId: version.id,
           downloadUrl: primaryFile.url,
           fileName: primaryFile.filename,
+          projectType: type,
         }),
       });
 
@@ -461,7 +483,7 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
             These are the most popular and commonly used mods for {loader}. Click any mod to see details and install.
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 max-h-[60vh] overflow-y-auto">
-            {popularMods[loader].map((mod) => (
+            {recommendedMods.map((mod) => (
               <Card
                 key={mod.slug}
                 className="rounded-sm cursor-pointer hover:border-primary transition-colors"

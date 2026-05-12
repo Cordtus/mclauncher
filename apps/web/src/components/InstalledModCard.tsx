@@ -31,7 +31,7 @@ interface InstalledModCardProps {
   serverName: string;
   onToggle: (fileName: string, enabled: boolean) => Promise<void>;
   onRemove: (fileName: string, removeConfigs: boolean) => Promise<void>;
-  onConfigure: (modId: string) => void;
+  onConfigure: (modId: string, fileName: string) => void;
   onUpdate?: (mod: InstalledMod) => void;
 }
 
@@ -79,14 +79,14 @@ export function InstalledModCard({
               />
             </div>
             <div className="flex-1 min-w-0">
-              <div className="flex items-start justify-between gap-2">
-                <div>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0">
                   <CardTitle className="text-base">{mod.name}</CardTitle>
                   <CardDescription className="text-xs mt-0.5">
                     v{mod.version} · {mod.loader}
                   </CardDescription>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex shrink-0 items-center gap-2">
                   <Switch
                     checked={mod.enabled}
                     onCheckedChange={handleToggle}
@@ -114,12 +114,12 @@ export function InstalledModCard({
             </p>
           )}
 
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button
               variant="outline"
               size="sm"
-              onClick={() => onConfigure(mod.modId)}
-              className="rounded-sm flex-1"
+              onClick={() => onConfigure(mod.modId, mod.fileName)}
+              className="rounded-sm flex-1 min-w-28"
             >
               <Settings className="h-3 w-3 mr-1" />
               Configure

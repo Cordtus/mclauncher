@@ -1,11 +1,12 @@
 import { useState, useEffect } from "react";
-import { Package2, RefreshCw, Search } from "lucide-react";
+import { Copy, Package2, RefreshCw, Search, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { InstalledModCard } from "./InstalledModCard";
 import { ModConfigEditor } from "./ModConfigEditor";
 import { ModBrowser } from "./ModBrowser";
 import { ModpackExport } from "./ModpackExport";
+import { authHeaders, jsonAuthHeaders } from "@/lib/auth";
 import {
   Dialog,
   DialogContent,
@@ -54,6 +55,7 @@ export function ModsManagementPanel({
   const [message, setMessage] = useState("");
   const [selectedModForConfig, setSelectedModForConfig] = useState<string | null>(null);
   const [configFileName, setConfigFileName] = useState<string>("");
+  const [friendManifest, setFriendManifest] = useState("");
 
   useEffect(() => {
     loadMods();
@@ -62,6 +64,31 @@ export function ModsManagementPanel({
   useEffect(() => {
     filterMods();
   }, [mods, searchQuery, filterStatus]);
+
+  async function copyTextToClipboard(text: string) {
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch {
+        // Fall through to the textarea copy path.
+      }
+    }
+
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    document.body.appendChild(textarea);
+    textarea.select();
+
+    try {
+      return document.execCommand("copy");
+    } finally {
+      document.body.removeChild(textarea);
+    }
+  }
 
   async function loadMods() {
     setIsLoading(true);
@@ -106,13 +133,11 @@ export function ModsManagementPanel({
   }
 
   async function handleToggle(fileName: string, enabled: boolean) {
+    const encodedFileName = encodeURIComponent(fileName);
     try {
-      const response = await fetch(`/api/servers/${serverName}/mods/${fileName}/toggle`, {
+      const response = await fetch(`/api/servers/${serverName}/mods/${encodedFileName}/toggle`, {
         method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('ADMIN_TOKEN')}`,
-        },
+        headers: jsonAuthHeaders(),
         body: JSON.stringify({ enabled }),
       });
 
@@ -139,16 +164,15 @@ export function ModsManagementPanel({
   }
 
   async function handleRemove(fileName: string, removeConfigs: boolean) {
+    const encodedFileName = encodeURIComponent(fileName);
     try {
-      const url = `/api/servers/${serverName}/mods/${fileName}${
+      const url = `/api/servers/${serverName}/mods/${encodedFileName}${
         removeConfigs ? '?removeConfigs=true' : ''
       }`;
 
       const response = await fetch(url, {
         method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('ADMIN_TOKEN')}`,
-        },
+        headers: authHeaders(),
       });
 
       if (!response.ok) {
@@ -163,10 +187,11 @@ export function ModsManagementPanel({
     }
   }
 
-  async function handleConfigure(modId: string) {
+  async function handleConfigure(modId: string, fileName: string) {
+    const encodedModId = encodeURIComponent(modId);
     try {
       // First, check if there are config files for this mod
-      const response = await fetch(`/api/servers/${serverName}/mods/${modId}/configs`);
+      const response = await fetch(`/api/servers/${serverName}/mods/${encodedModId}/configs`);
       if (!response.ok) {
         throw new Error("Failed to check for config files");
       }
@@ -191,6 +216,74 @@ export function ModsManagementPanel({
     }
   }
 
+  async function handleManualUpload(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      const response = await fetch(`/api/servers/${serverName}/mods`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: formData,
+      });
+      const text = await response.text();
+      if (!response.ok) {
+        throw new Error(text || "Failed to upload mod");
+      }
+      setMessage(text);
+      await loadMods();
+    } catch (err: any) {
+      setMessage(`Error: ${err.message}`);
+    }
+  }
+
+  async function copyFriendManifest() {
+    try {
+      const response = await fetch(`/api/servers/${serverName}/mods/manifest`);
+      if (!response.ok) {
+        throw new Error("Failed to build mod setup guide");
+      }
+
+      const data = await response.json();
+      const publicAddress = data.server.public_address || "Ask the admin for the server address";
+      const lines = [
+        `Server: ${data.server.name}`,
+        `Minecraft: ${data.server.edition} ${data.server.mc_version}`,
+        data.server.public_address
+          ? `WAN address: ${data.server.public_address}`
+          : "WAN address: not configured yet",
+        data.server.local_address ? `LAN address: ${data.server.local_address}` : "",
+        "",
+        "How to join:",
+        "1. Open Minecraft: Java Edition.",
+        `2. Install ${data.server.edition} for Minecraft ${data.server.mc_version}.`,
+        "3. Install every enabled mod listed below.",
+        `4. Add ${publicAddress} in Multiplayer > Add Server.`,
+        "",
+        "Required server mods:",
+        ...(data.mods || [])
+          .filter((mod: InstalledMod) => mod.enabled)
+          .map((mod: InstalledMod) => `- ${mod.name} ${mod.version} (${mod.fileName})`),
+        "",
+        "The mod list must match the server before joining.",
+      ].filter(Boolean);
+
+      const manifestText = lines.join("\n");
+      setFriendManifest(manifestText);
+      const copied = await copyTextToClipboard(manifestText);
+      setMessage(copied
+        ? "Friend setup guide copied to clipboard."
+        : "Friend setup guide generated. Select and copy it from the panel below."
+      );
+    } catch (err: any) {
+      setMessage(`Error: ${err.message}`);
+    }
+  }
+
   return (
     <div className="space-y-4">
       {message && (
@@ -203,20 +296,39 @@ export function ModsManagementPanel({
         </div>
       )}
 
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
           <h2 className="text-2xl font-bold">Installed Mods</h2>
           <p className="text-sm text-muted-foreground">
             {mods.length} {mods.length === 1 ? 'mod' : 'mods'} installed
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2 sm:justify-end">
           <ModpackExport
             serverName={serverName}
             mcVersion={mcVersion}
             loader={loader}
             modsCount={mods.length}
           />
+          <input
+            type="file"
+            accept=".jar"
+            id={`mod-upload-${serverName}`}
+            className="hidden"
+            onChange={handleManualUpload}
+          />
+          <label htmlFor={`mod-upload-${serverName}`}>
+            <Button variant="outline" className="rounded-sm" asChild>
+              <span>
+                <Upload className="h-4 w-4 mr-2" />
+                Upload JAR
+              </span>
+            </Button>
+          </label>
+          <Button variant="outline" className="rounded-sm" onClick={copyFriendManifest}>
+            <Copy className="h-4 w-4 mr-2" />
+            Friend Setup
+          </Button>
           <Dialog>
             <DialogTrigger asChild>
               <Button className="rounded-sm">
@@ -299,6 +411,13 @@ export function ModsManagementPanel({
               onConfigure={handleConfigure}
             />
           ))}
+        </div>
+      )}
+
+      {friendManifest && (
+        <div className="rounded-sm border bg-muted/40 p-3">
+          <p className="text-sm font-medium mb-2">Friend setup guide</p>
+          <pre className="text-xs whitespace-pre-wrap break-words">{friendManifest}</pre>
         </div>
       )}
 

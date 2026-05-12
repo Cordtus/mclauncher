@@ -10,6 +10,8 @@ set -euo pipefail
 CONTAINER_NAME="${1:-mc-manager}"
 PUBLIC_PORT="${2:-8080}"
 ADMIN_TOKEN="${3:-$(openssl rand -hex 32)}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 echo "==> Creating MC Management Container"
 echo "    Name: $CONTAINER_NAME"
@@ -53,9 +55,9 @@ cd /opt/mc-lxd-manager
 "
 
 # Copy or clone repo
-if [ -d "../../.git" ]; then
+if [ -d "$REPO_ROOT/.git" ]; then
   echo "==> Copying local repository..."
-  tar czf /tmp/mclauncher.tar.gz --exclude=node_modules --exclude=dist -C ../.. .
+  tar czf /tmp/mclauncher.tar.gz --exclude=node_modules --exclude=dist -C "$REPO_ROOT" .
   lxc file push /tmp/mclauncher.tar.gz "$CONTAINER_NAME/tmp/"
   lxc exec "$CONTAINER_NAME" -- bash -c "
     cd /opt/mc-lxd-manager
@@ -84,9 +86,13 @@ chown -R mcmanager:mcmanager /opt/mc-lxd-manager
 lxc exec "$CONTAINER_NAME" -- bash -c "cat > /opt/mc-lxd-manager/.env <<EOF
 HOST=0.0.0.0
 PORT=8080
-TRUST_PROXY=true
-ALLOW_CIDRS=192.168.0.0/16,10.0.0.0/8,172.16.0.0/12
+TRUST_PROXY=false
+ALLOW_CIDRS=127.0.0.0/8,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12
 ADMIN_TOKEN=${ADMIN_TOKEN}
+ADMIN_AUTH_METHODS=token,passkey
+PASSKEYS_ENABLED=true
+PASSKEY_RP_NAME=MC LXD Manager
+PASSKEY_STORE_FILE=/opt/mc-lxd-manager/passkeys.json
 REGISTRY_FILE=/opt/mc-lxd-manager/servers.json
 EOF
 "
@@ -130,7 +136,7 @@ echo "Web UI: http://<host-ip>:${PUBLIC_PORT}"
 echo "Admin Token: ${ADMIN_TOKEN}"
 echo ""
 echo "IMPORTANT: Save this token!"
-echo "In browser console: localStorage.setItem('ADMIN_TOKEN', '${ADMIN_TOKEN}');"
+echo "Open Admin Access in the gateway and paste this token. You can register a passkey there when serving the gateway over HTTPS or localhost."
 echo ""
 echo "Commands:"
 echo "  lxc exec $CONTAINER_NAME -- systemctl status mc-manager"

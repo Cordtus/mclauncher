@@ -222,6 +222,7 @@ curl -X POST http://127.0.0.1:8080/api/servers/register \
     \"name\": \"$CONTAINER_NAME\",
     \"agent_url\": \"http://$CONTAINER_IP:9090\",
     \"public_port\": $PUBLIC_PORT,
+    \"host_proxy_port\": $PUBLIC_PORT,
     \"host_ip\": \"$HOST_IP\",
     \"memory_mb\": $MEMORY_MB,
     \"cpu_limit\": \"$CPU_LIMIT\",

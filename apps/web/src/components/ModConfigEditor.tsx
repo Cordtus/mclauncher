@@ -5,6 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { ConfigFieldRenderer } from "./ConfigFieldRenderer";
+import { jsonAuthHeaders } from "@/lib/auth";
 import {
   Collapsible,
   CollapsibleContent,
@@ -64,11 +65,13 @@ export function ModConfigEditor({
     loadConfig();
   }, [serverName, modId, configFileName]);
 
+  const configUrl = `/api/servers/${serverName}/mods/${encodeURIComponent(modId)}/config/${encodeURIComponent(configFileName)}`;
+
   async function loadConfig() {
     setIsLoading(true);
     setMessage("");
     try {
-      const response = await fetch(`/api/servers/${serverName}/mods/${modId}/config/${configFileName}`);
+      const response = await fetch(configUrl);
       if (!response.ok) {
         throw new Error("Failed to load config");
       }
@@ -137,13 +140,10 @@ export function ModConfigEditor({
       }
 
       const response = await fetch(
-        `/api/servers/${serverName}/mods/${modId}/config/${configFileName}`,
+        configUrl,
         {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${localStorage.getItem('ADMIN_TOKEN')}`,
-          },
+          headers: jsonAuthHeaders(),
           body: JSON.stringify({ updates }),
         }
       );

@@ -10,16 +10,44 @@ import express, { Request, Response } from "express";
 import cors from "cors";
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
+import { timingSafeEqual } from "crypto";
+import "dotenv/config";
+import { PasskeyService } from "./services/passkeys.js";
+import * as modpack from "./services/modpack.js";
 
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number(process.env.PORT || 8080);
 const REGISTRY_FILE = process.env.REGISTRY_FILE || "/opt/mc-lxd-manager/servers.json";
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
-const ALLOW_CIDRS = (process.env.ALLOW_CIDRS ?? "192.168.0.0/16,10.0.0.0/8")
+const ALLOW_CIDRS = (process.env.ALLOW_CIDRS ?? "127.0.0.0/8,192.168.0.0/16,10.0.0.0/8")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
-const TRUST_PROXY = (process.env.TRUST_PROXY ?? "true").toLowerCase() === "true";
+const TRUST_PROXY = (process.env.TRUST_PROXY ?? "false").toLowerCase() === "true";
+const TRUST_PROXY_CIDRS = (process.env.TRUST_PROXY_CIDRS ?? "loopback")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const WEB_DIST_DIR = process.env.WEB_DIST_DIR || path.resolve(MODULE_DIR, "../../web/dist");
+const ADMIN_AUTH_METHODS = new Set(
+  (process.env.ADMIN_AUTH_METHODS ?? "token,passkey")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean)
+);
+const ADMIN_REQUIRE_CIDR = (process.env.ADMIN_REQUIRE_CIDR ?? "true").toLowerCase() !== "false";
+const PASSKEYS_ENABLED = (process.env.PASSKEYS_ENABLED ?? "true").toLowerCase() !== "false";
+const PASSKEY_USER_VERIFICATION = (
+  ["preferred", "required", "discouraged"].includes(process.env.PASSKEY_USER_VERIFICATION || "")
+    ? process.env.PASSKEY_USER_VERIFICATION
+    : "preferred"
+) as "preferred" | "required" | "discouraged";
+const PASSKEY_STORE_FILE = process.env.PASSKEY_STORE_FILE || path.join(path.dirname(REGISTRY_FILE), "passkeys.json");
+const PASSKEY_SESSION_TTL_MS = Number(process.env.PASSKEY_SESSION_TTL_MS || 12 * 60 * 60 * 1000);
+const PASSKEY_CHALLENGE_TTL_MS = Number(process.env.PASSKEY_CHALLENGE_TTL_MS || 5 * 60 * 1000);
+const DEFAULT_MINECRAFT_PORT = 25565;
 
 interface ServerEntry {
   name: string;
@@ -27,6 +55,7 @@ interface ServerEntry {
   local_ip?: string; // Container IP (e.g., 10.70.48.204)
   local_port?: number; // Minecraft port (usually 25565)
   host_ip?: string; // LXD host IP for local network connections (e.g., 192.168.0.170)
+  host_proxy_port?: number; // LXD host proxy port that receives router-forwarded traffic
   public_port: number; // LXD proxy port on host
   public_domain?: string; // Optional public domain (e.g., mc.yourdomain.com)
   memory_mb: number;
@@ -46,7 +75,31 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cors());
 
 if (TRUST_PROXY) {
-  app.set("trust proxy", true);
+  app.set("trust proxy", TRUST_PROXY_CIDRS);
+}
+
+const passkeys = new PasskeyService({
+  enabled: PASSKEYS_ENABLED && ADMIN_AUTH_METHODS.has("passkey"),
+  rpName: process.env.PASSKEY_RP_NAME || "MC LXD Manager",
+  rpId: process.env.PASSKEY_RP_ID || undefined,
+  origin: process.env.PASSKEY_ORIGIN || undefined,
+  storeFile: PASSKEY_STORE_FILE,
+  challengeTtlMs: PASSKEY_CHALLENGE_TTL_MS,
+  sessionTtlMs: PASSKEY_SESSION_TTL_MS,
+  userVerification: PASSKEY_USER_VERIFICATION,
+});
+
+function adminAuthConfigured() {
+  return (
+    (ADMIN_AUTH_METHODS.has("token") && Boolean(ADMIN_TOKEN)) ||
+    (ADMIN_AUTH_METHODS.has("passkey") && passkeys.hasCredentials())
+  );
+}
+
+if (!adminAuthConfigured()) {
+  console.warn(
+    "Warning: no admin authentication credential is configured. Set ADMIN_TOKEN to bootstrap gateway admin access."
+  );
 }
 
 // Load server registry
@@ -68,16 +121,23 @@ function saveRegistry(registry: ServerRegistry) {
   fs.writeFileSync(REGISTRY_FILE, JSON.stringify(registry, null, 2));
 }
 
+function formatMinecraftAddress(host?: string | null, port?: number | null) {
+  const cleanHost = host?.trim();
+  if (!cleanHost) return null;
+  const cleanPort = port || DEFAULT_MINECRAFT_PORT;
+  return cleanPort === DEFAULT_MINECRAFT_PORT ? cleanHost : `${cleanHost}:${cleanPort}`;
+}
+
 // Get client IP
 function clientIp(req: Request): string {
-  if (TRUST_PROXY) {
-    const xff = req.headers["x-forwarded-for"];
-    if (xff) {
-      const first = Array.isArray(xff) ? xff[0] : xff.split(",")[0];
-      return String(first).trim();
-    }
-  }
-  return req.socket?.remoteAddress || "";
+  const normalizeIp = (ip: string) => {
+    if (ip.startsWith("::ffff:")) return ip.slice("::ffff:".length);
+    if (ip === "::1") return "127.0.0.1";
+    return ip;
+  };
+
+  if (TRUST_PROXY) return normalizeIp(req.ip || "");
+  return normalizeIp(req.socket?.remoteAddress || "");
 }
 
 // CIDR check
@@ -94,16 +154,57 @@ function ipInCidr(ip: string, cidr: string): boolean {
   return (ipNum & mask) === (netNum & mask);
 }
 
+function requestAllowedByCidr(req: Request): boolean {
+  if (!ADMIN_REQUIRE_CIDR) return true;
+  const ip = clientIp(req);
+  return ALLOW_CIDRS.some((c) => ipInCidr(ip, c));
+}
+
+function authContext(req: Request) {
+  return {
+    host: String(req.headers.host || ""),
+    origin: typeof req.headers.origin === "string" ? req.headers.origin : undefined,
+  };
+}
+
+function bearerTokenMatches(candidate: string): boolean {
+  if (!ADMIN_TOKEN || !candidate) return false;
+  const left = Buffer.from(candidate);
+  const right = Buffer.from(ADMIN_TOKEN);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+function sessionTokenFromRequest(req: Request): string {
+  const auth = String(req.headers["authorization"] || "");
+  if (auth.startsWith("Session ")) return auth.slice("Session ".length).trim();
+  const header = req.headers["x-admin-session"];
+  return typeof header === "string" ? header.trim() : "";
+}
+
+function requestHasAdminAuth(req: Request): boolean {
+  const auth = String(req.headers["authorization"] || "");
+  if (ADMIN_AUTH_METHODS.has("token") && auth.startsWith("Bearer ")) {
+    if (bearerTokenMatches(auth.slice("Bearer ".length).trim())) return true;
+  }
+
+  if (ADMIN_AUTH_METHODS.has("passkey")) {
+    return passkeys.validateSession(sessionTokenFromRequest(req));
+  }
+
+  return false;
+}
+
 // Auth middleware
 function requireAdmin(req: Request, res: Response, next: () => void) {
   const ip = clientIp(req);
-  const allowed = ALLOW_CIDRS.some((c) => ipInCidr(ip, c));
-  if (!allowed) return res.status(403).json({ error: `Forbidden from ${ip}` });
-  if (ADMIN_TOKEN) {
-    const auth = String(req.headers["authorization"] || "");
-    if (!auth.startsWith("Bearer ") || auth.split(" ", 2)[1] !== ADMIN_TOKEN) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
+  if (!requestAllowedByCidr(req)) return res.status(403).json({ error: `Forbidden from ${ip}` });
+  if (!adminAuthConfigured()) {
+    return res.status(503).json({
+      error: "Admin authentication is not configured. Set ADMIN_TOKEN before managing servers or registering passkeys.",
+    });
+  }
+  if (!requestHasAdminAuth(req)) {
+    return res.status(401).json({ error: "Unauthorized" });
   }
   return next();
 }
@@ -115,11 +216,113 @@ async function proxyToAgent(agentUrl: string, path: string, options: RequestInit
   return response;
 }
 
+function bufferToBlob(buffer: Buffer): Blob {
+  return new Blob([new Uint8Array(buffer)]);
+}
+
+async function readAgentResponse(response: globalThis.Response) {
+  const text = await response.text();
+  if (!text) return {};
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return response.ok ? { message: text } : { error: text };
+  }
+}
+
+function parsePort(value: unknown, fieldName: string): number {
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`${fieldName} must be an integer from 1 to 65535`);
+  }
+  return port;
+}
+
+function assertSafePathSegment(value: string, label: string) {
+  if (
+    !value ||
+    value.includes("/") ||
+    value.includes("\\") ||
+    value === "." ||
+    value === ".." ||
+    value.includes("..")
+  ) {
+    throw new Error(`Invalid ${label}`);
+  }
+}
+
 // Serve static frontend
-app.use(express.static(path.resolve(process.cwd(), "apps/web/dist")));
+app.use(express.static(WEB_DIST_DIR));
 
 // Health check
 app.get("/healthz", (_req, res) => res.json({ ok: true }));
+
+// Authentication configuration
+app.get("/api/auth/config", (req, res) => {
+  res.json({
+    authMethods: Array.from(ADMIN_AUTH_METHODS),
+    cidrRequired: ADMIN_REQUIRE_CIDR,
+    passkeys: passkeys.publicConfig(authContext(req)),
+  });
+});
+
+app.post("/api/auth/passkeys/register/options", requireAdmin, (req, res) => {
+  try {
+    const name = typeof req.body?.name === "string" && req.body.name.trim()
+      ? req.body.name.trim()
+      : "Admin passkey";
+    res.json({ publicKey: passkeys.registrationOptions(authContext(req), name) });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post("/api/auth/passkeys/register/verify", requireAdmin, (req, res) => {
+  try {
+    res.json(passkeys.verifyRegistration(authContext(req), req.body));
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post("/api/auth/passkeys/login/options", (req, res) => {
+  try {
+    if (!requestAllowedByCidr(req)) {
+      return res.status(403).json({ error: `Forbidden from ${clientIp(req)}` });
+    }
+    res.json({ publicKey: passkeys.authenticationOptions(authContext(req)) });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post("/api/auth/passkeys/login/verify", (req, res) => {
+  try {
+    if (!requestAllowedByCidr(req)) {
+      return res.status(403).json({ error: `Forbidden from ${clientIp(req)}` });
+    }
+    res.json(passkeys.verifyAuthentication(authContext(req), req.body));
+  } catch (err: any) {
+    res.status(401).json({ error: err.message });
+  }
+});
+
+app.get("/api/auth/passkeys", requireAdmin, (_req, res) => {
+  res.json({ credentials: passkeys.listCredentials() });
+});
+
+app.delete("/api/auth/passkeys/:id", requireAdmin, (req, res) => {
+  const deleted = passkeys.deleteCredential(req.params.id);
+  if (!deleted) return res.status(404).json({ error: "Passkey not found" });
+  res.json({ ok: true });
+});
+
+app.post("/api/auth/logout", (req, res) => {
+  const token = sessionTokenFromRequest(req);
+  if (token) passkeys.revokeSession(token);
+  res.json({ ok: true });
+});
 
 // List servers
 app.get("/api/servers", async (_req, res) => {
@@ -143,6 +346,7 @@ app.get("/api/servers", async (_req, res) => {
         local_ip: localIp,
         local_port: localPort,
         host_ip: server.host_ip || null,
+        host_proxy_port: server.host_proxy_port || null,
         public_port: server.public_port,
         public_domain: server.public_domain || null,
 
@@ -165,6 +369,7 @@ app.get("/api/servers", async (_req, res) => {
         local_ip: localIp,
         local_port: localPort,
         host_ip: server.host_ip || null,
+        host_proxy_port: server.host_proxy_port || null,
         public_port: server.public_port,
         public_domain: server.public_domain || null,
 
@@ -185,29 +390,51 @@ app.get("/api/servers", async (_req, res) => {
 
 // Register server (called manually or by setup script)
 app.post("/api/servers/register", requireAdmin, (req, res) => {
-  const { name, agent_url, public_port, memory_mb, cpu_limit, edition, mc_version } = req.body;
-  if (!name || !agent_url) {
-    return res.status(400).json({ error: "Missing name or agent_url" });
+  try {
+    const {
+      name,
+      agent_url,
+      local_ip,
+      local_port,
+      host_ip,
+      host_proxy_port,
+      public_port,
+      public_domain,
+      memory_mb,
+      cpu_limit,
+      edition,
+      mc_version,
+    } = req.body;
+    if (!name || !agent_url) {
+      return res.status(400).json({ error: "Missing name or agent_url" });
+    }
+
+    const registry = loadRegistry();
+    const existing = registry.servers.find((s) => s.name === name);
+    if (existing) {
+      return res.status(400).json({ error: "Server already registered" });
+    }
+
+    registry.servers.push({
+      name,
+      agent_url,
+      local_ip,
+      local_port: local_port === undefined ? undefined : parsePort(local_port, "local_port"),
+      host_ip: host_ip || undefined,
+      host_proxy_port: host_proxy_port === undefined ? undefined : parsePort(host_proxy_port, "host_proxy_port"),
+      public_port: public_port === undefined ? 25565 : parsePort(public_port, "public_port"),
+      public_domain: public_domain || undefined,
+      memory_mb: Number(memory_mb || 2048),
+      cpu_limit,
+      edition: edition || "paper",
+      mc_version: mc_version || "1.21.1",
+    });
+
+    saveRegistry(registry);
+    res.json({ ok: true, message: `Server ${name} registered` });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
   }
-
-  const registry = loadRegistry();
-  const existing = registry.servers.find((s) => s.name === name);
-  if (existing) {
-    return res.status(400).json({ error: "Server already registered" });
-  }
-
-  registry.servers.push({
-    name,
-    agent_url,
-    public_port: Number(public_port || 25565),
-    memory_mb: Number(memory_mb || 2048),
-    cpu_limit,
-    edition: edition || "paper",
-    mc_version: mc_version || "1.21.1",
-  });
-
-  saveRegistry(registry);
-  res.json({ ok: true, message: `Server ${name} registered` });
 });
 
 // Unregister server
@@ -226,28 +453,40 @@ app.delete("/api/servers/:name/unregister", requireAdmin, (req, res) => {
 
 // Update server configuration
 app.patch("/api/servers/:name/config", requireAdmin, (req, res) => {
-  const { name } = req.params;
-  const { public_domain, local_port, host_ip } = req.body;
+  try {
+    const { name } = req.params;
+    const { public_domain, public_port, local_port, host_ip, host_proxy_port } = req.body;
 
-  const registry = loadRegistry();
-  const server = registry.servers.find((s) => s.name === name);
-  if (!server) {
-    return res.status(404).json({ error: "Server not found" });
-  }
+    const registry = loadRegistry();
+    const server = registry.servers.find((s) => s.name === name);
+    if (!server) {
+      return res.status(404).json({ error: "Server not found" });
+    }
 
-  // Update fields
-  if (public_domain !== undefined) {
-    server.public_domain = public_domain || undefined;
-  }
-  if (local_port !== undefined) {
-    server.local_port = Number(local_port);
-  }
-  if (host_ip !== undefined) {
-    server.host_ip = host_ip || undefined;
-  }
+    // Update fields
+    if (public_domain !== undefined) {
+      server.public_domain = public_domain || undefined;
+    }
+    if (public_port !== undefined) {
+      server.public_port = parsePort(public_port, "public_port");
+    }
+    if (local_port !== undefined) {
+      server.local_port = parsePort(local_port, "local_port");
+    }
+    if (host_ip !== undefined) {
+      server.host_ip = host_ip || undefined;
+    }
+    if (host_proxy_port !== undefined) {
+      server.host_proxy_port = host_proxy_port === null || host_proxy_port === ""
+        ? undefined
+        : parsePort(host_proxy_port, "host_proxy_port");
+    }
 
-  saveRegistry(registry);
-  res.json({ ok: true, message: `Server ${name} configuration updated`, server });
+    saveRegistry(registry);
+    res.json({ ok: true, message: `Server ${name} configuration updated`, server });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 // Proxy endpoints to server agents
@@ -382,18 +621,24 @@ app.get("/api/servers/:name/check-public", async (req, res) => {
   try {
     // Try to connect to the public domain on the Minecraft port
     // Use a simple TCP connection check (could also use mcsrvstat.us API)
-    const publicUrl = `https://api.mcsrvstat.us/3/${server.public_domain}:${server.public_port}`;
+    const publicAddress = formatMinecraftAddress(server.public_domain, server.public_port);
+    const publicUrl = `https://api.mcsrvstat.us/3/${publicAddress}`;
     const response = await fetch(publicUrl, { signal: AbortSignal.timeout(5000) });
     const data = await response.json();
 
     return res.json({
       accessible: data.online === true,
-      info: data
+      address: publicAddress,
+      reason: data.online === true
+        ? null
+        : data.debug?.error?.ping || "External status check could not reach the server",
+      info: data,
     });
   } catch (err: any) {
     return res.json({
       accessible: false,
-      reason: err.message
+      address: formatMinecraftAddress(server.public_domain, server.public_port),
+      reason: err.message,
     });
   }
 });
@@ -438,6 +683,22 @@ app.post("/api/servers/:name/config", requireAdmin, async (req, res) => {
 // Settings Management Routes
 // ============================================================================
 
+// Get structured server settings
+app.get("/api/servers/:name/settings", async (req, res) => {
+  const { name } = req.params;
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).send("Server not found");
+
+  try {
+    const response = await proxyToAgent(server.agent_url, "/settings");
+    const data = await readAgentResponse(response);
+    res.status(response.status).json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Apply structured server settings
 app.post("/api/servers/:name/settings", requireAdmin, async (req, res) => {
   const { name } = req.params;
@@ -451,8 +712,8 @@ app.post("/api/servers/:name/settings", requireAdmin, async (req, res) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req.body),
     });
-    const data = await response.json();
-    res.json(data);
+    const data = await readAgentResponse(response);
+    res.status(response.status).json(data);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -690,7 +951,7 @@ async function proxyFileUpload(req: Request, res: Response, endpoint: string) {
       body: formData,
     });
     const text = await response.text();
-    res.type("text/plain").send(text);
+    res.status(response.status).type("text/plain").send(text);
   } catch (err: any) {
     res.status(500).send(err.message);
   }
@@ -821,6 +1082,33 @@ app.post("/api/servers/:name/backup", requireAdmin, async (req, res) => {
   }
 });
 
+// Change server version
+app.post("/api/servers/:name/version/change", requireAdmin, async (req, res) => {
+  const { name } = req.params;
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).send("Server not found");
+
+  try {
+    const response = await proxyToAgent(server.agent_url, "/version/change", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
+    const data = await readAgentResponse(response);
+
+    if (response.ok && req.body?.type && req.body?.version) {
+      server.edition = req.body.type;
+      server.mc_version = req.body.version;
+      saveRegistry(registry);
+    }
+
+    res.status(response.status).json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ============================================================================
 // MOD MANAGEMENT ENDPOINTS (Modrinth API Integration)
 // ============================================================================
@@ -946,25 +1234,24 @@ app.post("/api/mods/check-dependencies", async (req, res) => {
 app.post("/api/servers/:name/mods/install", requireAdmin, async (req, res) => {
   try {
     const { name } = req.params;
-    const { downloadUrl, fileName, projectId, versionId } = req.body;
+    const { downloadUrl, fileName, projectId, versionId, projectType } = req.body;
 
     const registry = loadRegistry();
     const server = registry.servers.find((s) => s.name === name);
     if (!server) return res.status(404).send("Server not found");
+    if (!downloadUrl || !fileName) {
+      return res.status(400).json({ error: "Missing downloadUrl or fileName" });
+    }
 
-    // Download the mod from Modrinth
+    const target = projectType === "plugin" ? "/plugins" : "/mods";
     const modData = await modrinth.downloadMod(downloadUrl);
-
-    // Create form data to upload to the server
-    const FormData = (await import('form-data')).default;
     const form = new FormData();
-    form.append('file', modData, fileName);
+    const blob = bufferToBlob(modData);
+    form.append('file', blob, fileName);
 
-    // Upload to the server's mods folder via agent
-    const uploadResponse = await fetch(`${server.agent_url}/mods`, {
+    const uploadResponse = await fetch(`${server.agent_url}${target}`, {
       method: 'POST',
       body: form as any,
-      headers: form.getHeaders()
     });
 
     if (!uploadResponse.ok) {
@@ -973,9 +1260,113 @@ app.post("/api/servers/:name/mods/install", requireAdmin, async (req, res) => {
 
     res.json({
       success: true,
-      message: `Mod ${fileName} installed successfully`,
+      message: `${projectType === "plugin" ? "Plugin" : "Mod"} ${fileName} installed successfully`,
       projectId,
       versionId
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+const recommendedPluginSlugs: Record<string, string> = {
+  luckperms: "luckperms",
+  essentialsx: "essentialsx",
+  vault: "vault",
+  worldedit: "worldedit",
+};
+
+app.post("/api/servers/:name/plugins/recommended", requireAdmin, async (req, res) => {
+  try {
+    const { name } = req.params;
+    const requestedPlugins = Array.isArray(req.body?.plugins) ? req.body.plugins : [];
+    const registry = loadRegistry();
+    const server = registry.servers.find((s) => s.name === name);
+    if (!server) return res.status(404).send("Server not found");
+
+    const loader = ["paper", "purpur", "spigot"].includes(server.edition.toLowerCase())
+      ? server.edition.toLowerCase()
+      : "paper";
+    const installed: string[] = [];
+    const failed: Array<{ plugin: string; error: string }> = [];
+
+    for (const plugin of requestedPlugins) {
+      const slug = recommendedPluginSlugs[String(plugin)];
+      if (!slug) {
+        failed.push({ plugin: String(plugin), error: "Unknown recommended plugin" });
+        continue;
+      }
+
+      try {
+        const versions = await modrinth.getModVersions(slug, server.mc_version, loader);
+        const version = versions.find((candidate) => candidate.files.length > 0);
+        const file = version?.files.find((candidate) => candidate.primary) || version?.files[0];
+
+        if (!version || !file) {
+          failed.push({ plugin: String(plugin), error: "No compatible Modrinth version found" });
+          continue;
+        }
+
+        const pluginData = await modrinth.downloadMod(file.url);
+        const form = new FormData();
+        const blob = bufferToBlob(pluginData);
+        form.append('file', blob, file.filename);
+
+        const uploadResponse = await fetch(`${server.agent_url}/plugins`, {
+          method: "POST",
+          body: form as any,
+        });
+
+        if (!uploadResponse.ok) {
+          const text = await uploadResponse.text();
+          throw new Error(text || uploadResponse.statusText);
+        }
+
+        installed.push(plugin);
+      } catch (err: any) {
+        failed.push({ plugin: String(plugin), error: err.message });
+      }
+    }
+
+    res.json({
+      success: failed.length === 0,
+      installed,
+      failed,
+      message: failed.length === 0
+        ? "Recommended plugins installed"
+        : "Some recommended plugins could not be installed",
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/servers/:name/mods/manifest", async (req, res) => {
+  try {
+    const { name } = req.params;
+    const registry = loadRegistry();
+    const server = registry.servers.find((s) => s.name === name);
+    if (!server) return res.status(404).send("Server not found");
+
+    const localIp = server.local_ip || server.agent_url.match(/https?:\/\/([^:]+)/)?.[1] || "";
+    const response = await fetch(`${server.agent_url}/mods/list`);
+    if (!response.ok) {
+      throw new Error('Failed to fetch installed mods');
+    }
+
+    const mods = await response.json();
+    res.json({
+      server: {
+        name: server.name,
+        edition: server.edition,
+        mc_version: server.mc_version,
+        local_address: formatMinecraftAddress(
+          server.host_ip || localIp,
+          server.host_proxy_port || server.public_port
+        ),
+        public_address: formatMinecraftAddress(server.public_domain, server.public_port),
+      },
+      mods: mods.mods || [],
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -1008,12 +1399,14 @@ app.delete("/api/servers/:name/mods/:fileName", requireAdmin, async (req, res) =
   try {
     const { name, fileName } = req.params;
     const { removeConfigs } = req.query;
+    assertSafePathSegment(fileName, "fileName");
     const registry = loadRegistry();
     const server = registry.servers.find((s) => s.name === name);
     if (!server) return res.status(404).send("Server not found");
 
     // Delete mod via agent
-    const url = `${server.agent_url}/mods/${fileName}${removeConfigs ? '?removeConfigs=true' : ''}`;
+    const url = new URL(`/mods/${encodeURIComponent(fileName)}`, server.agent_url);
+    if (removeConfigs) url.searchParams.set("removeConfigs", "true");
     const response = await fetch(url, {
       method: 'DELETE'
     });
@@ -1032,11 +1425,12 @@ app.delete("/api/servers/:name/mods/:fileName", requireAdmin, async (req, res) =
 app.get("/api/servers/:name/mods/:fileName/metadata", async (req, res) => {
   try {
     const { name, fileName } = req.params;
+    assertSafePathSegment(fileName, "fileName");
     const registry = loadRegistry();
     const server = registry.servers.find((s) => s.name === name);
     if (!server) return res.status(404).send("Server not found");
 
-    const response = await fetch(`${server.agent_url}/mods/${fileName}/metadata`);
+    const response = await fetch(new URL(`/mods/${encodeURIComponent(fileName)}/metadata`, server.agent_url));
     if (!response.ok) {
       throw new Error('Failed to get mod metadata');
     }
@@ -1052,11 +1446,12 @@ app.get("/api/servers/:name/mods/:fileName/metadata", async (req, res) => {
 app.get("/api/servers/:name/mods/:fileName/icon", async (req, res) => {
   try {
     const { name, fileName } = req.params;
+    assertSafePathSegment(fileName, "fileName");
     const registry = loadRegistry();
     const server = registry.servers.find((s) => s.name === name);
     if (!server) return res.status(404).send("Server not found");
 
-    const response = await fetch(`${server.agent_url}/mods/${fileName}/icon`);
+    const response = await fetch(new URL(`/mods/${encodeURIComponent(fileName)}/icon`, server.agent_url));
     if (!response.ok) {
       return res.status(404).send("Icon not found");
     }
@@ -1073,11 +1468,12 @@ app.patch("/api/servers/:name/mods/:fileName/toggle", requireAdmin, async (req, 
   try {
     const { name, fileName } = req.params;
     const { enabled } = req.body;
+    assertSafePathSegment(fileName, "fileName");
     const registry = loadRegistry();
     const server = registry.servers.find((s) => s.name === name);
     if (!server) return res.status(404).send("Server not found");
 
-    const response = await fetch(`${server.agent_url}/mods/${fileName}/toggle`, {
+    const response = await fetch(new URL(`/mods/${encodeURIComponent(fileName)}/toggle`, server.agent_url), {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled })
@@ -1098,11 +1494,12 @@ app.patch("/api/servers/:name/mods/:fileName/toggle", requireAdmin, async (req, 
 app.get("/api/servers/:name/mods/:modId/configs", async (req, res) => {
   try {
     const { name, modId } = req.params;
+    assertSafePathSegment(modId, "modId");
     const registry = loadRegistry();
     const server = registry.servers.find((s) => s.name === name);
     if (!server) return res.status(404).send("Server not found");
 
-    const response = await fetch(`${server.agent_url}/mods/${modId}/configs`);
+    const response = await fetch(new URL(`/mods/${encodeURIComponent(modId)}/configs`, server.agent_url));
     if (!response.ok) {
       throw new Error('Failed to list config files');
     }
@@ -1118,11 +1515,13 @@ app.get("/api/servers/:name/mods/:modId/configs", async (req, res) => {
 app.get("/api/servers/:name/mods/:modId/config/:fileName", async (req, res) => {
   try {
     const { name, modId, fileName } = req.params;
+    assertSafePathSegment(modId, "modId");
+    assertSafePathSegment(fileName, "fileName");
     const registry = loadRegistry();
     const server = registry.servers.find((s) => s.name === name);
     if (!server) return res.status(404).send("Server not found");
 
-    const response = await fetch(`${server.agent_url}/mods/${modId}/config/${fileName}`);
+    const response = await fetch(new URL(`/mods/${encodeURIComponent(modId)}/config/${encodeURIComponent(fileName)}`, server.agent_url));
     if (!response.ok) {
       throw new Error('Failed to get config file');
     }
@@ -1139,11 +1538,13 @@ app.post("/api/servers/:name/mods/:modId/config/:fileName", requireAdmin, async 
   try {
     const { name, modId, fileName } = req.params;
     const { updates } = req.body;
+    assertSafePathSegment(modId, "modId");
+    assertSafePathSegment(fileName, "fileName");
     const registry = loadRegistry();
     const server = registry.servers.find((s) => s.name === name);
     if (!server) return res.status(404).send("Server not found");
 
-    const response = await fetch(`${server.agent_url}/mods/${modId}/config/${fileName}`, {
+    const response = await fetch(new URL(`/mods/${encodeURIComponent(modId)}/config/${encodeURIComponent(fileName)}`, server.agent_url), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ updates })
@@ -1163,8 +1564,6 @@ app.post("/api/servers/:name/mods/:modId/config/:fileName", requireAdmin, async 
 // ============================================================================
 // MODPACK EXPORT ENDPOINTS
 // ============================================================================
-
-import * as modpack from './services/modpack.js';
 
 // Get modpack info (metadata + mod list for export)
 app.get("/api/servers/:name/modpack", async (req, res) => {
@@ -1330,9 +1729,9 @@ app.get("/api/servers/:name/modpack/page", async (req, res) => {
       loader,
     };
 
-    // Build server address
-    const serverAddress = server.public_domain ||
-      `${server.host_ip || 'localhost'}:${server.public_port || 25565}`;
+    const serverAddress = formatMinecraftAddress(server.public_domain, server.public_port) ||
+      formatMinecraftAddress(server.host_ip || 'localhost', server.host_proxy_port || server.public_port) ||
+      'localhost';
 
     const html = await modpack.generateDownloadPage(
       server.name,
@@ -1385,8 +1784,9 @@ app.get("/public/:name/modpack", async (req, res) => {
       loader,
     };
 
-    const serverAddress = server.public_domain ||
-      `${server.host_ip || 'localhost'}:${server.public_port || 25565}`;
+    const serverAddress = formatMinecraftAddress(server.public_domain, server.public_port) ||
+      formatMinecraftAddress(server.host_ip || 'localhost', server.host_proxy_port || server.public_port) ||
+      'localhost';
 
     const html = await modpack.generateDownloadPage(
       server.name,
@@ -1480,6 +1880,18 @@ app.get("/public/:name/modlist.txt", async (req, res) => {
   } catch (err: any) {
     res.status(500).send(`Error: ${err.message}`);
   }
+});
+
+app.get("*", (req, res) => {
+  if (req.path === "/api" || req.path.startsWith("/api/")) {
+    return res.status(404).json({ error: "Not found" });
+  }
+
+  res.sendFile(path.join(WEB_DIST_DIR, "index.html"), (err) => {
+    if (err) {
+      res.status(404).send("Frontend has not been built");
+    }
+  });
 });
 
 app.listen(PORT, HOST, () => {
