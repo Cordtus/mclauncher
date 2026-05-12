@@ -42,12 +42,13 @@ const PASSKEYS_ENABLED = (process.env.PASSKEYS_ENABLED ?? "true").toLowerCase() 
 const PASSKEY_USER_VERIFICATION = (
   ["preferred", "required", "discouraged"].includes(process.env.PASSKEY_USER_VERIFICATION || "")
     ? process.env.PASSKEY_USER_VERIFICATION
-    : "preferred"
+    : "required"
 ) as "preferred" | "required" | "discouraged";
 const PASSKEY_STORE_FILE = process.env.PASSKEY_STORE_FILE || path.join(path.dirname(REGISTRY_FILE), "passkeys.json");
 const PASSKEY_SESSION_TTL_MS = Number(process.env.PASSKEY_SESSION_TTL_MS || 12 * 60 * 60 * 1000);
 const PASSKEY_CHALLENGE_TTL_MS = Number(process.env.PASSKEY_CHALLENGE_TTL_MS || 5 * 60 * 1000);
 const DEFAULT_MINECRAFT_PORT = 25565;
+const PUBLIC_MODPACK_CACHE_TTL_MS = Number(process.env.PUBLIC_MODPACK_CACHE_TTL_MS || 60 * 1000);
 
 interface ServerEntry {
   name: string;
@@ -71,8 +72,25 @@ interface ServerRegistry {
 }
 
 type ModpackLoader = modpack.ModpackMetadata["loader"];
+type PublicModpackCacheEntry = {
+  expiresAt: number;
+  value?: {
+    metadata: modpack.ModpackMetadata;
+    mods: any[];
+    html: string;
+    modList: string;
+  };
+  promise?: Promise<NonNullable<PublicModpackCacheEntry["value"]>>;
+};
+type PublicMrpackCacheEntry = {
+  expiresAt: number;
+  value?: Buffer;
+  promise?: Promise<Buffer>;
+};
 
 const MODPACK_LOADERS = new Set<ModpackLoader>(["fabric", "forge", "neoforge", "quilt"]);
+const publicModpackCache = new Map<string, PublicModpackCacheEntry>();
+const publicMrpackCache = new Map<string, PublicMrpackCacheEntry>();
 
 function asModpackLoader(value: unknown): ModpackLoader | null {
   if (typeof value !== "string") return null;
@@ -221,6 +239,73 @@ function formatMinecraftAddress(host?: string | null, port?: number | null) {
   if (!cleanHost) return null;
   const cleanPort = port || DEFAULT_MINECRAFT_PORT;
   return cleanPort === DEFAULT_MINECRAFT_PORT ? cleanHost : `${cleanHost}:${cleanPort}`;
+}
+
+function publicMinecraftAddress(server: ServerEntry) {
+  const address = formatMinecraftAddress(server.public_domain, server.public_port);
+  if (!address) throw new Error("Public Minecraft address is not configured");
+  return address;
+}
+
+function hasPublicMinecraftAddress(server: ServerEntry) {
+  return Boolean(formatMinecraftAddress(server.public_domain, server.public_port));
+}
+
+function publicModpackCacheKey(server: ServerEntry) {
+  return `${server.name}:${server.mc_version}:${server.edition}:${server.loader_version || ""}:${server.public_domain || ""}:${server.public_port}`;
+}
+
+async function getPublicModpack(server: ServerEntry) {
+  const cacheKey = publicModpackCacheKey(server);
+  const cached = publicModpackCache.get(cacheKey);
+  const now = Date.now();
+  if (cached?.value && cached.expiresAt > now) return cached.value;
+  if (cached?.promise) return cached.promise;
+
+  const promise = (async () => {
+    const serverAddress = publicMinecraftAddress(server);
+    const mods = await fetchInstalledMods(server);
+    const metadata = await buildModpackMetadata(server, mods);
+    const [modList, html] = await Promise.all([
+      Promise.resolve(modpack.generateModList(metadata, mods)),
+      modpack.generateDownloadPage(server.name, serverAddress, metadata, mods),
+    ]);
+    return { metadata, mods, html, modList };
+  })();
+
+  publicModpackCache.set(cacheKey, { expiresAt: now + PUBLIC_MODPACK_CACHE_TTL_MS, promise });
+  try {
+    const value = await promise;
+    publicModpackCache.set(cacheKey, { expiresAt: Date.now() + PUBLIC_MODPACK_CACHE_TTL_MS, value });
+    return value;
+  } catch (err) {
+    publicModpackCache.delete(cacheKey);
+    throw err;
+  }
+}
+
+async function getPublicMrpack(server: ServerEntry) {
+  const cacheKey = publicModpackCacheKey(server);
+  const cached = publicMrpackCache.get(cacheKey);
+  const now = Date.now();
+  if (cached?.value && cached.expiresAt > now) return cached.value;
+  if (cached?.promise) return cached.promise;
+
+  const promise = (async () => {
+    const { metadata, mods } = await getPublicModpack(server);
+    const { buffer } = await modpack.generateMrpack(metadata, mods);
+    return buffer;
+  })();
+
+  publicMrpackCache.set(cacheKey, { expiresAt: now + PUBLIC_MODPACK_CACHE_TTL_MS, promise });
+  try {
+    const value = await promise;
+    publicMrpackCache.set(cacheKey, { expiresAt: Date.now() + PUBLIC_MODPACK_CACHE_TTL_MS, value });
+    return value;
+  } catch (err) {
+    publicMrpackCache.delete(cacheKey);
+    throw err;
+  }
 }
 
 // Get client IP
@@ -1059,17 +1144,36 @@ async function proxyFileUpload(req: Request, res: Response, endpoint: string) {
 // File upload endpoints (need multer in this app too)
 import multer from "multer";
 import os from "os";
-const upload = multer({ dest: os.tmpdir() });
+const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES || 512 * 1024 * 1024);
+const upload = multer({
+  dest: os.tmpdir(),
+  limits: {
+    fileSize: MAX_UPLOAD_BYTES,
+    files: 1,
+  },
+});
 
-app.post("/api/servers/:name/plugins", requireAdmin, upload.single("file"), (req, res) =>
+function handleUploadError(err: any, res: Response, next: () => void) {
+  if (!err) return next();
+  if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
+    return res.status(413).json({ error: `Upload exceeds ${MAX_UPLOAD_BYTES} byte limit` });
+  }
+  return res.status(400).json({ error: err.message || "Upload failed" });
+}
+
+function uploadSingleFile(req: Request, res: Response, next: () => void) {
+  upload.single("file")(req, res, (err) => handleUploadError(err, res, next));
+}
+
+app.post("/api/servers/:name/plugins", requireAdmin, uploadSingleFile, (req, res) =>
   proxyFileUpload(req, res, "/plugins")
 );
 
-app.post("/api/servers/:name/mods", requireAdmin, upload.single("file"), (req, res) =>
+app.post("/api/servers/:name/mods", requireAdmin, uploadSingleFile, (req, res) =>
   proxyFileUpload(req, res, "/mods")
 );
 
-app.post("/api/servers/:name/worlds/upload", requireAdmin, upload.single("file"), (req, res) =>
+app.post("/api/servers/:name/worlds/upload", requireAdmin, uploadSingleFile, (req, res) =>
   proxyFileUpload(req, res, "/worlds/upload")
 );
 
@@ -1334,23 +1438,29 @@ app.post("/api/mods/check-dependencies", async (req, res) => {
 app.post("/api/servers/:name/mods/install", requireAdmin, async (req, res) => {
   try {
     const { name } = req.params;
-    const { downloadUrl, fileName, projectId, versionId, projectType } = req.body;
+    const { fileName, projectId, versionId, projectType } = req.body;
 
     const registry = loadRegistry();
     const server = registry.servers.find((s) => s.name === name);
     if (!server) return res.status(404).send("Server not found");
-    if (!downloadUrl || !fileName) {
-      return res.status(400).json({ error: "Missing downloadUrl or fileName" });
+    if (!versionId) {
+      return res.status(400).json({ error: "Missing versionId" });
     }
 
     const target = projectType === "plugin" ? "/plugins" : "/mods";
-    const modData = await modrinth.downloadMod(downloadUrl);
+    const version = await modrinth.getVersion(versionId);
+    if (projectId && version.project_id !== projectId) {
+      return res.status(400).json({ error: "versionId does not belong to projectId" });
+    }
+
+    const selectedFile = modrinth.selectVersionFile(version, fileName);
+    const modData = await modrinth.downloadModFile(selectedFile);
     const form = new FormData();
     const blob = bufferToBlob(modData);
-    form.append('file', blob, fileName);
-    if (projectId) form.append("projectId", projectId);
-    if (versionId) form.append("versionId", versionId);
-    form.append("downloadUrl", downloadUrl);
+    form.append('file', blob, selectedFile.filename);
+    form.append("projectId", version.project_id);
+    form.append("versionId", version.id);
+    form.append("downloadUrl", selectedFile.url);
 
     const uploadResponse = await fetchFromAgent(server, target, {
       method: 'POST',
@@ -1363,9 +1473,9 @@ app.post("/api/servers/:name/mods/install", requireAdmin, async (req, res) => {
 
     res.json({
       success: true,
-      message: `${projectType === "plugin" ? "Plugin" : "Mod"} ${fileName} installed successfully`,
-      projectId,
-      versionId
+      message: `${projectType === "plugin" ? "Plugin" : "Mod"} ${selectedFile.filename} installed successfully`,
+      projectId: version.project_id,
+      versionId: version.id
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -1410,7 +1520,7 @@ app.post("/api/servers/:name/plugins/recommended", requireAdmin, async (req, res
           continue;
         }
 
-        const pluginData = await modrinth.downloadMod(file.url);
+        const pluginData = await modrinth.downloadModFile(file);
         const form = new FormData();
         const blob = bufferToBlob(pluginData);
         form.append('file', blob, file.filename);
@@ -1747,21 +1857,9 @@ app.get("/api/servers/:name/modpack/page", requireAdmin, async (req, res) => {
     const { name } = req.params;
     const registry = loadRegistry();
     const server = registry.servers.find((s) => s.name === name);
-    if (!server) return res.status(404).send("Server not found");
+    if (!server || !hasPublicMinecraftAddress(server)) return res.status(404).send("Not found");
 
-    const mods = await fetchInstalledMods(server);
-    const metadata = await buildModpackMetadata(server, mods);
-
-    const serverAddress = formatMinecraftAddress(server.public_domain, server.public_port) ||
-      formatMinecraftAddress(server.host_ip || 'localhost', server.host_proxy_port || server.public_port) ||
-      'localhost';
-
-    const html = await modpack.generateDownloadPage(
-      server.name,
-      serverAddress,
-      metadata,
-      mods
-    );
+    const { html } = await getPublicModpack(server);
 
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
@@ -1781,21 +1879,9 @@ app.get("/public/:name/modpack", async (req, res) => {
     const { name } = req.params;
     const registry = loadRegistry();
     const server = registry.servers.find((s) => s.name === name);
-    if (!server) return res.status(404).send("Server not found");
+    if (!server || !hasPublicMinecraftAddress(server)) return res.status(404).send("Not found");
 
-    const mods = await fetchInstalledMods(server);
-    const metadata = await buildModpackMetadata(server, mods);
-
-    const serverAddress = formatMinecraftAddress(server.public_domain, server.public_port) ||
-      formatMinecraftAddress(server.host_ip || 'localhost', server.host_proxy_port || server.public_port) ||
-      'localhost';
-
-    const html = await modpack.generateDownloadPage(
-      server.name,
-      serverAddress,
-      metadata,
-      mods
-    );
+    const { html } = await getPublicModpack(server);
 
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
@@ -1810,15 +1896,13 @@ app.get("/public/:name/modpack.mrpack", async (req, res) => {
     const { name } = req.params;
     const registry = loadRegistry();
     const server = registry.servers.find((s) => s.name === name);
-    if (!server) return res.status(404).send("Server not found");
+    if (!server || !hasPublicMinecraftAddress(server)) return res.status(404).send("Not found");
 
-    const mods = await fetchInstalledMods(server);
-    const metadata = await buildModpackMetadata(server, mods);
-    const result = await modpack.generateMrpack(metadata, mods);
+    const mrpack = await getPublicMrpack(server);
 
     res.setHeader('Content-Type', 'application/zip');
     res.setHeader('Content-Disposition', `attachment; filename="${server.name}-modpack.mrpack"`);
-    res.send(result.buffer);
+    res.send(mrpack);
   } catch (err: any) {
     res.status(500).send(`Error: ${err.message}`);
   }
@@ -1830,11 +1914,9 @@ app.get("/public/:name/modlist.txt", async (req, res) => {
     const { name } = req.params;
     const registry = loadRegistry();
     const server = registry.servers.find((s) => s.name === name);
-    if (!server) return res.status(404).send("Server not found");
+    if (!server || !hasPublicMinecraftAddress(server)) return res.status(404).send("Not found");
 
-    const mods = await fetchInstalledMods(server);
-    const metadata = await buildModpackMetadata(server, mods);
-    const modList = modpack.generateModList(metadata, mods);
+    const { modList } = await getPublicModpack(server);
 
     res.setHeader('Content-Type', 'text/plain');
     res.setHeader('Content-Disposition', `attachment; filename="${server.name}-modlist.txt"`);

@@ -37,6 +37,7 @@ const WORLDS_HOME = path.join(MC_DIR, "worlds");
 const WORLD_LINK = path.join(MC_DIR, "world");
 const RCON_PORT = Number(process.env.RCON_PORT || 25575);
 const AGENT_TOKEN = process.env.AGENT_TOKEN || "";
+const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES || 512 * 1024 * 1024);
 
 const app = express();
 
@@ -67,7 +68,13 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true }));
 
-const upload = multer({ dest: os.tmpdir() });
+const upload = multer({
+  dest: os.tmpdir(),
+  limits: {
+    fileSize: MAX_UPLOAD_BYTES,
+    files: 1,
+  },
+});
 
 // Initialize managers
 const versionManager = new VersionManager(MC_DIR);
@@ -89,6 +96,11 @@ function sh(cmd: string, args: string[]): string {
 // Helper: run command without throwing
 function shSafe(cmd: string, args: string[]) {
   const res = spawnSync(cmd, args, { encoding: "utf8" });
+  return { stdout: res.stdout, stderr: res.stderr, code: res.status ?? -1 };
+}
+
+function shSafeIn(cmd: string, args: string[], cwd: string) {
+  const res = spawnSync(cmd, args, { encoding: "utf8", cwd });
   return { stdout: res.stdout, stderr: res.stderr, code: res.status ?? -1 };
 }
 
@@ -163,6 +175,87 @@ function safeChildPath(root: string, ...segments: string[]) {
   }
 
   return resolvedPath;
+}
+
+function assertSafeZipArchive(zipPath: string) {
+  const result = shSafe("unzip", ["-Z1", zipPath]);
+  if (result.code !== 0) {
+    throw new Error(result.stderr || result.stdout || "Failed to inspect ZIP");
+  }
+  for (const rawEntry of result.stdout.split(/\r?\n/)) {
+    const entry = rawEntry.trim();
+    if (!entry) continue;
+    if (entry.startsWith("/") || entry.startsWith("\\") || entry.includes("..") || entry.includes("\\")) {
+      throw new Error("ZIP contains unsafe entry paths");
+    }
+  }
+
+  const types = shSafe("unzip", ["-Z", "-l", zipPath]);
+  if (types.code !== 0) {
+    throw new Error(types.stderr || types.stdout || "Failed to inspect ZIP");
+  }
+  for (const rawLine of types.stdout.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("Archive:") || line.startsWith("Zip file") || /^\d+\s+files?,/.test(line)) {
+      continue;
+    }
+    const mode = line.split(/\s+/)[0];
+    if (mode && mode[0] !== "-" && mode[0] !== "d") {
+      throw new Error("ZIP contains unsafe entry types");
+    }
+  }
+
+  const test = shSafe("unzip", ["-tq", zipPath]);
+  if (test.code !== 0) {
+    throw new Error(test.stderr || test.stdout || "Failed to validate ZIP");
+  }
+}
+
+function assertSafeUrl(value: unknown, label: string): string {
+  if (typeof value !== "string") throw new Error(`Invalid ${label}`);
+  const parsed = new URL(value);
+  if (parsed.protocol !== "https:") throw new Error(`Invalid ${label}`);
+  return parsed.toString();
+}
+
+function assertSafeJvmValue(value: unknown, label: string) {
+  const raw = String(value ?? "");
+  if (!raw || /[\r\n]/.test(raw) || !/^\d+$/.test(raw)) {
+    throw new Error(`Invalid ${label}`);
+  }
+  return raw;
+}
+
+function assertSafeJvmUnit(value: unknown, label: string) {
+  const raw = String(value || "M").toUpperCase();
+  if (raw !== "M" && raw !== "G") throw new Error(`Invalid ${label}`);
+  return raw;
+}
+
+function assertSafeCustomJvmFlags(value: unknown) {
+  const flags = String(value ?? "").trim();
+  if (/[\r\n]/.test(flags)) throw new Error("Invalid custom JVM flags");
+  if (!flags) return "";
+
+  const parts = flags.split(/\s+/);
+  for (const part of parts) {
+    if (!part.startsWith("-") || /[;&|`$<>\\]/.test(part)) {
+      throw new Error("Invalid custom JVM flags");
+    }
+  }
+  return parts.join(" ");
+}
+
+function handleUploadError(err: any, res: Response, next: () => void) {
+  if (!err) return next();
+  if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
+    return res.status(413).json({ error: `Upload exceeds ${MAX_UPLOAD_BYTES} byte limit` });
+  }
+  return res.status(400).json({ error: err.message || "Upload failed" });
+}
+
+function uploadSingleFile(req: Request, res: Response, next: () => void) {
+  upload.single("file")(req, res, (err) => handleUploadError(err, res, next));
 }
 
 type InstalledModrinthMetadata = {
@@ -827,7 +920,7 @@ app.post("/settings/bans/ip/remove", async (req, res) => {
 // ============================================================================
 
 // Upload plugin
-app.post("/plugins", upload.single("file"), (req, res) => {
+app.post("/plugins", uploadSingleFile, (req, res) => {
   const file = req.file;
   if (!file) return res.status(400).send("Missing file");
   if (!file.originalname.endsWith(".jar")) {
@@ -849,7 +942,7 @@ app.post("/plugins", upload.single("file"), (req, res) => {
 });
 
 // Upload mod
-app.post("/mods", upload.single("file"), (req, res) => {
+app.post("/mods", uploadSingleFile, (req, res) => {
   const file = req.file;
   if (!file) return res.status(400).send("Missing file");
   if (!file.originalname.endsWith(".jar")) {
@@ -1182,12 +1275,30 @@ app.post("/mods/:modId/config/:fileName", async (req, res) => {
 
 // Packwiz sync
 app.post("/packwiz", (req, res) => {
-  const { url } = req.body;
-  if (!url) return res.status(400).send("Missing url");
+  try {
+    const url = assertSafeUrl(req.body?.url, "url");
+    const curlResult = shSafe("curl", ["-fsSL", url, "-o", path.join(MC_DIR, "pack.toml")]);
+    if (curlResult.code !== 0) {
+      return res.status(500).type("text/plain").send(curlResult.stdout + "\n" + curlResult.stderr);
+    }
 
-  const cmd = `cd ${MC_DIR} && curl -sL ${JSON.stringify(url)} -o pack.toml && packwiz refresh || packwiz modrinth install || true && chown -R mc:mc ${MC_DIR}`;
-  const result = shSafe("bash", ["-c", cmd]);
-  res.type("text/plain").send(result.stdout + "\n" + result.stderr);
+    const refresh = shSafeIn("packwiz", ["refresh"], MC_DIR);
+    const install = refresh.code === 0
+      ? { stdout: "", stderr: "", code: 0 }
+      : shSafeIn("packwiz", ["modrinth", "install"], MC_DIR);
+    shSafe("chown", ["-R", "mc:mc", MC_DIR]);
+
+    res.type("text/plain").send([
+      curlResult.stdout,
+      curlResult.stderr,
+      refresh.stdout,
+      refresh.stderr,
+      install.stdout,
+      install.stderr,
+    ].join("\n"));
+  } catch (err: any) {
+    res.status(statusForError(err)).json({ error: err.message });
+  }
 });
 
 // Install LuckPerms
@@ -1237,7 +1348,7 @@ app.get("/worlds", (_req, res) => {
 });
 
 // Upload world
-app.post("/worlds/upload", upload.single("file"), (req, res) => {
+app.post("/worlds/upload", uploadSingleFile, (req, res) => {
   const file = req.file;
   if (!file) return res.status(400).send("Missing file");
   if (!file.originalname.endsWith(".zip")) {
@@ -1245,24 +1356,28 @@ app.post("/worlds/upload", upload.single("file"), (req, res) => {
     return res.status(400).send("File must be a .zip");
   }
 
-  const worldName = path.parse(file.originalname).name;
-  const worldPath = path.join(WORLDS_HOME, worldName);
   const wasActive = isMinecraftActive();
   let restarted = false;
+  let tempWorldPath: string | null = null;
 
   try {
+    const worldName = path.parse(file.originalname).name;
+    assertSafePathSegment(worldName, "worldName");
+    const worldPath = safeChildPath(WORLDS_HOME, worldName);
+
+    fs.mkdirSync(WORLDS_HOME, { recursive: true });
+    assertSafeZipArchive(file.path);
+    tempWorldPath = fs.mkdtempSync(path.join(WORLDS_HOME, `${worldName}.upload-`));
+    sh("unzip", ["-oq", file.path, "-d", tempWorldPath]);
+    fs.unlinkSync(file.path);
+
     if (wasActive) {
       sh("systemctl", ["stop", "minecraft"]);
     }
 
-    // Create world directory
-    fs.mkdirSync(WORLDS_HOME, { recursive: true });
     fs.rmSync(worldPath, { recursive: true, force: true });
-    fs.mkdirSync(worldPath, { recursive: true });
-
-    // Extract zip
-    sh("unzip", ["-oq", file.path, "-d", worldPath]);
-    fs.unlinkSync(file.path);
+    fs.renameSync(tempWorldPath, worldPath);
+    tempWorldPath = null;
 
     // Update symlink
     if (fs.existsSync(WORLD_LINK)) {
@@ -1280,10 +1395,14 @@ app.post("/worlds/upload", upload.single("file"), (req, res) => {
 
     res.send(`World '${worldName}' uploaded and activated`);
   } catch (err: any) {
+    if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+    if (tempWorldPath && fs.existsSync(tempWorldPath)) {
+      fs.rmSync(tempWorldPath, { recursive: true, force: true });
+    }
     if (wasActive && !restarted) {
       shSafe("systemctl", ["start", "minecraft"]);
     }
-    res.status(500).json({ error: err.message });
+    res.status(statusForError(err)).json({ error: err.message });
   }
 });
 
@@ -1292,7 +1411,12 @@ app.post("/worlds/switch", (req, res) => {
   const { world_name } = req.body;
   if (!world_name) return res.status(400).send("Missing world_name");
 
-  const worldPath = path.join(WORLDS_HOME, world_name);
+  let worldPath: string;
+  try {
+    worldPath = safeChildPath(WORLDS_HOME, String(world_name));
+  } catch (err: any) {
+    return res.status(statusForError(err)).json({ error: err.message });
+  }
   if (!fs.existsSync(worldPath)) {
     return res.status(404).send(`World '${world_name}' not found`);
   }
@@ -1480,7 +1604,7 @@ app.post("/jvm/settings", (req, res) => {
     let serviceContent = fs.readFileSync(serviceFile, "utf8");
 
     // Build new JVM flags
-    let jvmFlags = `-Xms${xms}${xmsUnit || 'M'} -Xmx${xmx}${xmxUnit || 'M'}`;
+    let jvmFlags = `-Xms${assertSafeJvmValue(xms, "xms")}${assertSafeJvmUnit(xmsUnit, "xmsUnit")} -Xmx${assertSafeJvmValue(xmx, "xmx")}${assertSafeJvmUnit(xmxUnit, "xmxUnit")}`;
 
     // Add garbage collector
     if (gc === "g1gc") {
@@ -1490,8 +1614,9 @@ app.post("/jvm/settings", (req, res) => {
     }
 
     // Add custom flags
-    if (customFlags && customFlags.trim()) {
-      jvmFlags += " " + customFlags.trim();
+    const sanitizedCustomFlags = assertSafeCustomJvmFlags(customFlags);
+    if (sanitizedCustomFlags) {
+      jvmFlags += " " + sanitizedCustomFlags;
     }
 
     if (hasForgeRunScript()) {
@@ -1733,11 +1858,12 @@ app.post("/worlds/:worldName/backup", async (req, res) => {
 });
 
 // Import world
-app.post("/worlds/import", upload.single("file"), async (req, res) => {
+app.post("/worlds/import", uploadSingleFile, async (req, res) => {
   const file = req.file;
   if (!file) return res.status(400).send("Missing file");
 
   try {
+    if (req.body.worldName) assertSafePathSegment(req.body.worldName, "worldName");
     const worldName = await worldManager.importWorld(file.path, req.body.worldName);
     fs.unlinkSync(file.path);
     res.json({ ok: true, worldName, message: `World '${worldName}' imported` });
@@ -1750,7 +1876,8 @@ app.post("/worlds/import", upload.single("file"), async (req, res) => {
 // Export world
 app.get("/worlds/:worldName/export", async (req, res) => {
   try {
-    const outputPath = `/tmp/${req.params.worldName}-${Date.now()}.zip`;
+    assertSafePathSegment(req.params.worldName, "worldName");
+    const outputPath = safeChildPath(os.tmpdir(), `${req.params.worldName}-${Date.now()}.zip`);
     await worldManager.exportWorld(req.params.worldName, outputPath);
     res.download(outputPath, `${req.params.worldName}.zip`, (err) => {
       fs.unlinkSync(outputPath);

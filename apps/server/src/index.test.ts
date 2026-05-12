@@ -120,6 +120,7 @@ describe('management gateway routes', () => {
           agent_url: baseUrl(agent),
           agent_token: 'agent-secret',
           public_port: 25565,
+          public_domain: 'mc.example.test',
           memory_mb: 4096,
           edition: 'fabric',
           mc_version: '1.20.1',

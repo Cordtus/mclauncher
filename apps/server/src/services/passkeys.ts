@@ -227,13 +227,6 @@ export class PasskeyService {
       origin: rp?.origin || this.config.origin || null,
       userVerification: this.config.userVerification,
       hasPasskeys: store.credentials.length > 0,
-      credentials: store.credentials.map((credential) => ({
-        id: credential.id,
-        name: credential.name,
-        rpId: credential.rpId,
-        createdAt: credential.createdAt,
-        lastUsedAt: credential.lastUsedAt || null,
-      })),
     };
   }
 
@@ -427,7 +420,14 @@ export class PasskeyService {
   }
 
   listCredentials() {
-    return this.publicConfig({}).credentials;
+    const store = this.readStore();
+    return store.credentials.map((credential) => ({
+      id: credential.id,
+      name: credential.name,
+      rpId: credential.rpId,
+      createdAt: credential.createdAt,
+      lastUsedAt: credential.lastUsedAt || null,
+    }));
   }
 
   deleteCredential(id: string) {

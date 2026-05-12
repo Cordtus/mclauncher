@@ -34,12 +34,15 @@ export function ModpackExport({
   const [copied, setCopied] = useState(false);
 
   const gatewayOrigin = apiBaseUrl || window.location.origin;
-  const publicUrl = `${gatewayOrigin}/public/${serverName}/modpack`;
-  const connectionAddress = publicAddress || "the server address from the admin";
-  const mrpackUrl = `${gatewayOrigin}/public/${serverName}/modpack.mrpack`;
-  const modlistUrl = `${gatewayOrigin}/public/${serverName}/modlist.txt`;
+  const encodedServerName = encodeURIComponent(serverName);
+  const hasPublicAddress = Boolean(publicAddress);
+  const publicUrl = `${gatewayOrigin}/public/${encodedServerName}/modpack`;
+  const connectionAddress = publicAddress || "the configured public server address";
+  const mrpackUrl = `${gatewayOrigin}/public/${encodedServerName}/modpack.mrpack`;
+  const modlistUrl = `${gatewayOrigin}/public/${encodedServerName}/modlist.txt`;
 
   async function copyPublicLink() {
+    if (!hasPublicAddress) return;
     try {
       await navigator.clipboard.writeText(publicUrl);
       setCopied(true);
@@ -50,14 +53,17 @@ export function ModpackExport({
   }
 
   function downloadMrpack() {
+    if (!hasPublicAddress) return;
     window.location.href = mrpackUrl;
   }
 
   function downloadModlist() {
+    if (!hasPublicAddress) return;
     window.location.href = modlistUrl;
   }
 
   function openPublicPage() {
+    if (!hasPublicAddress) return;
     window.open(publicUrl, '_blank');
   }
 
@@ -93,16 +99,19 @@ export function ModpackExport({
           <div className="space-y-3">
             <h3 className="font-semibold text-sm">Public Download Page</h3>
             <p className="text-sm text-muted-foreground">
-              Share this link when the gateway exposes public modpack pages. Players connect to {connectionAddress}.
+              {hasPublicAddress
+                ? `Share this link when the gateway exposes public modpack pages. Players connect to ${connectionAddress}.`
+                : "Configure a public server address before sharing player download links."}
             </p>
             <div className="flex gap-2">
               <div className="flex-1 px-3 py-2 bg-muted rounded-md text-sm font-mono truncate">
-                {publicUrl}
+                {hasPublicAddress ? publicUrl : "Public address not configured"}
               </div>
               <Button
                 variant="outline"
                 size="icon"
                 onClick={copyPublicLink}
+                disabled={!hasPublicAddress}
                 className="rounded-sm shrink-0"
               >
                 {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
@@ -111,6 +120,7 @@ export function ModpackExport({
                 variant="outline"
                 size="icon"
                 onClick={openPublicPage}
+                disabled={!hasPublicAddress}
                 className="rounded-sm shrink-0"
               >
                 <ExternalLink className="h-4 w-4" />
@@ -140,6 +150,7 @@ export function ModpackExport({
                 <CardContent className="pt-0">
                   <Button
                     onClick={downloadMrpack}
+                    disabled={!hasPublicAddress}
                     className="w-full rounded-sm"
                     size="sm"
                   >
@@ -162,6 +173,7 @@ export function ModpackExport({
                   <Button
                     onClick={downloadModlist}
                     variant="secondary"
+                    disabled={!hasPublicAddress}
                     className="w-full rounded-sm"
                     size="sm"
                   >

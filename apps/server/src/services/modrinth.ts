@@ -3,8 +3,11 @@
  * Handles mod searching, filtering, and metadata retrieval
  */
 
+import { createHash } from 'crypto';
+
 const MODRINTH_API_BASE = 'https://api.modrinth.com/v2';
 const USER_AGENT = 'cordtus/mclauncher/1.0.0 (minecraft server manager)';
+const MAX_MOD_DOWNLOAD_BYTES = Number(process.env.MAX_MOD_DOWNLOAD_BYTES || 200 * 1024 * 1024);
 
 export interface ModrinthSearchResult {
   hits: ModrinthMod[];
@@ -174,10 +177,80 @@ export async function getModVersions(
   return await response.json();
 }
 
+export async function getVersion(versionId: string): Promise<ModrinthVersion> {
+  const response = await fetch(`${MODRINTH_API_BASE}/version/${versionId}`, {
+    headers: {
+      'User-Agent': USER_AGENT
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Modrinth API error: ${response.statusText}`);
+  }
+
+  return await response.json();
+}
+
+function assertModrinthCdnUrl(downloadUrl: string) {
+  const parsed = new URL(downloadUrl);
+  if (parsed.protocol !== 'https:' || parsed.hostname !== 'cdn.modrinth.com') {
+    throw new Error('Mod downloads must use the Modrinth HTTPS CDN');
+  }
+  return parsed.toString();
+}
+
+function verifyHash(buffer: Buffer, file: ModrinthFile) {
+  if (file.hashes?.sha512) {
+    const actual = createHash('sha512').update(buffer).digest('hex');
+    if (actual !== file.hashes.sha512) throw new Error('Downloaded file failed sha512 verification');
+    return;
+  }
+
+  if (file.hashes?.sha1) {
+    const actual = createHash('sha1').update(buffer).digest('hex');
+    if (actual !== file.hashes.sha1) throw new Error('Downloaded file failed sha1 verification');
+    return;
+  }
+
+  throw new Error('Modrinth file is missing downloadable hash metadata');
+}
+
+async function readLimitedResponse(response: Response, maxBytes: number) {
+  if (!response.body) throw new Error('Download response has no body');
+
+  const chunks: Buffer[] = [];
+  let total = 0;
+  const reader = response.body.getReader();
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) throw new Error(`Download exceeds ${maxBytes} byte limit`);
+    chunks.push(Buffer.from(value));
+  }
+
+  return Buffer.concat(chunks);
+}
+
+export function selectVersionFile(version: ModrinthVersion, requestedFileName?: string): ModrinthFile {
+  const selected = requestedFileName
+    ? version.files.find((file) => file.filename === requestedFileName)
+    : version.files.find((file) => file.primary) || version.files[0];
+
+  if (!selected) throw new Error('Modrinth version has no downloadable files');
+  return selected;
+}
+
 /**
  * Download a mod file
  */
-export async function downloadMod(downloadUrl: string): Promise<Buffer> {
+export async function downloadModFile(file: ModrinthFile, maxBytes = MAX_MOD_DOWNLOAD_BYTES): Promise<Buffer> {
+  if (file.size > maxBytes) {
+    throw new Error(`Mod file exceeds ${maxBytes} byte limit`);
+  }
+
+  const downloadUrl = assertModrinthCdnUrl(file.url);
   const response = await fetch(downloadUrl, {
     headers: {
       'User-Agent': USER_AGENT
@@ -188,8 +261,28 @@ export async function downloadMod(downloadUrl: string): Promise<Buffer> {
     throw new Error(`Failed to download mod: ${response.statusText}`);
   }
 
-  const arrayBuffer = await response.arrayBuffer();
-  return Buffer.from(arrayBuffer);
+  const contentLength = Number(response.headers.get('content-length') || 0);
+  if (contentLength > maxBytes) {
+    throw new Error(`Mod file exceeds ${maxBytes} byte limit`);
+  }
+
+  const buffer = await readLimitedResponse(response, maxBytes);
+  verifyHash(buffer, file);
+  return buffer;
+}
+
+export async function downloadMod(downloadUrl: string): Promise<Buffer> {
+  const response = await fetch(assertModrinthCdnUrl(downloadUrl), {
+    headers: {
+      'User-Agent': USER_AGENT
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to download mod: ${response.statusText}`);
+  }
+
+  return readLimitedResponse(response, MAX_MOD_DOWNLOAD_BYTES);
 }
 
 /**

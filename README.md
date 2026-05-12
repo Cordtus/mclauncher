@@ -122,6 +122,7 @@ apps/
 - CIDR filtering restricts access to LAN ranges
 - Admin token or passkey session required for server inventory, settings, logs, mod management, and all write operations
 - Passkeys use WebAuthn and require a secure browser context: HTTPS or localhost
+- Passkey login requires user verification by default (`PASSKEY_USER_VERIFICATION=required`)
 - If `PASSKEY_RP_ID` is configured for a public domain, also set `PASSKEY_ORIGIN` to the exact HTTPS origin
 - If the gateway is exposed behind Caddy and CIDR filtering should use the browser client IP, set `TRUST_PROXY=true` and restrict `TRUST_PROXY_CIDRS` to the proxy network
 - Control agents (port 9090) are NOT exposed outside containers and require the per-server `AGENT_TOKEN` stored in `/opt/mc-lxd-manager/servers.json` and `/etc/mc-agent.env`

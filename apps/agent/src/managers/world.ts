@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import os from "os";
 
 interface WorldInfo {
@@ -8,6 +8,58 @@ interface WorldInfo {
   size: number;
   lastPlayed: Date;
   isActive: boolean;
+}
+
+function assertSafePathSegment(value: string, label: string) {
+  if (
+    !value ||
+    value.includes("/") ||
+    value.includes("\\") ||
+    value === "." ||
+    value === ".." ||
+    value.includes("..")
+  ) {
+    throw new Error(`Invalid ${label}`);
+  }
+}
+
+function safeChildPath(root: string, ...segments: string[]) {
+  for (const segment of segments) {
+    assertSafePathSegment(segment, "path segment");
+  }
+
+  const resolvedRoot = path.resolve(root);
+  const resolvedPath = path.resolve(resolvedRoot, ...segments);
+  if (resolvedPath !== resolvedRoot && !resolvedPath.startsWith(`${resolvedRoot}${path.sep}`)) {
+    throw new Error("Invalid path");
+  }
+
+  return resolvedPath;
+}
+
+function assertSafeZipEntries(zipPath: string) {
+  const listing = execFileSync("unzip", ["-Z1", zipPath], { encoding: "utf8" });
+  for (const rawEntry of listing.split(/\r?\n/)) {
+    const entry = rawEntry.trim();
+    if (!entry) continue;
+    if (entry.startsWith("/") || entry.startsWith("\\") || entry.includes("..") || entry.includes("\\")) {
+      throw new Error("ZIP contains unsafe entry paths");
+    }
+  }
+
+  const types = execFileSync("unzip", ["-Z", "-l", zipPath], { encoding: "utf8" });
+  for (const rawLine of types.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("Archive:") || line.startsWith("Zip file") || /^\d+\s+files?,/.test(line)) {
+      continue;
+    }
+    const mode = line.split(/\s+/)[0];
+    if (mode && mode[0] !== "-" && mode[0] !== "d") {
+      throw new Error("ZIP contains unsafe entry types");
+    }
+  }
+
+  execFileSync("unzip", ["-tq", zipPath], { encoding: "utf8" });
 }
 
 export class WorldManager {
@@ -30,7 +82,7 @@ export class WorldManager {
         const defaultWorld = path.join(this.worldsHome, "default");
 
         fs.mkdirSync(defaultWorld, { recursive: true });
-        execSync(`rsync -a --delete ${this.worldLink}/ ${defaultWorld}/`);
+        execFileSync("rsync", ["-a", "--delete", `${this.worldLink}/`, `${defaultWorld}/`]);
         fs.rmSync(this.worldLink, { recursive: true, force: true });
         fs.symlinkSync(defaultWorld, this.worldLink);
 
@@ -85,7 +137,7 @@ export class WorldManager {
   }
 
   async switchWorld(worldName: string): Promise<void> {
-    const worldPath = path.join(this.worldsHome, worldName);
+    const worldPath = safeChildPath(this.worldsHome, worldName);
 
     if (!fs.existsSync(worldPath)) {
       throw new Error(`World '${worldName}' does not exist`);
@@ -105,7 +157,7 @@ export class WorldManager {
       }
       fs.symlinkSync(worldPath, this.worldLink);
 
-      execSync(`chown -R mc:mc ${worldPath}`);
+      execFileSync("chown", ["-R", "mc:mc", worldPath]);
 
       await this.startServer();
       restarted = true;
@@ -119,7 +171,7 @@ export class WorldManager {
   }
 
   async deleteWorld(worldName: string, force: boolean = false): Promise<void> {
-    const worldPath = path.join(this.worldsHome, worldName);
+    const worldPath = safeChildPath(this.worldsHome, worldName);
 
     if (!fs.existsSync(worldPath)) {
       throw new Error(`World '${worldName}' does not exist`);
@@ -138,7 +190,7 @@ export class WorldManager {
   }
 
   async backupWorld(worldName: string): Promise<string> {
-    const worldPath = path.join(this.worldsHome, worldName);
+    const worldPath = safeChildPath(this.worldsHome, worldName);
 
     if (!fs.existsSync(worldPath)) {
       throw new Error(`World '${worldName}' does not exist`);
@@ -151,16 +203,16 @@ export class WorldManager {
     const backupDir = "/var/backups/minecraft/worlds";
     fs.mkdirSync(backupDir, { recursive: true });
 
-    const backupFile = path.join(backupDir, `${worldName}-${timestamp}.tar.gz`);
+    const backupFile = safeChildPath(backupDir, `${worldName}-${timestamp}.tar.gz`);
 
-    execSync(`tar -czf ${backupFile} -C ${this.worldsHome} ${worldName}`);
+    execFileSync("tar", ["-czf", backupFile, "-C", this.worldsHome, worldName]);
 
     return backupFile;
   }
 
   async importWorld(zipPath: string, worldName?: string): Promise<string> {
     const name = worldName || path.parse(zipPath).name;
-    const worldPath = path.join(this.worldsHome, name);
+    const worldPath = safeChildPath(this.worldsHome, name);
 
     if (fs.existsSync(worldPath)) {
       throw new Error(`World '${name}' already exists`);
@@ -169,7 +221,8 @@ export class WorldManager {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "world-"));
 
     try {
-      execSync(`unzip -q ${zipPath} -d ${tempDir}`);
+      assertSafeZipEntries(zipPath);
+      execFileSync("unzip", ["-q", zipPath, "-d", tempDir]);
 
       const levelDat = this.findLevelDat(tempDir);
       if (!levelDat) {
@@ -179,8 +232,12 @@ export class WorldManager {
       const worldRoot = path.dirname(levelDat);
 
       fs.mkdirSync(this.worldsHome, { recursive: true });
-      execSync(`mv ${worldRoot} ${worldPath}`);
-      execSync(`chown -R mc:mc ${worldPath}`);
+      fs.cpSync(worldRoot, worldPath, {
+        recursive: true,
+        force: false,
+        errorOnExist: true,
+      });
+      execFileSync("chown", ["-R", "mc:mc", worldPath]);
 
       console.log(`Imported world: ${name}`);
       return name;
@@ -190,13 +247,13 @@ export class WorldManager {
   }
 
   async exportWorld(worldName: string, outputPath: string): Promise<void> {
-    const worldPath = path.join(this.worldsHome, worldName);
+    const worldPath = safeChildPath(this.worldsHome, worldName);
 
     if (!fs.existsSync(worldPath)) {
       throw new Error(`World '${worldName}' does not exist`);
     }
 
-    execSync(`cd ${this.worldsHome} && zip -r ${outputPath} ${worldName}`);
+    execFileSync("zip", ["-r", outputPath, worldName], { cwd: this.worldsHome });
     console.log(`Exported world to: ${outputPath}`);
   }
 
@@ -237,10 +294,10 @@ export class WorldManager {
   }
 
   private async stopServer(): Promise<void> {
-    execSync("systemctl stop minecraft");
+    execFileSync("systemctl", ["stop", "minecraft"]);
   }
 
   private async startServer(): Promise<void> {
-    execSync("systemctl start minecraft");
+    execFileSync("systemctl", ["start", "minecraft"]);
   }
 }
