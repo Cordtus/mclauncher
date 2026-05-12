@@ -97,6 +97,8 @@ PASSKEY_RP_NAME=MC LXD Manager
 PASSKEY_STORE_FILE=/opt/mc-lxd-manager/passkeys.json
 REGISTRY_FILE=/opt/mc-lxd-manager/servers.json
 EOF
+chown mcmanager:mcmanager /opt/mc-lxd-manager/.env
+chmod 600 /opt/mc-lxd-manager/.env
 "
 
 # Create systemd service

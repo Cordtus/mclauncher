@@ -58,6 +58,7 @@ interface ServerEntry {
   host_proxy_port?: number; // LXD host proxy port that receives router-forwarded traffic
   public_port: number; // LXD proxy port on host
   public_domain?: string; // Optional public domain (e.g., mc.yourdomain.com)
+  agent_token?: string; // Shared token for manager-to-agent requests
   memory_mb: number;
   cpu_limit?: string;
   edition: string;
@@ -79,9 +80,22 @@ function asModpackLoader(value: unknown): ModpackLoader | null {
   return MODPACK_LOADERS.has(normalized) ? normalized : null;
 }
 
+function agentRequestOptions(server: ServerEntry, options: RequestInit = {}): RequestInit {
+  const headers = new Headers(options.headers);
+  if (server.agent_token) {
+    headers.set("X-Agent-Token", server.agent_token);
+  }
+  return { ...options, headers };
+}
+
+async function fetchFromAgent(server: ServerEntry, pathName: string | URL, options: RequestInit = {}) {
+  const target = pathName instanceof URL ? pathName.toString() : `${server.agent_url}${pathName}`;
+  return fetch(target, agentRequestOptions(server, options));
+}
+
 async function fetchAgentJson<T>(server: ServerEntry, pathName: string): Promise<T | null> {
   try {
-    const response = await fetch(`${server.agent_url}${pathName}`);
+    const response = await fetchFromAgent(server, pathName);
     if (!response.ok) return null;
     return await response.json() as T;
   } catch {
@@ -131,7 +145,7 @@ async function buildModpackMetadata(server: ServerEntry, mods: any[]): Promise<m
 }
 
 async function fetchInstalledMods(server: ServerEntry): Promise<any[]> {
-  const response = await fetch(`${server.agent_url}/mods/list`);
+  const response = await fetchFromAgent(server, "/mods/list");
   if (!response.ok) {
     throw new Error("Failed to fetch installed mods");
   }
@@ -190,7 +204,16 @@ function loadRegistry(): ServerRegistry {
 function saveRegistry(registry: ServerRegistry) {
   const dir = path.dirname(REGISTRY_FILE);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(REGISTRY_FILE, JSON.stringify(registry, null, 2));
+  const tempFile = path.join(dir, `.${path.basename(REGISTRY_FILE)}.${process.pid}.${Date.now()}.tmp`);
+  fs.writeFileSync(tempFile, JSON.stringify(registry, null, 2), { mode: 0o600 });
+  fs.chmodSync(tempFile, 0o600);
+  fs.renameSync(tempFile, REGISTRY_FILE);
+  fs.chmodSync(REGISTRY_FILE, 0o600);
+}
+
+function publicServerEntry(server: ServerEntry) {
+  const { agent_token: _agentToken, ...publicServer } = server;
+  return publicServer;
 }
 
 function formatMinecraftAddress(host?: string | null, port?: number | null) {
@@ -282,10 +305,8 @@ function requireAdmin(req: Request, res: Response, next: () => void) {
 }
 
 // Proxy helper
-async function proxyToAgent(agentUrl: string, path: string, options: RequestInit = {}) {
-  const url = `${agentUrl}${path}`;
-  const response = await fetch(url, options);
-  return response;
+async function proxyToAgent(server: ServerEntry, path: string, options: RequestInit = {}) {
+  return fetchFromAgent(server, path, options);
 }
 
 function bufferToBlob(buffer: Buffer): Blob {
@@ -407,7 +428,7 @@ app.get("/api/servers", requireAdmin, async (_req, res) => {
     const localPort = server.local_port || 25565;
 
     try {
-      const statusRes = await proxyToAgent(server.agent_url, "/status");
+      const statusRes = await proxyToAgent(server, "/status");
       const status = await statusRes.json();
 
       results.push({
@@ -474,6 +495,7 @@ app.post("/api/servers/register", requireAdmin, (req, res) => {
       host_proxy_port,
       public_port,
       public_domain,
+      agent_token,
       memory_mb,
       cpu_limit,
       edition,
@@ -499,6 +521,7 @@ app.post("/api/servers/register", requireAdmin, (req, res) => {
       host_proxy_port: host_proxy_port === undefined ? undefined : parsePort(host_proxy_port, "host_proxy_port"),
       public_port: public_port === undefined ? 25565 : parsePort(public_port, "public_port"),
       public_domain: public_domain || undefined,
+      agent_token: agent_token || undefined,
       memory_mb: Number(memory_mb || 2048),
       cpu_limit,
       edition: edition || "paper",
@@ -559,7 +582,7 @@ app.patch("/api/servers/:name/config", requireAdmin, (req, res) => {
     }
 
     saveRegistry(registry);
-    res.json({ ok: true, message: `Server ${name} configuration updated`, server });
+    res.json({ ok: true, message: `Server ${name} configuration updated`, server: publicServerEntry(server) });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
@@ -575,7 +598,7 @@ app.post("/api/servers/:name/start", requireAdmin, async (req, res) => {
   if (!server) return res.status(404).json({ error: "Server not found" });
 
   try {
-    const response = await proxyToAgent(server.agent_url, "/start", { method: "POST" });
+    const response = await proxyToAgent(server, "/start", { method: "POST" });
     const data = await response.json();
     res.json(data);
   } catch (err: any) {
@@ -591,7 +614,7 @@ app.post("/api/servers/:name/stop", requireAdmin, async (req, res) => {
   if (!server) return res.status(404).json({ error: "Server not found" });
 
   try {
-    const response = await proxyToAgent(server.agent_url, "/stop", { method: "POST" });
+    const response = await proxyToAgent(server, "/stop", { method: "POST" });
     const data = await response.json();
     res.json(data);
   } catch (err: any) {
@@ -607,7 +630,7 @@ app.post("/api/servers/:name/restart", requireAdmin, async (req, res) => {
   if (!server) return res.status(404).json({ error: "Server not found" });
 
   try {
-    const response = await proxyToAgent(server.agent_url, "/restart", { method: "POST" });
+    const response = await proxyToAgent(server, "/restart", { method: "POST" });
     const data = await response.json();
     res.json(data);
   } catch (err: any) {
@@ -623,7 +646,7 @@ app.get("/api/servers/:name/logs", requireAdmin, async (req, res) => {
   if (!server) return res.status(404).send("Server not found");
 
   try {
-    const response = await proxyToAgent(server.agent_url, "/logs");
+    const response = await proxyToAgent(server, "/logs");
     const text = await response.text();
     res.type("text/plain").send(text);
   } catch (err: any) {
@@ -639,7 +662,7 @@ app.get("/api/servers/:name/tps", requireAdmin, async (req, res) => {
   if (!server) return res.status(404).send("Server not found");
 
   try {
-    const response = await proxyToAgent(server.agent_url, "/tps");
+    const response = await proxyToAgent(server, "/tps");
     const data = await response.json();
     res.json(data);
   } catch (err: any) {
@@ -655,7 +678,7 @@ app.get("/api/servers/:name/jvm/settings", requireAdmin, async (req, res) => {
   if (!server) return res.status(404).send("Server not found");
 
   try {
-    const response = await proxyToAgent(server.agent_url, "/jvm/settings");
+    const response = await proxyToAgent(server, "/jvm/settings");
     const data = await response.json();
     res.json(data);
   } catch (err: any) {
@@ -671,7 +694,7 @@ app.post("/api/servers/:name/jvm/settings", requireAdmin, async (req, res) => {
   if (!server) return res.status(404).send("Server not found");
 
   try {
-    const response = await proxyToAgent(server.agent_url, "/jvm/settings", {
+    const response = await proxyToAgent(server, "/jvm/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req.body),
@@ -727,7 +750,7 @@ app.get("/api/servers/:name/config", requireAdmin, async (req, res) => {
   if (!server) return res.status(404).send("Server not found");
 
   try {
-    const response = await proxyToAgent(server.agent_url, "/config");
+    const response = await proxyToAgent(server, "/config");
     const text = await response.text();
     res.type("text/plain").send(text);
   } catch (err: any) {
@@ -743,7 +766,7 @@ app.post("/api/servers/:name/config", requireAdmin, async (req, res) => {
   if (!server) return res.status(404).send("Server not found");
 
   try {
-    const response = await proxyToAgent(server.agent_url, "/config", {
+    const response = await proxyToAgent(server, "/config", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req.body),
@@ -767,7 +790,7 @@ app.get("/api/servers/:name/settings", requireAdmin, async (req, res) => {
   if (!server) return res.status(404).send("Server not found");
 
   try {
-    const response = await proxyToAgent(server.agent_url, "/settings");
+    const response = await proxyToAgent(server, "/settings");
     const data = await readAgentResponse(response);
     res.status(response.status).json(data);
   } catch (err: any) {
@@ -783,7 +806,7 @@ app.post("/api/servers/:name/settings", requireAdmin, async (req, res) => {
   if (!server) return res.status(404).send("Server not found");
 
   try {
-    const response = await proxyToAgent(server.agent_url, "/settings", {
+    const response = await proxyToAgent(server, "/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req.body),
@@ -803,7 +826,7 @@ app.get("/api/servers/:name/settings/whitelist", requireAdmin, async (req, res) 
   if (!server) return res.status(404).send("Server not found");
 
   try {
-    const response = await proxyToAgent(server.agent_url, "/settings/whitelist");
+    const response = await proxyToAgent(server, "/settings/whitelist");
     const data = await response.json();
     res.json(data);
   } catch (err: any) {
@@ -819,7 +842,7 @@ app.post("/api/servers/:name/settings/whitelist/add", requireAdmin, async (req, 
   if (!server) return res.status(404).send("Server not found");
 
   try {
-    const response = await proxyToAgent(server.agent_url, "/settings/whitelist/add", {
+    const response = await proxyToAgent(server, "/settings/whitelist/add", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req.body),
@@ -839,7 +862,7 @@ app.post("/api/servers/:name/settings/whitelist/remove", requireAdmin, async (re
   if (!server) return res.status(404).send("Server not found");
 
   try {
-    const response = await proxyToAgent(server.agent_url, "/settings/whitelist/remove", {
+    const response = await proxyToAgent(server, "/settings/whitelist/remove", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req.body),
@@ -859,7 +882,7 @@ app.get("/api/servers/:name/settings/operators", requireAdmin, async (req, res) 
   if (!server) return res.status(404).send("Server not found");
 
   try {
-    const response = await proxyToAgent(server.agent_url, "/settings/operators");
+    const response = await proxyToAgent(server, "/settings/operators");
     const data = await response.json();
     res.json(data);
   } catch (err: any) {
@@ -875,7 +898,7 @@ app.post("/api/servers/:name/settings/operators/add", requireAdmin, async (req, 
   if (!server) return res.status(404).send("Server not found");
 
   try {
-    const response = await proxyToAgent(server.agent_url, "/settings/operators/add", {
+    const response = await proxyToAgent(server, "/settings/operators/add", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req.body),
@@ -895,7 +918,7 @@ app.post("/api/servers/:name/settings/operators/remove", requireAdmin, async (re
   if (!server) return res.status(404).send("Server not found");
 
   try {
-    const response = await proxyToAgent(server.agent_url, "/settings/operators/remove", {
+    const response = await proxyToAgent(server, "/settings/operators/remove", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req.body),
@@ -919,7 +942,7 @@ app.get("/api/servers/:name/settings/bans", requireAdmin, async (req, res) => {
   if (!server) return res.status(404).send("Server not found");
 
   try {
-    const response = await proxyToAgent(server.agent_url, "/settings/bans");
+    const response = await proxyToAgent(server, "/settings/bans");
     const data = await response.json();
     res.json(data);
   } catch (err: any) {
@@ -935,7 +958,7 @@ app.post("/api/servers/:name/settings/bans/player/add", requireAdmin, async (req
   if (!server) return res.status(404).send("Server not found");
 
   try {
-    const response = await proxyToAgent(server.agent_url, "/settings/bans/player/add", {
+    const response = await proxyToAgent(server, "/settings/bans/player/add", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req.body),
@@ -955,7 +978,7 @@ app.post("/api/servers/:name/settings/bans/player/remove", requireAdmin, async (
   if (!server) return res.status(404).send("Server not found");
 
   try {
-    const response = await proxyToAgent(server.agent_url, "/settings/bans/player/remove", {
+    const response = await proxyToAgent(server, "/settings/bans/player/remove", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req.body),
@@ -975,7 +998,7 @@ app.post("/api/servers/:name/settings/bans/ip/add", requireAdmin, async (req, re
   if (!server) return res.status(404).send("Server not found");
 
   try {
-    const response = await proxyToAgent(server.agent_url, "/settings/bans/ip/add", {
+    const response = await proxyToAgent(server, "/settings/bans/ip/add", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req.body),
@@ -995,7 +1018,7 @@ app.post("/api/servers/:name/settings/bans/ip/remove", requireAdmin, async (req,
   if (!server) return res.status(404).send("Server not found");
 
   try {
-    const response = await proxyToAgent(server.agent_url, "/settings/bans/ip/remove", {
+    const response = await proxyToAgent(server, "/settings/bans/ip/remove", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req.body),
@@ -1022,7 +1045,7 @@ async function proxyFileUpload(req: Request, res: Response, endpoint: string) {
       fs.unlinkSync(req.file.path); // Clean up temp file
     }
 
-    const response = await proxyToAgent(server.agent_url, endpoint, {
+    const response = await proxyToAgent(server, endpoint, {
       method: "POST",
       body: formData,
     });
@@ -1058,7 +1081,7 @@ app.post("/api/servers/:name/packwiz", requireAdmin, async (req, res) => {
   if (!server) return res.status(404).send("Server not found");
 
   try {
-    const response = await proxyToAgent(server.agent_url, "/packwiz", {
+    const response = await proxyToAgent(server, "/packwiz", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req.body),
@@ -1078,7 +1101,7 @@ app.post("/api/servers/:name/luckperms", requireAdmin, async (req, res) => {
   if (!server) return res.status(404).send("Server not found");
 
   try {
-    const response = await proxyToAgent(server.agent_url, "/luckperms", { method: "POST" });
+    const response = await proxyToAgent(server, "/luckperms", { method: "POST" });
     const text = await response.text();
     res.type("text/plain").send(text);
   } catch (err: any) {
@@ -1094,7 +1117,7 @@ app.get("/api/servers/:name/worlds", requireAdmin, async (req, res) => {
   if (!server) return res.status(404).json({ error: "Server not found" });
 
   try {
-    const response = await proxyToAgent(server.agent_url, "/worlds");
+    const response = await proxyToAgent(server, "/worlds");
     const data = await response.json();
     res.json(data);
   } catch (err: any) {
@@ -1110,7 +1133,7 @@ app.post("/api/servers/:name/worlds/switch", requireAdmin, async (req, res) => {
   if (!server) return res.status(404).send("Server not found");
 
   try {
-    const response = await proxyToAgent(server.agent_url, "/worlds/switch", {
+    const response = await proxyToAgent(server, "/worlds/switch", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req.body),
@@ -1130,7 +1153,7 @@ app.post("/api/servers/:name/command", requireAdmin, async (req, res) => {
   if (!server) return res.status(404).send("Server not found");
 
   try {
-    const response = await proxyToAgent(server.agent_url, "/command", {
+    const response = await proxyToAgent(server, "/command", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req.body),
@@ -1150,7 +1173,7 @@ app.post("/api/servers/:name/backup", requireAdmin, async (req, res) => {
   if (!server) return res.status(404).send("Server not found");
 
   try {
-    const response = await proxyToAgent(server.agent_url, "/backup", { method: "POST" });
+    const response = await proxyToAgent(server, "/backup", { method: "POST" });
     const text = await response.text();
     res.type("text/plain").send(text);
   } catch (err: any) {
@@ -1166,7 +1189,7 @@ app.post("/api/servers/:name/version/change", requireAdmin, async (req, res) => 
   if (!server) return res.status(404).send("Server not found");
 
   try {
-    const response = await proxyToAgent(server.agent_url, "/version/change", {
+    const response = await proxyToAgent(server, "/version/change", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req.body),
@@ -1329,7 +1352,7 @@ app.post("/api/servers/:name/mods/install", requireAdmin, async (req, res) => {
     if (versionId) form.append("versionId", versionId);
     form.append("downloadUrl", downloadUrl);
 
-    const uploadResponse = await fetch(`${server.agent_url}${target}`, {
+    const uploadResponse = await fetchFromAgent(server, target, {
       method: 'POST',
       body: form as any,
     });
@@ -1392,7 +1415,7 @@ app.post("/api/servers/:name/plugins/recommended", requireAdmin, async (req, res
         const blob = bufferToBlob(pluginData);
         form.append('file', blob, file.filename);
 
-        const uploadResponse = await fetch(`${server.agent_url}/plugins`, {
+        const uploadResponse = await fetchFromAgent(server, "/plugins", {
           method: "POST",
           body: form as any,
         });
@@ -1429,7 +1452,7 @@ app.get("/api/servers/:name/mods/manifest", requireAdmin, async (req, res) => {
     if (!server) return res.status(404).send("Server not found");
 
     const localIp = server.local_ip || server.agent_url.match(/https?:\/\/([^:]+)/)?.[1] || "";
-    const response = await fetch(`${server.agent_url}/mods/list`);
+    const response = await fetchFromAgent(server, "/mods/list");
     if (!response.ok) {
       throw new Error('Failed to fetch installed mods');
     }
@@ -1462,7 +1485,7 @@ app.get("/api/servers/:name/mods/installed", requireAdmin, async (req, res) => {
     if (!server) return res.status(404).send("Server not found");
 
     // Get list of installed mods from agent
-    const response = await fetch(`${server.agent_url}/mods/list`);
+    const response = await fetchFromAgent(server, "/mods/list");
     if (!response.ok) {
       throw new Error('Failed to fetch installed mods');
     }
@@ -1487,7 +1510,7 @@ app.delete("/api/servers/:name/mods/:fileName", requireAdmin, async (req, res) =
     // Delete mod via agent
     const url = new URL(`/mods/${encodeURIComponent(fileName)}`, server.agent_url);
     if (removeConfigs) url.searchParams.set("removeConfigs", "true");
-    const response = await fetch(url, {
+    const response = await fetchFromAgent(server, url, {
       method: 'DELETE'
     });
 
@@ -1510,7 +1533,7 @@ app.get("/api/servers/:name/mods/:fileName/metadata", requireAdmin, async (req, 
     const server = registry.servers.find((s) => s.name === name);
     if (!server) return res.status(404).send("Server not found");
 
-    const response = await fetch(new URL(`/mods/${encodeURIComponent(fileName)}/metadata`, server.agent_url));
+    const response = await fetchFromAgent(server, new URL(`/mods/${encodeURIComponent(fileName)}/metadata`, server.agent_url));
     if (!response.ok) {
       throw new Error('Failed to get mod metadata');
     }
@@ -1523,7 +1546,7 @@ app.get("/api/servers/:name/mods/:fileName/metadata", requireAdmin, async (req, 
 });
 
 // Get mod icon
-app.get("/api/servers/:name/mods/:fileName/icon", async (req, res) => {
+app.get("/api/servers/:name/mods/:fileName/icon", requireAdmin, async (req, res) => {
   try {
     const { name, fileName } = req.params;
     assertSafePathSegment(fileName, "fileName");
@@ -1531,7 +1554,7 @@ app.get("/api/servers/:name/mods/:fileName/icon", async (req, res) => {
     const server = registry.servers.find((s) => s.name === name);
     if (!server) return res.status(404).send("Server not found");
 
-    const response = await fetch(new URL(`/mods/${encodeURIComponent(fileName)}/icon`, server.agent_url));
+    const response = await fetchFromAgent(server, new URL(`/mods/${encodeURIComponent(fileName)}/icon`, server.agent_url));
     if (!response.ok) {
       return res.status(404).send("Icon not found");
     }
@@ -1553,7 +1576,7 @@ app.patch("/api/servers/:name/mods/:fileName/toggle", requireAdmin, async (req, 
     const server = registry.servers.find((s) => s.name === name);
     if (!server) return res.status(404).send("Server not found");
 
-    const response = await fetch(new URL(`/mods/${encodeURIComponent(fileName)}/toggle`, server.agent_url), {
+    const response = await fetchFromAgent(server, new URL(`/mods/${encodeURIComponent(fileName)}/toggle`, server.agent_url), {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled })
@@ -1579,7 +1602,7 @@ app.get("/api/servers/:name/mods/:modId/configs", requireAdmin, async (req, res)
     const server = registry.servers.find((s) => s.name === name);
     if (!server) return res.status(404).send("Server not found");
 
-    const response = await fetch(new URL(`/mods/${encodeURIComponent(modId)}/configs`, server.agent_url));
+    const response = await fetchFromAgent(server, new URL(`/mods/${encodeURIComponent(modId)}/configs`, server.agent_url));
     if (!response.ok) {
       throw new Error('Failed to list config files');
     }
@@ -1601,7 +1624,7 @@ app.get("/api/servers/:name/mods/:modId/config/:fileName", requireAdmin, async (
     const server = registry.servers.find((s) => s.name === name);
     if (!server) return res.status(404).send("Server not found");
 
-    const response = await fetch(new URL(`/mods/${encodeURIComponent(modId)}/config/${encodeURIComponent(fileName)}`, server.agent_url));
+    const response = await fetchFromAgent(server, new URL(`/mods/${encodeURIComponent(modId)}/config/${encodeURIComponent(fileName)}`, server.agent_url));
     if (!response.ok) {
       throw new Error('Failed to get config file');
     }
@@ -1624,7 +1647,7 @@ app.post("/api/servers/:name/mods/:modId/config/:fileName", requireAdmin, async 
     const server = registry.servers.find((s) => s.name === name);
     if (!server) return res.status(404).send("Server not found");
 
-    const response = await fetch(new URL(`/mods/${encodeURIComponent(modId)}/config/${encodeURIComponent(fileName)}`, server.agent_url), {
+    const response = await fetchFromAgent(server, new URL(`/mods/${encodeURIComponent(modId)}/config/${encodeURIComponent(fileName)}`, server.agent_url), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ updates })

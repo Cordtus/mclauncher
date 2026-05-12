@@ -17,6 +17,7 @@ import fs from "fs";
 import path from "path";
 import { spawnSync, spawn } from "child_process";
 import os from "os";
+import { createHash, timingSafeEqual } from "crypto";
 import { VersionManager } from "./managers/version.js";
 import { WorldManager } from "./managers/world.js";
 import { PaperDownloader } from "./downloaders/paper.js";
@@ -35,8 +36,34 @@ const MC_PORT = Number(process.env.MC_PORT || 25565);
 const WORLDS_HOME = path.join(MC_DIR, "worlds");
 const WORLD_LINK = path.join(MC_DIR, "world");
 const RCON_PORT = Number(process.env.RCON_PORT || 25575);
+const AGENT_TOKEN = process.env.AGENT_TOKEN || "";
 
 const app = express();
+
+function agentTokenFromRequest(req: Request): string {
+  const auth = String(req.headers.authorization || "");
+  if (auth.startsWith("Bearer ")) return auth.slice("Bearer ".length).trim();
+  const header = req.headers["x-agent-token"];
+  return typeof header === "string" ? header.trim() : "";
+}
+
+function tokenDigest(value: string) {
+  return createHash("sha256").update(value).digest();
+}
+
+function agentTokenMatches(candidate: string): boolean {
+  if (!AGENT_TOKEN || !candidate) return false;
+  return timingSafeEqual(tokenDigest(candidate), tokenDigest(AGENT_TOKEN));
+}
+
+app.use((req, res, next) => {
+  if (req.method === "GET" && req.path === "/health") return next();
+  if (!AGENT_TOKEN) {
+    return res.status(503).json({ error: "Agent authentication is not configured. Set AGENT_TOKEN." });
+  }
+  if (agentTokenMatches(agentTokenFromRequest(req))) return next();
+  return res.status(401).json({ error: "Unauthorized" });
+});
 app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true }));
 

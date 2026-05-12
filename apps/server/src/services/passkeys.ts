@@ -524,12 +524,28 @@ export class PasskeyService {
   }
 
   private writeStore(store: PasskeyStore) {
-    fs.mkdirSync(path.dirname(this.config.storeFile), { recursive: true });
-    fs.writeFileSync(this.config.storeFile, JSON.stringify(this.cleanupStore(store), null, 2));
+    const dir = path.dirname(this.config.storeFile);
+    fs.mkdirSync(dir, { recursive: true });
+    const tempFile = path.join(dir, `.${path.basename(this.config.storeFile)}.${process.pid}.${Date.now()}.tmp`);
     try {
-      fs.chmodSync(this.config.storeFile, 0o600);
-    } catch {
-      // Best effort; some filesystems do not support chmod.
+      fs.writeFileSync(tempFile, JSON.stringify(this.cleanupStore(store), null, 2), { mode: 0o600 });
+      try {
+        fs.chmodSync(tempFile, 0o600);
+      } catch {
+        // Best effort; some filesystems do not support chmod.
+      }
+      fs.renameSync(tempFile, this.config.storeFile);
+      try {
+        fs.chmodSync(this.config.storeFile, 0o600);
+      } catch {
+        // Best effort; some filesystems do not support chmod.
+      }
+    } finally {
+      try {
+        if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
+      } catch {
+        // Best effort cleanup.
+      }
     }
   }
 }

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Settings, Trash2, Power, PowerOff, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,6 +14,10 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Switch } from "@/components/ui/switch";
+import { authHeaders } from "@/lib/auth";
+
+const FALLBACK_ICON =
+  'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="%23334155"/><text x="50%" y="50%" font-size="32" text-anchor="middle" dy=".3em" fill="%239ca3af">?</text></svg>';
 
 interface InstalledMod {
   fileName: string;
@@ -45,6 +49,7 @@ export function InstalledModCard({
 }: InstalledModCardProps) {
   const [showRemoveDialog, setShowRemoveDialog] = useState(false);
   const [isToggling, setIsToggling] = useState(false);
+  const [iconSrc, setIconSrc] = useState(FALLBACK_ICON);
 
   async function handleToggle(checked: boolean) {
     setIsToggling(true);
@@ -60,7 +65,47 @@ export function InstalledModCard({
     setShowRemoveDialog(false);
   }
 
-  const iconUrl = `/api/servers/${serverName}/mods/${encodeURIComponent(mod.fileName)}/icon`;
+  useEffect(() => {
+    const controller = new AbortController();
+    const iconUrl = `/api/servers/${serverName}/mods/${encodeURIComponent(mod.fileName)}/icon`;
+    let loadedObjectUrl: string | null = null;
+
+    async function loadIcon() {
+      try {
+        const response = await fetch(iconUrl, {
+          headers: authHeaders(),
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          setIconSrc((previous) => {
+            if (previous.startsWith("blob:")) URL.revokeObjectURL(previous);
+            return FALLBACK_ICON;
+          });
+          return;
+        }
+
+        const objectUrl = URL.createObjectURL(await response.blob());
+        loadedObjectUrl = objectUrl;
+        setIconSrc((previous) => {
+          if (previous.startsWith("blob:")) URL.revokeObjectURL(previous);
+          return objectUrl;
+        });
+      } catch (err: any) {
+        if (err?.name !== "AbortError") {
+          setIconSrc((previous) => {
+            if (previous.startsWith("blob:")) URL.revokeObjectURL(previous);
+            return FALLBACK_ICON;
+          });
+        }
+      }
+    }
+
+    loadIcon();
+    return () => {
+      controller.abort();
+      if (loadedObjectUrl) URL.revokeObjectURL(loadedObjectUrl);
+    };
+  }, [serverName, mod.fileName]);
 
   return (
     <>
@@ -69,12 +114,11 @@ export function InstalledModCard({
           <div className="flex items-start gap-3">
             <div className="flex-shrink-0">
               <img
-                src={iconUrl}
+                src={iconSrc}
                 alt={mod.name}
                 className="w-16 h-16 rounded object-cover bg-muted"
                 onError={(e) => {
-                  // Fallback to placeholder
-                  e.currentTarget.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="%23334155"/><text x="50%" y="50%" font-size="32" text-anchor="middle" dy=".3em" fill="%239ca3af">?</text></svg>';
+                  e.currentTarget.src = FALLBACK_ICON;
                 }}
               />
             </div>
