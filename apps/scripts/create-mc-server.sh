@@ -164,6 +164,7 @@ chown -R mc:mc /opt/minecraft
 SERVER_PROPERTIES_FILE="$(new_secret_file)"
 cat > "$SERVER_PROPERTIES_FILE" <<EOF
 server-port=25565
+server-ip=127.0.0.1
 motd=MC LXD Manager - $CONTAINER_NAME
 max-players=20
 difficulty=normal

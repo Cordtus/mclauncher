@@ -127,6 +127,7 @@ apps/
 - Control agents (port 9090) are NOT exposed outside containers and require the per-server `AGENT_TOKEN` stored in `/opt/mc-lxd-manager/servers.json` and `/etc/mc-agent.env`
 - Keep `/opt/mc-lxd-manager/.env`, `/opt/mc-lxd-manager/servers.json`, and `/opt/mc-lxd-manager/passkeys.json` owner-readable only (`0600`)
 - Keep `/opt/minecraft/server.properties` owner-readable only (`0600`) because it contains the RCON password
+- Bind Minecraft to `127.0.0.1` inside each server container and publish player traffic through the LXD proxy; this keeps RCON and direct container ports off the shared LXD subnet
 
 ## Networking
 
