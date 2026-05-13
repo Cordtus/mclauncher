@@ -25,9 +25,10 @@ fi
 
 cd "$REPO_DIR"
 
-if ! git diff --quiet || ! git diff --cached --quiet; then
+status_output="$(git status --porcelain)"
+if [ -n "$status_output" ]; then
   log "checkout has local changes; aborting pull deploy"
-  git status --short
+  printf '%s\n' "$status_output"
   exit 1
 fi
 
