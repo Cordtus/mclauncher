@@ -185,6 +185,7 @@ LAN ranges and share only the Minecraft join address with players.
 ## Troubleshooting
 
 **Server not appearing in UI:**
+- If the portal says admin access is required, the server inventory is hidden by design; open **Admin Access** and sign in with the admin token or passkey.
 - Check agent is running: `lxc exec mc-server-1 -- systemctl status mc-agent`
 - Check registration: `lxc exec mc-manager -- cat /opt/mc-lxd-manager/servers.json`
 - Check network: `lxc list` (verify container IPs)

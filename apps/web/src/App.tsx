@@ -151,6 +151,7 @@ export function App() {
   const [adminAccessDialog, setAdminAccessDialog] = useState(false);
   const [adminToken, setAdminToken] = useState("");
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
+  const [serverInventoryBlocked, setServerInventoryBlocked] = useState(false);
   const [authConfig, setAuthConfig] = useState<any | null>(null);
   const [passkeyName, setPasskeyName] = useState("Admin passkey");
   const [isPasskeyBusy, setIsPasskeyBusy] = useState(false);
@@ -543,6 +544,7 @@ export function App() {
         setServers([]);
         setLogs("");
         setIsAdminAuthenticated(false);
+        setServerInventoryBlocked(true);
         setMessage("Admin access is required to view and manage servers.");
         return;
       }
@@ -552,8 +554,10 @@ export function App() {
       const serverData = await res.json();
       setServers(Array.isArray(serverData) ? serverData : []);
       setIsAdminAuthenticated(true);
+      setServerInventoryBlocked(false);
       setMessage("");
     } catch (err) {
+      setServerInventoryBlocked(false);
       setMessage("Failed to fetch servers");
     } finally {
       setIsRefreshing(false);
@@ -1037,6 +1041,10 @@ export function App() {
     }
     setAdminToken("");
     setIsAdminAuthenticated(false);
+    setServers([]);
+    setLogs("");
+    setServerInventoryBlocked(true);
+    setMessage("Admin access is required to view and manage servers.");
     localStorage.removeItem("ADMIN_TOKEN");
     localStorage.removeItem("ADMIN_SESSION");
     setAdminAccessDialog(false);
@@ -1150,6 +1158,10 @@ export function App() {
                           onClick={async () => {
                             await logoutPasskeySession();
                             setIsAdminAuthenticated(false);
+                            setServers([]);
+                            setLogs("");
+                            setServerInventoryBlocked(true);
+                            setMessage("Admin access is required to view and manage servers.");
                             toast.success("Admin session cleared");
                           }}
                         >
@@ -1446,7 +1458,28 @@ export function App() {
         )}
 
         {/* Server List */}
-        {servers.length === 0 ? (
+        {serverInventoryBlocked ? (
+          <Card className="rounded-sm">
+            <CardContent className="py-12 text-center space-y-4">
+              <p className="text-muted-foreground">
+                Registered servers are hidden until admin access is unlocked.
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                className="rounded-sm"
+                onClick={() => {
+                  setAdminAccessDialog(true);
+                  loadAuthConfig();
+                  checkAdminSession();
+                }}
+              >
+                <KeyRound className="mr-2 h-4 w-4" />
+                Admin Access
+              </Button>
+            </CardContent>
+          </Card>
+        ) : servers.length === 0 ? (
           <Card className="rounded-sm">
             <CardContent className="py-12 text-center">
               <p className="text-muted-foreground">
