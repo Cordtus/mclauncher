@@ -3,7 +3,10 @@ name: Deploy to LXD Containers
 on:
   push:
     branches:
-      - feature/advanced-mod-management
+      - main
+
+permissions:
+  contents: read
 
 jobs:
   deploy:
@@ -12,10 +15,12 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '20'
 
@@ -26,20 +31,20 @@ jobs:
         run: npm run build
 
       - name: Deploy to LXD host
-        uses: appleboy/ssh-action@v1.0.0
+        uses: appleboy/ssh-action@55dabf81b49d4120609345970c91507e2d734799
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cd ~/repos/mclauncher
-            git pull origin feature/advanced-mod-management
+            git pull origin main
             npm install
             npm run build
-            sudo ./deploy-updates.sh
+            sudo /usr/local/sbin/mclauncher-deploy
 
       - name: Verify deployment
-        uses: appleboy/ssh-action@v1.0.0
+        uses: appleboy/ssh-action@55dabf81b49d4120609345970c91507e2d734799
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}

@@ -14,6 +14,13 @@ PUBLIC_LISTEN="${PUBLIC_LISTEN:-127.0.0.1}"
 ADMIN_ALLOW_CIDRS="${ADMIN_ALLOW_CIDRS:-127.0.0.0/8,192.168.0.0/24,10.70.48.0/24}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+TMP_FILES=()
+cleanup_tmp_files() {
+  for file in "${TMP_FILES[@]}"; do
+    [ -f "$file" ] && rm -f "$file"
+  done
+}
+trap cleanup_tmp_files EXIT
 
 echo "==> Creating MC Management Container"
 echo "    Name: $CONTAINER_NAME"
@@ -59,14 +66,15 @@ cd /opt/mc-lxd-manager
 # Copy or clone repo
 if [ -d "$REPO_ROOT/.git" ]; then
   echo "==> Copying local repository..."
-  tar czf /tmp/mclauncher.tar.gz --exclude=node_modules --exclude=dist -C "$REPO_ROOT" .
-  lxc file push /tmp/mclauncher.tar.gz "$CONTAINER_NAME/tmp/"
+  APP_TARBALL="$(mktemp /tmp/mclauncher.XXXXXX.tar.gz)"
+  TMP_FILES+=("$APP_TARBALL")
+  git -C "$REPO_ROOT" ls-files -z | tar --null -czf "$APP_TARBALL" -C "$REPO_ROOT" --files-from=-
+  lxc file push "$APP_TARBALL" "$CONTAINER_NAME/tmp/mclauncher.tar.gz"
   lxc exec "$CONTAINER_NAME" -- bash -c "
     cd /opt/mc-lxd-manager
     tar xzf /tmp/mclauncher.tar.gz
     rm /tmp/mclauncher.tar.gz
   "
-  rm /tmp/mclauncher.tar.gz
 else
   echo "==> Cloning from GitHub..."
   lxc exec "$CONTAINER_NAME" -- bash -c "
@@ -111,12 +119,18 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/mc-lxd-manager
+EnvironmentFile=/opt/mc-lxd-manager/.env
 Environment=NODE_ENV=production
 ExecStart=/usr/bin/node apps/server/dist/index.js
 Restart=always
 RestartSec=3
 User=mcmanager
 Group=mcmanager
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/opt/mc-lxd-manager
 
 [Install]
 WantedBy=multi-user.target

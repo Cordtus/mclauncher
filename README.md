@@ -105,6 +105,17 @@ npm install --workspaces
 npm run build
 ```
 
+### Deploy Wrapper Contract
+
+The GitHub deployment workflow builds from `main`, then calls
+`sudo /usr/local/sbin/mclauncher-deploy` on the LXD host. Keep that wrapper
+root-owned and limit sudoers to that exact path. Do not grant sudo access to
+raw `lxc` commands or mutable scripts inside this repository.
+
+The wrapper should only copy already-built artifacts into the LXD containers,
+install production dependencies inside those containers, and restart the
+managed services.
+
 ### Project Structure
 
 ```
@@ -119,13 +130,17 @@ apps/
 
 - Management backend binds to 0.0.0.0:8080 inside container
 - LXD proxy exposes port 8080 on host
-- CIDR filtering restricts access to LAN ranges
+- CIDR filtering restricts access to LAN ranges (`192.168.0.0/24` and `10.70.48.0/24` by default)
 - Admin token or passkey session required for server inventory, settings, logs, mod management, and all write operations
+- Admin browser sessions are stored in HttpOnly `SameSite=Strict` cookies; token entry is a bootstrap exchange and is not persisted in browser storage
 - Passkeys use WebAuthn and require a secure browser context: HTTPS or localhost
 - Passkey login requires user verification by default (`PASSKEY_USER_VERIFICATION=required`)
+- Unsafe admin API requests require a same-origin `Origin`/`Referer`; keep Caddy forwarding `Host` and `X-Forwarded-Proto`
 - If `PASSKEY_RP_ID` is configured for a public domain, also set `PASSKEY_ORIGIN` to the exact HTTPS origin
 - If the gateway is exposed behind Caddy and CIDR filtering should use the browser client IP, set `TRUST_PROXY=true` and restrict `TRUST_PROXY_CIDRS` to the proxy network
 - Control agents (port 9090) are NOT exposed outside containers and require the per-server `AGENT_TOKEN` stored in `/opt/mc-lxd-manager/servers.json` and `/etc/mc-agent.env`
+- Manager-to-agent URLs are restricted to `AGENT_ALLOWED_CIDRS` and `AGENT_ALLOWED_PORTS` (defaults: `10.70.48.0/24` and `9090`; opt into `127.0.0.0/8` only for local development)
+- Control agent temporary downloads stage in root-owned `AGENT_STAGING_DIR` (`/opt/mc-agent-staging` in provisioned containers)
 - Keep `/opt/mc-lxd-manager/.env`, `/opt/mc-lxd-manager/servers.json`, and `/opt/mc-lxd-manager/passkeys.json` owner-readable only (`0600`)
 - Keep `/opt/minecraft/server.properties` owner-readable only (`0600`) because it contains the RCON password
 - Bind Minecraft to `127.0.0.1` inside each server container and publish player traffic through the LXD proxy; this keeps RCON and direct container ports off the shared LXD subnet

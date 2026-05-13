@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 import { pipeline } from "stream/promises";
 import { Readable } from "stream";
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 
 const FABRIC_META_API = "https://meta.fabricmc.net/v2";
 const USER_AGENT = "MCLauncher/1.0 (https://github.com/Cordtus/mclauncher)";
@@ -147,13 +147,19 @@ export class FabricDownloader {
 
     // Run installer
     try {
-      execSync(
-        `java -jar ${installerPath} server -mcversion ${mcVersion} -loader ${loader} -downloadMinecraft`,
-        {
-          cwd: mcDir,
-          stdio: "pipe",
-        }
-      );
+      execFileSync("java", [
+        "-jar",
+        installerPath,
+        "server",
+        "-mcversion",
+        mcVersion,
+        "-loader",
+        loader,
+        "-downloadMinecraft",
+      ], {
+        cwd: mcDir,
+        stdio: "pipe",
+      });
     } finally {
       // Clean up installer
       if (fs.existsSync(installerPath)) {

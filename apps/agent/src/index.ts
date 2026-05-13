@@ -32,6 +32,7 @@ import { parseProperties, updateProperties, readJsonArray, writeJsonArray } from
 
 const PORT = Number(process.env.AGENT_PORT || 9090);
 const MC_DIR = process.env.MC_DIR || "/opt/minecraft";
+const AGENT_STAGING_DIR = process.env.AGENT_STAGING_DIR || path.join(path.dirname(MC_DIR), "mc-agent-staging");
 const MC_PORT = Number(process.env.MC_PORT || 25565);
 const WORLDS_HOME = path.join(MC_DIR, "worlds");
 const WORLD_LINK = path.join(MC_DIR, "world");
@@ -177,6 +178,18 @@ function safeChildPath(root: string, ...segments: string[]) {
   return resolvedPath;
 }
 
+function ensurePrivateRootDirectory(dir: string) {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const stat = fs.lstatSync(dir);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error(`${dir} must be a private directory`);
+  }
+  if (typeof process.getuid === "function" && process.getuid() === 0 && stat.uid !== 0) {
+    throw new Error(`${dir} must be owned by root`);
+  }
+  fs.chmodSync(dir, 0o700);
+}
+
 function assertSafeZipArchive(zipPath: string) {
   const result = shSafe("unzip", ["-Z1", zipPath]);
   if (result.code !== 0) {
@@ -244,6 +257,23 @@ function assertSafeCustomJvmFlags(value: unknown) {
     }
   }
   return parts.join(" ");
+}
+
+function assertSafeVersionIdentifier(value: unknown, label: string) {
+  const raw = String(value ?? "").trim();
+  if (!raw || raw.length > 80 || !/^[A-Za-z0-9_.+-]+$/.test(raw)) {
+    throw new Error(`Invalid ${label}`);
+  }
+  return raw;
+}
+
+function normalizeBuildIdentifier(value: unknown) {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value === "number") {
+    if (!Number.isInteger(value) || value < 0) throw new Error("Invalid build");
+    return value;
+  }
+  return assertSafeVersionIdentifier(value, "build");
 }
 
 function handleUploadError(err: any, res: Response, next: () => void) {
@@ -1303,16 +1333,26 @@ app.post("/packwiz", (req, res) => {
 
 // Install LuckPerms
 app.post("/luckperms", (_req, res) => {
+  let tempDir = "";
   try {
     const pluginsDir = path.join(MC_DIR, "plugins");
     fs.mkdirSync(pluginsDir, { recursive: true });
-    sh("bash", [
-      "-c",
-      `cd ${pluginsDir} && curl -sL https://download.luckperms.net/latest/bukkit.jar -o LuckPerms.jar && chown mc:mc LuckPerms.jar`,
-    ]);
+    ensurePrivateRootDirectory(AGENT_STAGING_DIR);
+    const target = path.join(pluginsDir, "LuckPerms.jar");
+    tempDir = fs.mkdtempSync(path.join(AGENT_STAGING_DIR, "luckperms-"));
+    fs.chmodSync(tempDir, 0o700);
+    const tempTarget = path.join(tempDir, "LuckPerms.jar");
+    const download = shSafe("curl", ["-fsSL", "https://download.luckperms.net/latest/bukkit.jar", "-o", tempTarget]);
+    if (download.code !== 0) {
+      return res.status(500).type("text/plain").send(download.stdout + "\n" + download.stderr);
+    }
+    sh("chown", ["mc:mc", tempTarget]);
+    fs.renameSync(tempTarget, target);
     res.send("LuckPerms installed. Restart server to load.");
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  } finally {
+    if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
 
@@ -1736,9 +1776,10 @@ app.get("/version/current", (_req, res) => {
 // Get builds for Paper version
 app.get("/versions/paper/:version/builds", async (req, res) => {
   try {
-    const buildNum = await paperDownloader.getLatestBuild(req.params.version);
+    const version = assertSafeVersionIdentifier(req.params.version, "version");
+    const buildNum = await paperDownloader.getLatestBuild(version);
     const buildInfo = await paperDownloader.getBuildInfo(
-      req.params.version,
+      version,
       buildNum
     );
     res.json({ latestBuild: buildNum, buildInfo });
@@ -1755,22 +1796,20 @@ app.post("/version/change", async (req, res) => {
     return res.status(400).send(`Invalid type. Must be ${supportedServerTypes.join(", ")}`);
   }
 
-  if (!version) {
-    return res.status(400).send("Version is required");
-  }
-
   try {
-    await versionManager.changeVersion(type, version, build);
+    const safeVersion = assertSafeVersionIdentifier(version, "version");
+    const safeBuild = normalizeBuildIdentifier(build);
+    await versionManager.changeVersion(type, safeVersion, safeBuild);
     const current = versionManager.getServerType();
     res.json({
       ok: true,
-      message: `Server updated to ${type} ${version}`,
+      message: `Server updated to ${type} ${safeVersion}`,
       type,
-      version,
-      build: current?.build || build || null,
+      version: safeVersion,
+      build: current?.build || safeBuild || null,
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(statusForError(err)).json({ error: err.message });
   }
 });
 
@@ -1782,22 +1821,20 @@ app.post("/version/switch-type", async (req, res) => {
     return res.status(400).send(`Invalid type. Must be ${supportedServerTypes.join(", ")}`);
   }
 
-  if (!version) {
-    return res.status(400).send("Version is required");
-  }
-
   try {
-    await versionManager.switchServerType(type, version, build);
+    const safeVersion = assertSafeVersionIdentifier(version, "version");
+    const safeBuild = normalizeBuildIdentifier(build);
+    await versionManager.switchServerType(type, safeVersion, safeBuild);
     const current = versionManager.getServerType();
     res.json({
       ok: true,
-      message: `Switched to ${type} ${version}`,
+      message: `Switched to ${type} ${safeVersion}`,
       type,
-      version,
-      build: current?.build || build || null,
+      version: safeVersion,
+      build: current?.build || safeBuild || null,
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(statusForError(err)).json({ error: err.message });
   }
 });
 

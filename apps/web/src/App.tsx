@@ -60,7 +60,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { authHeaders, jsonAuthHeaders } from "@/lib/auth";
+import { authHeaders, jsonAuthHeaders, loginWithAdminToken, readAdminSession } from "@/lib/auth";
 import {
   buildPlayerInviteText,
   formatMinecraftAddress,
@@ -149,13 +149,12 @@ export function App() {
   const [tourElementRect, setTourElementRect] = useState<DOMRect | null>(null);
   const hasAutoStartedTour = useRef(false);
   const [adminAccessDialog, setAdminAccessDialog] = useState(false);
-  const [adminToken, setAdminToken] = useState(() => localStorage.getItem("ADMIN_TOKEN") || "");
-  const [savedAdminToken, setSavedAdminToken] = useState(() => localStorage.getItem("ADMIN_TOKEN") || "");
-  const [adminSession, setAdminSession] = useState(() => localStorage.getItem("ADMIN_SESSION") || "");
+  const [adminToken, setAdminToken] = useState("");
+  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
   const [authConfig, setAuthConfig] = useState<any | null>(null);
   const [passkeyName, setPasskeyName] = useState("Admin passkey");
   const [isPasskeyBusy, setIsPasskeyBusy] = useState(false);
-  const hasAdminAccess = Boolean(savedAdminToken || adminSession);
+  const hasAdminAccess = isAdminAuthenticated;
 
   // Version management state
   const [versionType, setVersionType] = useState<"paper" | "vanilla" | "fabric" | "forge">("paper");
@@ -359,7 +358,10 @@ export function App() {
   }, [serverSettings]);
 
   useEffect(() => {
+    localStorage.removeItem("ADMIN_TOKEN");
+    localStorage.removeItem("ADMIN_SESSION");
     loadAuthConfig();
+    checkAdminSession();
   }, []);
 
   async function loadAuthConfig() {
@@ -370,6 +372,10 @@ export function App() {
     } catch {
       // Auth config is convenience-only; write endpoints still return concrete errors.
     }
+  }
+
+  async function checkAdminSession() {
+    setIsAdminAuthenticated(await readAdminSession());
   }
 
   // Fetch TPS for running servers periodically
@@ -536,6 +542,7 @@ export function App() {
       if (res.status === 401 || res.status === 403 || res.status === 503) {
         setServers([]);
         setLogs("");
+        setIsAdminAuthenticated(false);
         setMessage("Admin access is required to view and manage servers.");
         return;
       }
@@ -544,6 +551,7 @@ export function App() {
       }
       const serverData = await res.json();
       setServers(Array.isArray(serverData) ? serverData : []);
+      setIsAdminAuthenticated(true);
       setMessage("");
     } catch (err) {
       setMessage("Failed to fetch servers");
@@ -973,17 +981,22 @@ export function App() {
     }
   };
 
-  const saveAdminToken = () => {
+  const saveAdminToken = async () => {
     const token = adminToken.trim();
     if (token) {
-      localStorage.setItem("ADMIN_TOKEN", token);
-      setSavedAdminToken(token);
-      toast.success("Admin access token saved");
-      setTimeout(() => refresh(), 0);
+      try {
+        await loginWithAdminToken(token);
+        setIsAdminAuthenticated(true);
+        setAdminToken("");
+        toast.success("Admin session started");
+        setTimeout(() => refresh(), 0);
+      } catch (err: any) {
+        toast.error(err.message || "Admin token sign-in failed");
+        return;
+      }
     } else {
-      localStorage.removeItem("ADMIN_TOKEN");
-      setSavedAdminToken("");
-      toast.success("Admin access token cleared");
+      toast.error("Enter an admin token");
+      return;
     }
     setAdminAccessDialog(false);
   };
@@ -1005,7 +1018,7 @@ export function App() {
     setIsPasskeyBusy(true);
     try {
       await loginWithPasskey();
-      setAdminSession(localStorage.getItem("ADMIN_SESSION") || "");
+      setIsAdminAuthenticated(true);
       toast.success("Signed in with passkey");
       await loadAuthConfig();
       await refresh();
@@ -1018,16 +1031,14 @@ export function App() {
 
   const clearAdminAccess = async () => {
     try {
-      if (localStorage.getItem("ADMIN_SESSION")) {
-        await logoutPasskeySession();
-      }
+      await logoutPasskeySession();
     } catch {
-      localStorage.removeItem("ADMIN_SESSION");
+      // Clearing local UI state is still correct if the server session was already gone.
     }
-    setAdminSession("");
     setAdminToken("");
-    setSavedAdminToken("");
+    setIsAdminAuthenticated(false);
     localStorage.removeItem("ADMIN_TOKEN");
+    localStorage.removeItem("ADMIN_SESSION");
     setAdminAccessDialog(false);
     toast.success("Admin access cleared");
   };
@@ -1063,8 +1074,9 @@ export function App() {
             <Dialog open={adminAccessDialog} onOpenChange={(open) => {
               setAdminAccessDialog(open);
               if (open) {
-                setAdminToken(savedAdminToken);
+                setAdminToken("");
                 loadAuthConfig();
+                checkAdminSession();
               }
             }}>
               <DialogTrigger asChild>
@@ -1090,11 +1102,11 @@ export function App() {
                       <div>
                         <p className="text-sm font-medium">Passkeys</p>
                         <p className="text-xs text-muted-foreground">
-                          {passkeyConfig?.hasPasskeys ? "Passkey sign-in is available." : "Register a passkey after saving an admin token."}
+                          {passkeyConfig?.hasPasskeys ? "Passkey sign-in is available." : "Sign in with the admin token first, then register a passkey."}
                         </p>
                       </div>
-                      <Badge variant={adminSession ? "default" : "outline"}>
-                        {adminSession ? "Signed in" : "Optional"}
+                      <Badge variant={isAdminAuthenticated ? "default" : "outline"}>
+                        {isAdminAuthenticated ? "Signed in" : "Optional"}
                       </Badge>
                     </div>
                     {!canUsePasskeys && (
@@ -1114,7 +1126,7 @@ export function App() {
                         variant="outline"
                         className="rounded-sm"
                         onClick={handleRegisterPasskey}
-                        disabled={!canUsePasskeys || isPasskeyBusy}
+                        disabled={!canUsePasskeys || !isAdminAuthenticated || isPasskeyBusy}
                       >
                         <Fingerprint className="mr-2 h-4 w-4" />
                         Set Up
@@ -1130,16 +1142,15 @@ export function App() {
                         <Fingerprint className="mr-2 h-4 w-4" />
                         Sign In With Passkey
                       </Button>
-                      {adminSession && (
+                      {isAdminAuthenticated && (
                         <Button
                           type="button"
                           variant="outline"
                           className="rounded-sm"
                           onClick={async () => {
                             await logoutPasskeySession();
-                            setAdminSession("");
-                            localStorage.removeItem("ADMIN_SESSION");
-                            toast.success("Passkey session cleared");
+                            setIsAdminAuthenticated(false);
+                            toast.success("Admin session cleared");
                           }}
                         >
                           <LogOut className="mr-2 h-4 w-4" />

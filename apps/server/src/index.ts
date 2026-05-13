@@ -7,11 +7,10 @@
  */
 
 import express, { Request, Response } from "express";
-import cors from "cors";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { timingSafeEqual } from "crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "crypto";
 import "dotenv/config";
 import { PasskeyService } from "./services/passkeys.js";
 import * as modpack from "./services/modpack.js";
@@ -47,8 +46,24 @@ const PASSKEY_USER_VERIFICATION = (
 const PASSKEY_STORE_FILE = process.env.PASSKEY_STORE_FILE || path.join(path.dirname(REGISTRY_FILE), "passkeys.json");
 const PASSKEY_SESSION_TTL_MS = Number(process.env.PASSKEY_SESSION_TTL_MS || 12 * 60 * 60 * 1000);
 const PASSKEY_CHALLENGE_TTL_MS = Number(process.env.PASSKEY_CHALLENGE_TTL_MS || 5 * 60 * 1000);
+const ADMIN_COOKIE_NAME = process.env.ADMIN_COOKIE_NAME || "mclx_admin";
+const ADMIN_COOKIE_TTL_MS = Number(process.env.ADMIN_COOKIE_TTL_MS || PASSKEY_SESSION_TTL_MS);
 const DEFAULT_MINECRAFT_PORT = 25565;
 const PUBLIC_MODPACK_CACHE_TTL_MS = Number(process.env.PUBLIC_MODPACK_CACHE_TTL_MS || 60 * 1000);
+const PUBLIC_RATE_LIMIT_WINDOW_MS = Number(process.env.PUBLIC_RATE_LIMIT_WINDOW_MS || 60 * 1000);
+const PUBLIC_RATE_LIMIT_MAX = Number(process.env.PUBLIC_RATE_LIMIT_MAX || 60);
+const AUTH_RATE_LIMIT_WINDOW_MS = Number(process.env.AUTH_RATE_LIMIT_WINDOW_MS || 60 * 1000);
+const AUTH_RATE_LIMIT_MAX = Number(process.env.AUTH_RATE_LIMIT_MAX || 20);
+const AGENT_ALLOWED_CIDRS = (process.env.AGENT_ALLOWED_CIDRS ?? "10.70.48.0/24")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+const AGENT_ALLOWED_PORTS = new Set(
+  (process.env.AGENT_ALLOWED_PORTS ?? "9090")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+);
 
 interface ServerEntry {
   name: string;
@@ -107,8 +122,19 @@ function agentRequestOptions(server: ServerEntry, options: RequestInit = {}): Re
 }
 
 async function fetchFromAgent(server: ServerEntry, pathName: string | URL, options: RequestInit = {}) {
+  validateAgentUrl(server.agent_url);
   const target = pathName instanceof URL ? pathName.toString() : `${server.agent_url}${pathName}`;
-  return fetch(target, agentRequestOptions(server, options));
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Number(process.env.AGENT_FETCH_TIMEOUT_MS || 30_000));
+  try {
+    return await fetch(target, agentRequestOptions(server, {
+      ...options,
+      redirect: "manual",
+      signal: controller.signal,
+    }));
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function fetchAgentJson<T>(server: ServerEntry, pathName: string): Promise<T | null> {
@@ -176,7 +202,29 @@ const app = express();
 app.disable("x-powered-by");
 app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true }));
-app.use(cors());
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), publickey-credentials-get=(self)");
+  res.setHeader("Content-Security-Policy", [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "font-src 'self' data:",
+    "connect-src 'self'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+  ].join("; "));
+  const proto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim();
+  if (req.secure || proto === "https") {
+    res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  }
+  next();
+});
 
 if (TRUST_PROXY) {
   app.set("trust proxy", TRUST_PROXY_CIDRS);
@@ -334,11 +382,106 @@ function ipInCidr(ip: string, cidr: string): boolean {
   return (ipNum & mask) === (netNum & mask);
 }
 
+function validateAgentUrl(value: unknown) {
+  if (typeof value !== "string") throw new Error("agent_url must be a URL");
+  const parsed = new URL(value);
+  if (parsed.protocol !== "http:") throw new Error("agent_url must use http");
+  if (parsed.username || parsed.password) throw new Error("agent_url must not include credentials");
+  if (parsed.pathname !== "/" || parsed.search || parsed.hash) {
+    throw new Error("agent_url must not include a path, query, or fragment");
+  }
+  const port = parsed.port || "80";
+  if (!AGENT_ALLOWED_PORTS.has(port)) {
+    throw new Error(`agent_url port must be one of: ${Array.from(AGENT_ALLOWED_PORTS).join(", ")}`);
+  }
+  if (!AGENT_ALLOWED_CIDRS.some((cidr) => ipInCidr(parsed.hostname, cidr))) {
+    throw new Error("agent_url host is outside allowed agent CIDRs");
+  }
+  return parsed.toString().replace(/\/$/, "");
+}
+
 function requestAllowedByCidr(req: Request): boolean {
   if (!ADMIN_REQUIRE_CIDR) return true;
   const ip = clientIp(req);
   return ALLOW_CIDRS.some((c) => ipInCidr(ip, c));
 }
+
+function requestOrigin(req: Request) {
+  const proto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim() || req.protocol;
+  const host = String(req.headers.host || "");
+  return host ? `${proto}://${host}` : "";
+}
+
+function originAllowed(req: Request) {
+  let candidate = "";
+  try {
+    candidate = typeof req.headers.origin === "string"
+      ? req.headers.origin
+      : typeof req.headers.referer === "string"
+        ? new URL(req.headers.referer).origin
+        : "";
+  } catch {
+    return false;
+  }
+  if (!candidate) return false;
+  return candidate === requestOrigin(req);
+}
+
+function requireSameOriginUnsafeApi(req: Request, res: Response, next: () => void) {
+  if (!req.path.startsWith("/api/") || !["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) {
+    return next();
+  }
+  if (req.path === "/api/auth/token/login") return next();
+  const isAdminMutatingPath = (
+    req.path.startsWith("/api/servers/") ||
+    req.path === "/api/auth/logout" ||
+    req.path === "/api/auth/passkeys/register/options" ||
+    req.path === "/api/auth/passkeys/register/verify" ||
+    (req.method === "DELETE" && req.path.startsWith("/api/auth/passkeys/"))
+  );
+  const auth = String(req.headers.authorization || "");
+  if (!adminCookie(req) && auth.startsWith("Bearer ")) return next();
+  if (!adminCookie(req) && !isAdminMutatingPath) return next();
+  if (!originAllowed(req)) {
+    return res.status(403).json({ error: "Cross-origin admin request blocked" });
+  }
+  return next();
+}
+
+type RateLimitEntry = { count: number; resetAt: number };
+
+function createRateLimit(windowMs: number, max: number) {
+  const buckets = new Map<string, RateLimitEntry>();
+  return (req: Request, res: Response, next: () => void) => {
+    const now = Date.now();
+    const key = clientIp(req);
+    const existing = buckets.get(key);
+    const bucket = existing && existing.resetAt > now
+      ? existing
+      : { count: 0, resetAt: now + windowMs };
+    bucket.count += 1;
+    buckets.set(key, bucket);
+
+    if (bucket.count > max) {
+      res.setHeader("Retry-After", String(Math.ceil((bucket.resetAt - now) / 1000)));
+      return res.status(429).json({ error: "Too many requests" });
+    }
+
+    if (buckets.size > 1000) {
+      for (const [bucketKey, entry] of buckets.entries()) {
+        if (entry.resetAt <= now) buckets.delete(bucketKey);
+      }
+    }
+    return next();
+  };
+}
+
+const publicRateLimit = createRateLimit(PUBLIC_RATE_LIMIT_WINDOW_MS, PUBLIC_RATE_LIMIT_MAX);
+const authRateLimit = createRateLimit(AUTH_RATE_LIMIT_WINDOW_MS, AUTH_RATE_LIMIT_MAX);
+const modrinthRateLimit = createRateLimit(
+  Number(process.env.MODRINTH_RATE_LIMIT_WINDOW_MS || 60 * 1000),
+  Number(process.env.MODRINTH_RATE_LIMIT_MAX || 120)
+);
 
 function authContext(req: Request) {
   return {
@@ -354,11 +497,97 @@ function bearerTokenMatches(candidate: string): boolean {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
+function base64url(value: Buffer | string) {
+  return Buffer.from(value)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function fromBase64url(value: string) {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+  return Buffer.from(padded, "base64");
+}
+
+function parseCookies(req: Request) {
+  const cookies = new Map<string, string>();
+  const header = String(req.headers.cookie || "");
+  for (const cookie of header.split(";")) {
+    const index = cookie.indexOf("=");
+    if (index === -1) continue;
+    const name = cookie.slice(0, index).trim();
+    const value = cookie.slice(index + 1).trim();
+    if (name) cookies.set(name, decodeURIComponent(value));
+  }
+  return cookies;
+}
+
+function adminCookie(req: Request) {
+  return parseCookies(req).get(ADMIN_COOKIE_NAME) || "";
+}
+
+function secureCookieForRequest(req: Request) {
+  const forced = process.env.ADMIN_COOKIE_SECURE?.toLowerCase();
+  if (forced === "true") return true;
+  if (forced === "false") return false;
+  const proto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim();
+  return req.secure || proto === "https";
+}
+
+function cookieHeader(req: Request, value: string, maxAgeMs: number) {
+  const parts = [
+    `${ADMIN_COOKIE_NAME}=${encodeURIComponent(value)}`,
+    "Path=/api",
+    "HttpOnly",
+    "SameSite=Strict",
+    `Max-Age=${Math.max(0, Math.floor(maxAgeMs / 1000))}`,
+  ];
+  if (secureCookieForRequest(req)) parts.push("Secure");
+  return parts.join("; ");
+}
+
+function setAdminCookie(req: Request, res: Response, value: string, expiresAt: number) {
+  res.setHeader("Set-Cookie", cookieHeader(req, value, expiresAt - Date.now()));
+}
+
+function clearAdminCookie(req: Request, res: Response) {
+  res.setHeader("Set-Cookie", cookieHeader(req, "", 0));
+}
+
+function signedTokenSession() {
+  const expiresAt = Date.now() + ADMIN_COOKIE_TTL_MS;
+  const payload = base64url(JSON.stringify({
+    type: "token",
+    nonce: base64url(randomBytes(16)),
+    expiresAt,
+  }));
+  const signature = base64url(createHmac("sha256", ADMIN_TOKEN).update(payload).digest());
+  return { cookieValue: `token.${payload}.${signature}`, expiresAt };
+}
+
+function signedTokenCookieMatches(cookieValue: string) {
+  if (!ADMIN_TOKEN || !cookieValue.startsWith("token.")) return false;
+  const [, payload, signature] = cookieValue.split(".");
+  if (!payload || !signature) return false;
+  const expected = base64url(createHmac("sha256", ADMIN_TOKEN).update(payload).digest());
+  const left = Buffer.from(signature);
+  const right = Buffer.from(expected);
+  if (left.length !== right.length || !timingSafeEqual(left, right)) return false;
+
+  try {
+    const data = JSON.parse(fromBase64url(payload).toString("utf8"));
+    return data?.type === "token" && Number(data.expiresAt) > Date.now();
+  } catch {
+    return false;
+  }
+}
+
 function sessionTokenFromRequest(req: Request): string {
-  const auth = String(req.headers["authorization"] || "");
-  if (auth.startsWith("Session ")) return auth.slice("Session ".length).trim();
-  const header = req.headers["x-admin-session"];
-  return typeof header === "string" ? header.trim() : "";
+  const cookie = adminCookie(req);
+  if (cookie.startsWith("passkey.")) return cookie.slice("passkey.".length);
+  return "";
 }
 
 function requestHasAdminAuth(req: Request): boolean {
@@ -366,6 +595,7 @@ function requestHasAdminAuth(req: Request): boolean {
   if (ADMIN_AUTH_METHODS.has("token") && auth.startsWith("Bearer ")) {
     if (bearerTokenMatches(auth.slice("Bearer ".length).trim())) return true;
   }
+  if (ADMIN_AUTH_METHODS.has("token") && signedTokenCookieMatches(adminCookie(req))) return true;
 
   if (ADMIN_AUTH_METHODS.has("passkey")) {
     return passkeys.validateSession(sessionTokenFromRequest(req));
@@ -388,6 +618,8 @@ function requireAdmin(req: Request, res: Response, next: () => void) {
   }
   return next();
 }
+
+app.use(requireSameOriginUnsafeApi);
 
 // Proxy helper
 async function proxyToAgent(server: ServerEntry, path: string, options: RequestInit = {}) {
@@ -445,6 +677,39 @@ app.get("/api/auth/config", (req, res) => {
   });
 });
 
+app.get("/api/auth/session", (req, res) => {
+  if (!requestAllowedByCidr(req)) {
+    return res.status(403).json({ authenticated: false, error: `Forbidden from ${clientIp(req)}` });
+  }
+  if (!adminAuthConfigured()) {
+    return res.status(503).json({ authenticated: false });
+  }
+  if (!requestHasAdminAuth(req)) {
+    return res.status(401).json({ authenticated: false });
+  }
+  res.json({ authenticated: true });
+});
+
+app.post("/api/auth/token/login", authRateLimit, (req, res) => {
+  try {
+    if (!requestAllowedByCidr(req)) {
+      return res.status(403).json({ error: `Forbidden from ${clientIp(req)}` });
+    }
+    if (!ADMIN_AUTH_METHODS.has("token") || !ADMIN_TOKEN) {
+      return res.status(503).json({ error: "Token authentication is not configured" });
+    }
+    if (!bearerTokenMatches(String(req.body?.token || ""))) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const session = signedTokenSession();
+    setAdminCookie(req, res, session.cookieValue, session.expiresAt);
+    res.json({ ok: true, expiresAt: new Date(session.expiresAt).toISOString() });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 app.post("/api/auth/passkeys/register/options", requireAdmin, (req, res) => {
   try {
     const name = typeof req.body?.name === "string" && req.body.name.trim()
@@ -464,7 +729,7 @@ app.post("/api/auth/passkeys/register/verify", requireAdmin, (req, res) => {
   }
 });
 
-app.post("/api/auth/passkeys/login/options", (req, res) => {
+app.post("/api/auth/passkeys/login/options", authRateLimit, (req, res) => {
   try {
     if (!requestAllowedByCidr(req)) {
       return res.status(403).json({ error: `Forbidden from ${clientIp(req)}` });
@@ -475,12 +740,15 @@ app.post("/api/auth/passkeys/login/options", (req, res) => {
   }
 });
 
-app.post("/api/auth/passkeys/login/verify", (req, res) => {
+app.post("/api/auth/passkeys/login/verify", authRateLimit, (req, res) => {
   try {
     if (!requestAllowedByCidr(req)) {
       return res.status(403).json({ error: `Forbidden from ${clientIp(req)}` });
     }
-    res.json(passkeys.verifyAuthentication(authContext(req), req.body));
+    const result = passkeys.verifyAuthentication(authContext(req), req.body);
+    setAdminCookie(req, res, `passkey.${result.sessionToken}`, new Date(result.expiresAt).getTime());
+    const { sessionToken: _sessionToken, ...safeResult } = result;
+    res.json(safeResult);
   } catch (err: any) {
     res.status(401).json({ error: err.message });
   }
@@ -499,6 +767,7 @@ app.delete("/api/auth/passkeys/:id", requireAdmin, (req, res) => {
 app.post("/api/auth/logout", (req, res) => {
   const token = sessionTokenFromRequest(req);
   if (token) passkeys.revokeSession(token);
+  clearAdminCookie(req, res);
   res.json({ ok: true });
 });
 
@@ -596,10 +865,11 @@ app.post("/api/servers/register", requireAdmin, (req, res) => {
     if (existing) {
       return res.status(400).json({ error: "Server already registered" });
     }
+    const normalizedAgentUrl = validateAgentUrl(agent_url);
 
     registry.servers.push({
       name,
-      agent_url,
+      agent_url: normalizedAgentUrl,
       local_ip,
       local_port: local_port === undefined ? undefined : parsePort(local_port, "local_port"),
       host_ip: host_ip || undefined,
@@ -1320,7 +1590,7 @@ app.post("/api/servers/:name/version/change", requireAdmin, async (req, res) => 
 import * as modrinth from './services/modrinth.js';
 
 // Search for mods or plugins
-app.get("/api/mods/search", async (req, res) => {
+app.get("/api/mods/search", modrinthRateLimit, async (req, res) => {
   try {
     const {
       query = '',
@@ -1351,7 +1621,7 @@ app.get("/api/mods/search", async (req, res) => {
 });
 
 // Get mod details
-app.get("/api/mods/:projectId", async (req, res) => {
+app.get("/api/mods/:projectId", modrinthRateLimit, async (req, res) => {
   try {
     const { projectId } = req.params;
     const mod = await modrinth.getModDetails(projectId);
@@ -1362,7 +1632,7 @@ app.get("/api/mods/:projectId", async (req, res) => {
 });
 
 // Get mod versions
-app.get("/api/mods/:projectId/versions", async (req, res) => {
+app.get("/api/mods/:projectId/versions", modrinthRateLimit, async (req, res) => {
   try {
     const { projectId } = req.params;
     const { mcVersion, loader } = req.query;
@@ -1380,7 +1650,7 @@ app.get("/api/mods/:projectId/versions", async (req, res) => {
 });
 
 // Check mod compatibility
-app.post("/api/mods/check-compatibility", async (req, res) => {
+app.post("/api/mods/check-compatibility", modrinthRateLimit, async (req, res) => {
   try {
     const { mod, serverMemoryMB, installedMods, currentMemoryUsage } = req.body;
 
@@ -1413,7 +1683,7 @@ app.post("/api/mods/check-compatibility", async (req, res) => {
 });
 
 // Check mod dependencies
-app.post("/api/mods/check-dependencies", async (req, res) => {
+app.post("/api/mods/check-dependencies", modrinthRateLimit, async (req, res) => {
   try {
     const { versionId, mcVersion, loader, installedModIds } = req.body;
 
@@ -1874,7 +2144,7 @@ app.get("/api/servers/:name/modpack/page", requireAdmin, async (req, res) => {
 // ============================================================================
 
 // Public modpack download page - serves the standalone HTML
-app.get("/public/:name/modpack", async (req, res) => {
+app.get("/public/:name/modpack", publicRateLimit, async (req, res) => {
   try {
     const { name } = req.params;
     const registry = loadRegistry();
@@ -1891,7 +2161,7 @@ app.get("/public/:name/modpack", async (req, res) => {
 });
 
 // Public modpack .mrpack download
-app.get("/public/:name/modpack.mrpack", async (req, res) => {
+app.get("/public/:name/modpack.mrpack", publicRateLimit, async (req, res) => {
   try {
     const { name } = req.params;
     const registry = loadRegistry();
@@ -1909,7 +2179,7 @@ app.get("/public/:name/modpack.mrpack", async (req, res) => {
 });
 
 // Public mod list download
-app.get("/public/:name/modlist.txt", async (req, res) => {
+app.get("/public/:name/modlist.txt", publicRateLimit, async (req, res) => {
   try {
     const { name } = req.params;
     const registry = loadRegistry();

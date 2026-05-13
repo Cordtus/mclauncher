@@ -101,6 +101,7 @@ export async function registerPasskey(name: string) {
   const optionsResponse = await fetch("/api/auth/passkeys/register/options", {
     method: "POST",
     headers: jsonAuthHeaders(),
+    credentials: "include",
     body: JSON.stringify({ name }),
   });
   const optionsData = await readJsonResponse(optionsResponse);
@@ -113,6 +114,7 @@ export async function registerPasskey(name: string) {
   const verificationResponse = await fetch("/api/auth/passkeys/register/verify", {
     method: "POST",
     headers: jsonAuthHeaders(),
+    credentials: "include",
     body: JSON.stringify(serializeRegistrationCredential(credential)),
   });
   return readJsonResponse(verificationResponse);
@@ -122,6 +124,7 @@ export async function loginWithPasskey() {
   const optionsResponse = await fetch("/api/auth/passkeys/login/options", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "include",
     body: "{}",
   });
   const optionsData = await readJsonResponse(optionsResponse);
@@ -134,19 +137,17 @@ export async function loginWithPasskey() {
   const verificationResponse = await fetch("/api/auth/passkeys/login/verify", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "include",
     body: JSON.stringify(serializeAuthenticationCredential(credential)),
   });
-  const result = await readJsonResponse(verificationResponse);
-  localStorage.setItem("ADMIN_SESSION", result.sessionToken);
-  return result;
+  return readJsonResponse(verificationResponse);
 }
 
 export async function logoutPasskeySession() {
-  const session = localStorage.getItem("ADMIN_SESSION");
   const response = await fetch("/api/auth/logout", {
     method: "POST",
-    headers: session ? { Authorization: `Session ${session}` } : authHeaders(),
+    headers: authHeaders(),
+    credentials: "include",
   });
-  localStorage.removeItem("ADMIN_SESSION");
   return readJsonResponse(response);
 }

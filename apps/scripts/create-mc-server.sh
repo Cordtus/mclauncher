@@ -106,22 +106,24 @@ install -d -o mc -g mc /opt/minecraft/plugins
 install -d -o mc -g mc /opt/minecraft/mods
 install -d -o mc -g mc /opt/minecraft/worlds
 install -d /opt/mc-agent
+install -d -m 700 -o root -g root /opt/mc-agent-staging
 "
 
 # Copy control agent
 if [ -d "$AGENT_DIR" ]; then
   echo "==> Copying control agent..."
-  tar czf /tmp/agent.tar.gz -C "$AGENT_DIR" .
-  lxc file push /tmp/agent.tar.gz "$CONTAINER_NAME/tmp/"
+  AGENT_TARBALL="$(mktemp /tmp/mc-agent.XXXXXX.tar.gz)"
+  TMP_FILES+=("$AGENT_TARBALL")
+  git -C "$REPO_ROOT" ls-files -z -- tsconfig.base.json apps/agent | tar --null -czf "$AGENT_TARBALL" -C "$REPO_ROOT" --files-from=-
+  lxc file push "$AGENT_TARBALL" "$CONTAINER_NAME/tmp/agent.tar.gz"
   lxc exec "$CONTAINER_NAME" -- bash -c "
-    cd /opt/mc-agent
-    tar xzf /tmp/agent.tar.gz
+    tar xzf /tmp/agent.tar.gz -C /opt/mc-agent
     rm /tmp/agent.tar.gz
+    cd /opt/mc-agent/apps/agent
     npm install
     npm run build
     npm prune --omit=dev
   "
-  rm /tmp/agent.tar.gz
 else
   echo "ERROR: Control agent not found at $AGENT_DIR"
   exit 1
@@ -191,6 +193,11 @@ WorkingDirectory=/opt/minecraft
 ExecStart=/usr/bin/java -Xms512M -Xmx${MEMORY_MB}M -jar server.jar nogui
 Restart=on-failure
 RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/minecraft
 
 [Install]
 WantedBy=multi-user.target
@@ -201,6 +208,7 @@ AGENT_ENV_FILE="$(new_secret_file)"
 cat > "$AGENT_ENV_FILE" <<EOF
 AGENT_PORT=9090
 MC_DIR=/opt/minecraft
+AGENT_STAGING_DIR=/opt/mc-agent-staging
 RCON_PORT=$RCON_PORT
 AGENT_TOKEN=$AGENT_TOKEN
 EOF
@@ -219,9 +227,20 @@ Before=minecraft.service
 Type=simple
 WorkingDirectory=/opt/mc-agent
 EnvironmentFile=/etc/mc-agent.env
-ExecStart=/usr/bin/node dist/index.js
+ExecStart=/usr/bin/node apps/agent/dist/index.js
 Restart=always
 RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+ProtectSystem=full
+ReadWritePaths=/opt/minecraft /opt/mc-agent /opt/mc-agent-staging /var/backups/minecraft /etc/systemd/system/minecraft.service
 
 [Install]
 WantedBy=multi-user.target

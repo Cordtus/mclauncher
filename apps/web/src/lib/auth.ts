@@ -1,13 +1,5 @@
 export function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("ADMIN_TOKEN");
-  const session = localStorage.getItem("ADMIN_SESSION");
-  const headers: Record<string, string> = {};
-
-  if (token) headers.Authorization = `Bearer ${token}`;
-  if (session) headers["X-Admin-Session"] = session;
-  if (!token && session) headers.Authorization = `Session ${session}`;
-
-  return headers;
+  return {};
 }
 
 export function jsonAuthHeaders(): HeadersInit {
@@ -15,4 +7,25 @@ export function jsonAuthHeaders(): HeadersInit {
     "Content-Type": "application/json",
     ...authHeaders(),
   };
+}
+
+export async function loginWithAdminToken(token: string) {
+  const response = await fetch("/api/auth/token/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ token }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error || response.statusText);
+  }
+  return data;
+}
+
+export async function readAdminSession() {
+  const response = await fetch("/api/auth/session", {
+    credentials: "include",
+  });
+  return response.ok;
 }

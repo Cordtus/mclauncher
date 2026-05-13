@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 import { pipeline } from "stream/promises";
 import { Readable } from "stream";
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 
 const FORGE_PROMOTIONS_URL = "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json";
 const FORGE_MAVEN_URL = "https://maven.minecraftforge.net/net/minecraftforge/forge";
@@ -108,7 +108,7 @@ export class ForgeDownloader {
 
     // Run the installer in server mode
     try {
-      execSync(`java -jar ${installerPath} --installServer`, {
+      execFileSync("java", ["-jar", installerPath, "--installServer"], {
         cwd: mcDir,
         stdio: "pipe",
         timeout: 600000, // 10 minute timeout for large downloads

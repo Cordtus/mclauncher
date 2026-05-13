@@ -1,12 +1,16 @@
 import fs from "fs";
 import path from "path";
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { PaperDownloader } from "../downloaders/paper.js";
 import { VanillaDownloader } from "../downloaders/vanilla.js";
 import { FabricDownloader } from "../downloaders/fabric.js";
 import { ForgeDownloader } from "../downloaders/forge.js";
 
 type ServerType = "paper" | "vanilla" | "fabric" | "forge";
+
+function run(cmd: string, args: string[], options: Parameters<typeof execFileSync>[2] = {}) {
+  return execFileSync(cmd, args, { stdio: "pipe", ...options });
+}
 
 function isConcreteLoaderBuild(build: number | string | undefined): build is string {
   return typeof build === "string" && build.trim() !== "" && build.toLowerCase() !== "latest";
@@ -64,7 +68,7 @@ export class VersionManager {
 
       fs.copyFileSync(newJarPath, currentJar);
       fs.chmodSync(currentJar, 0o644);
-      execSync(`chown mc:mc ${currentJar}`);
+      run("chown", ["mc:mc", currentJar]);
 
       const jarValid = await this.validateJar(currentJar);
       if (!jarValid) {
@@ -79,7 +83,7 @@ export class VersionManager {
       this.restoreServiceFile(serviceBackup);
       if (jarBackupPath && fs.existsSync(jarBackupPath)) {
         fs.copyFileSync(jarBackupPath, currentJar);
-        execSync(`chown mc:mc ${currentJar}`);
+        run("chown", ["mc:mc", currentJar]);
       }
       await this.restoreBackup(backupPath);
       throw error;
@@ -125,7 +129,7 @@ export class VersionManager {
           // Create mods folder if it doesn't exist
           const modsDir = path.join(this.mcDir, "mods");
           fs.mkdirSync(modsDir, { recursive: true });
-          execSync(`chown -R mc:mc ${modsDir}`);
+          run("chown", ["-R", "mc:mc", modsDir]);
           break;
 
         case "forge":
@@ -150,7 +154,7 @@ export class VersionManager {
             // Create mods folder if it doesn't exist
             const forgeModsDir = path.join(this.mcDir, "mods");
             fs.mkdirSync(forgeModsDir, { recursive: true });
-            execSync(`chown -R mc:mc ${this.mcDir}`);
+            run("chown", ["-R", "mc:mc", this.mcDir]);
             this.configureServiceForServerType("forge");
             await this.startServer();
             await this.monitorStartup();
@@ -259,14 +263,14 @@ export class VersionManager {
 
   private async stopServer(): Promise<void> {
     try {
-      execSync("systemctl stop minecraft", { stdio: "pipe" });
+      run("systemctl", ["stop", "minecraft"]);
     } catch (error) {
       console.warn("Failed to stop via systemctl:", error);
     }
   }
 
   private async startServer(): Promise<void> {
-    execSync("systemctl start minecraft", { stdio: "pipe" });
+    run("systemctl", ["start", "minecraft"]);
   }
 
   private configureServiceForServerType(serverType: ServerType): void {
@@ -287,13 +291,13 @@ export class VersionManager {
       const userJvmArgs = path.join(this.mcDir, "user_jvm_args.txt");
       if (!fs.existsSync(userJvmArgs)) {
         fs.writeFileSync(userJvmArgs, `${currentFlags}\n`);
-        execSync(`chown mc:mc ${userJvmArgs}`, { stdio: "pipe" });
+        run("chown", ["mc:mc", userJvmArgs]);
       }
     }
 
     serviceContent = serviceContent.replace(/ExecStart=.*/, execStart);
     fs.writeFileSync(serviceFile, serviceContent);
-    execSync("systemctl daemon-reload", { stdio: "pipe" });
+    run("systemctl", ["daemon-reload"]);
   }
 
   private readServiceFile(): string | null {
@@ -306,14 +310,14 @@ export class VersionManager {
 
     const serviceFile = "/etc/systemd/system/minecraft.service";
     fs.writeFileSync(serviceFile, content);
-    execSync("systemctl daemon-reload", { stdio: "pipe" });
+    run("systemctl", ["daemon-reload"]);
   }
 
   private async waitForServerStop(timeout: number = 60000): Promise<void> {
     const start = Date.now();
     while (Date.now() - start < timeout) {
       try {
-        const status = execSync("systemctl is-active minecraft", {
+        const status = execFileSync("systemctl", ["is-active", "minecraft"], {
           encoding: "utf8",
           stdio: "pipe",
         }).trim();
@@ -333,7 +337,7 @@ export class VersionManager {
 
   private async validateJar(jarPath: string): Promise<boolean> {
     try {
-      execSync(`unzip -t ${jarPath}`, { stdio: "pipe" });
+      run("unzip", ["-t", jarPath]);
       return true;
     } catch {
       return false;
@@ -370,12 +374,12 @@ export class VersionManager {
     fs.mkdirSync(backupDir, { recursive: true });
 
     const backupFile = path.join(backupDir, `world-${timestamp}.tar.gz`);
-    try {
-      execSync(
-        `tar -czf ${backupFile} -C ${this.mcDir} world world_nether world_the_end 2>/dev/null || tar -czf ${backupFile} -C ${this.mcDir} world`,
-        { stdio: "pipe" }
-      );
-    } catch {
+    const worldDirs = ["world", "world_nether", "world_the_end"].filter((entry) =>
+      fs.existsSync(path.join(this.mcDir, entry))
+    );
+    if (worldDirs.length > 0) {
+      run("tar", ["-czf", backupFile, "-C", this.mcDir, ...worldDirs]);
+    } else {
       // If world doesn't exist, create empty backup marker
       fs.writeFileSync(backupFile, "");
     }
@@ -392,7 +396,7 @@ export class VersionManager {
     fs.mkdirSync(backupDir, { recursive: true });
 
     const backupFile = path.join(backupDir, `full-${timestamp}.tar.gz`);
-    execSync(`tar -czf ${backupFile} -C ${this.mcDir} .`, { stdio: "pipe" });
+    run("tar", ["-czf", backupFile, "-C", this.mcDir, "."]);
 
     return backupFile;
   }
@@ -401,7 +405,7 @@ export class VersionManager {
     console.log(`Restoring backup: ${backupPath}`);
     await this.stopServer();
     if (fs.existsSync(backupPath) && fs.statSync(backupPath).size > 0) {
-      execSync(`tar -xzf ${backupPath} -C ${this.mcDir}`, { stdio: "pipe" });
+      run("tar", ["-xzf", backupPath, "-C", this.mcDir]);
     }
     await this.startServer();
   }
