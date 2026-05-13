@@ -105,10 +105,12 @@ npm install --workspaces
 npm run build
 ```
 
-### Deploy Wrapper Contract
+### Pull Deployment Contract
 
 GitHub Actions is build-only. The live deployment uses a pull model from the
-LXD host so no inbound SSH from GitHub is required.
+LXD host so no inbound SSH from GitHub is required. The host checkout is the
+source of truth for live updates, and the management gateway does not need LXD
+control privileges.
 
 On `nodev2`, install the six-hour pull updater from the host checkout:
 
@@ -117,11 +119,14 @@ cd ~/repos/mclauncher
 apps/scripts/install-host-pull-updater.sh
 ```
 
-The updater fetches `origin/main`, exits if there are no changes, refuses to run
-on a dirty checkout, builds the apps, deploys built artifacts into `mc-manager`
-and `mc-server-1`, and restarts only `mc-manager` and `mc-agent`.
+This installs a cron entry for minute 17 every six hours. The updater fetches
+`origin/main`, exits if there are no changes, refuses to run on a dirty
+checkout, builds the apps, deploys built artifacts into `mc-manager` and
+`mc-server-1`, and restarts only `mc-manager` and `mc-agent`.
 
-Logs are written to `~/.local/state/mclauncher/auto-update.log`.
+The scheduled command is `apps/scripts/host-pull-deploy.sh`. Deployment copying
+is handled by `apps/scripts/deploy-built-artifacts.sh`. Logs and the update lock
+are kept outside the checkout in `~/.local/state/mclauncher/`.
 
 ### Project Structure
 
