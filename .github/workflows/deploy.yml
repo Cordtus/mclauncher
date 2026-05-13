@@ -12,6 +12,8 @@ jobs:
   deploy:
     name: Build and Deploy
     runs-on: ubuntu-latest
+    env:
+      HAS_DEPLOY_SECRETS: ${{ secrets.SSH_HOST != '' && secrets.SSH_USER != '' && secrets.SSH_PRIVATE_KEY != '' }}
 
     steps:
       - name: Checkout code
@@ -31,6 +33,7 @@ jobs:
         run: npm run build
 
       - name: Deploy to LXD host
+        if: env.HAS_DEPLOY_SECRETS == 'true'
         uses: appleboy/ssh-action@55dabf81b49d4120609345970c91507e2d734799
         with:
           host: ${{ secrets.SSH_HOST }}
@@ -44,6 +47,7 @@ jobs:
             sudo /usr/local/sbin/mclauncher-deploy
 
       - name: Verify deployment
+        if: env.HAS_DEPLOY_SECRETS == 'true'
         uses: appleboy/ssh-action@55dabf81b49d4120609345970c91507e2d734799
         with:
           host: ${{ secrets.SSH_HOST }}
@@ -54,6 +58,10 @@ jobs:
             lxc exec nodev2:mc-manager -- systemctl is-active mc-manager
             lxc exec nodev2:mc-server-1 -- systemctl is-active mc-agent
             echo "Deployment successful!"
+
+      - name: Skip deployment notice
+        if: env.HAS_DEPLOY_SECRETS != 'true'
+        run: echo "SSH deploy secrets are not configured; build completed and live deployment must be run manually."
 
       - name: Notification
         if: always()
