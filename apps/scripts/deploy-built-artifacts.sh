@@ -12,6 +12,7 @@ echo "    Repo: $REPO_ROOT"
 echo "    Manager: $MANAGER_CONTAINER"
 echo "    Server: $SERVER_CONTAINER"
 
+"$LXC_BIN" exec "$MANAGER_CONTAINER" -- rm -rf /opt/mc-lxd-manager/apps/web/dist /opt/mc-lxd-manager/apps/server/dist
 "$LXC_BIN" file push "$REPO_ROOT/package.json" "$MANAGER_CONTAINER/opt/mc-lxd-manager/package.json"
 "$LXC_BIN" file push "$REPO_ROOT/apps/web/package.json" "$MANAGER_CONTAINER/opt/mc-lxd-manager/apps/web/package.json"
 "$LXC_BIN" file push "$REPO_ROOT/apps/server/package.json" "$MANAGER_CONTAINER/opt/mc-lxd-manager/apps/server/package.json"
@@ -21,6 +22,7 @@ echo "    Server: $SERVER_CONTAINER"
 "$LXC_BIN" exec "$MANAGER_CONTAINER" -- systemctl restart mc-manager
 "$LXC_BIN" exec "$MANAGER_CONTAINER" -- systemctl is-active mc-manager
 
+"$LXC_BIN" exec "$SERVER_CONTAINER" -- rm -rf /opt/mc-agent/dist /opt/mc-agent/src
 "$LXC_BIN" file push "$REPO_ROOT/apps/agent/package.json" "$SERVER_CONTAINER/opt/mc-agent/package.json"
 "$LXC_BIN" file push -r "$REPO_ROOT/apps/agent/dist/" "$SERVER_CONTAINER/opt/mc-agent/"
 "$LXC_BIN" file push -r "$REPO_ROOT/apps/agent/src/" "$SERVER_CONTAINER/opt/mc-agent/"

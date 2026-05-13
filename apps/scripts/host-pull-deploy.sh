@@ -56,6 +56,9 @@ fi
 log "updating $BRANCH from $current_sha to $remote_sha"
 git pull --ff-only origin "$BRANCH"
 
+log "cleaning previous build output"
+git clean -fdX apps/agent/dist apps/server/dist apps/web/dist
+
 log "installing dependencies"
 npm install
 
@@ -64,5 +67,8 @@ npm run build
 
 log "deploying built artifacts"
 "$REPO_DIR/apps/scripts/deploy-built-artifacts.sh"
+
+log "cleaning generated build output"
+git clean -fdX apps/agent/dist apps/server/dist apps/web/dist
 
 log "updated and deployed $(git rev-parse HEAD)"
