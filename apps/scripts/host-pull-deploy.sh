@@ -5,7 +5,8 @@ PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin:${P
 
 REPO_DIR="${MCLAUNCHER_REPO_DIR:-$HOME/repos/mclauncher}"
 BRANCH="${MCLAUNCHER_BRANCH:-main}"
-LOCK_FILE="${MCLAUNCHER_LOCK_FILE:-$REPO_DIR/.mclauncher-auto-update.lock}"
+STATE_DIR="${MCLAUNCHER_STATE_DIR:-$HOME/.local/state/mclauncher}"
+LOCK_FILE="${MCLAUNCHER_LOCK_FILE:-$STATE_DIR/auto-update.lock}"
 
 timestamp() {
   date -Iseconds

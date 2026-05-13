@@ -13,6 +13,7 @@ fi
 chmod +x "$REPO_DIR/apps/scripts/deploy-built-artifacts.sh"
 
 mkdir -p "$LOG_DIR"
+touch "$LOG_FILE"
 
 TMP_CRON="$(mktemp)"
 trap 'rm -f "$TMP_CRON"' EXIT
