@@ -25,7 +25,6 @@ echo "    Server: $SERVER_CONTAINER"
 "$LXC_BIN" exec "$SERVER_CONTAINER" -- rm -rf /opt/mc-agent/dist /opt/mc-agent/src
 "$LXC_BIN" file push "$REPO_ROOT/apps/agent/package.json" "$SERVER_CONTAINER/opt/mc-agent/package.json"
 "$LXC_BIN" file push -r "$REPO_ROOT/apps/agent/dist/" "$SERVER_CONTAINER/opt/mc-agent/"
-"$LXC_BIN" file push -r "$REPO_ROOT/apps/agent/src/" "$SERVER_CONTAINER/opt/mc-agent/"
 "$LXC_BIN" exec "$SERVER_CONTAINER" -- bash -lc 'chown root:root /opt/mc-agent/package.json && cd /opt/mc-agent && npm install --omit=dev'
 "$LXC_BIN" exec "$SERVER_CONTAINER" -- systemctl restart mc-agent
 "$LXC_BIN" exec "$SERVER_CONTAINER" -- systemctl is-active mc-agent

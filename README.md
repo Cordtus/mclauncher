@@ -125,7 +125,8 @@ checkout, builds the apps, deploys built artifacts into `mc-manager` and
 `mc-server-1`, restarts only `mc-manager` and `mc-agent`, and removes generated
 build output from the host checkout after a successful deployment. Container
 artifact directories are replaced during deploy so stale compiled files do not
-accumulate.
+accumulate; server containers receive compiled agent output, not TypeScript
+source.
 
 The scheduled command is `apps/scripts/host-pull-deploy.sh`. Deployment copying
 is handled by `apps/scripts/deploy-built-artifacts.sh`. Logs and the update lock
