@@ -1,4 +1,4 @@
-name: Deploy to LXD Containers
+name: Build
 
 on:
   push:
@@ -9,11 +9,9 @@ permissions:
   contents: read
 
 jobs:
-  deploy:
-    name: Build and Deploy
+  build:
+    name: Build
     runs-on: ubuntu-latest
-    env:
-      HAS_DEPLOY_SECRETS: ${{ secrets.SSH_HOST != '' && secrets.SSH_USER != '' && secrets.SSH_PRIVATE_KEY != '' }}
 
     steps:
       - name: Checkout code
@@ -31,43 +29,3 @@ jobs:
 
       - name: Build applications
         run: npm run build
-
-      - name: Deploy to LXD host
-        if: env.HAS_DEPLOY_SECRETS == 'true'
-        uses: appleboy/ssh-action@55dabf81b49d4120609345970c91507e2d734799
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            cd ~/repos/mclauncher
-            git pull origin main
-            npm install
-            npm run build
-            sudo /usr/local/sbin/mclauncher-deploy
-
-      - name: Verify deployment
-        if: env.HAS_DEPLOY_SECRETS == 'true'
-        uses: appleboy/ssh-action@55dabf81b49d4120609345970c91507e2d734799
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            echo "Checking service status..."
-            lxc exec nodev2:mc-manager -- systemctl is-active mc-manager
-            lxc exec nodev2:mc-server-1 -- systemctl is-active mc-agent
-            echo "Deployment successful!"
-
-      - name: Skip deployment notice
-        if: env.HAS_DEPLOY_SECRETS != 'true'
-        run: echo "SSH deploy secrets are not configured; build completed and live deployment must be run manually."
-
-      - name: Notification
-        if: always()
-        run: |
-          if [ "${{ job.status }}" == "success" ]; then
-            echo "✅ Deployment successful!"
-          else
-            echo "❌ Deployment failed!"
-          fi

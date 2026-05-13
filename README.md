@@ -107,14 +107,21 @@ npm run build
 
 ### Deploy Wrapper Contract
 
-The GitHub deployment workflow builds from `main`, then calls
-`sudo /usr/local/sbin/mclauncher-deploy` on the LXD host. Keep that wrapper
-root-owned and limit sudoers to that exact path. Do not grant sudo access to
-raw `lxc` commands or mutable scripts inside this repository.
+GitHub Actions is build-only. The live deployment uses a pull model from the
+LXD host so no inbound SSH from GitHub is required.
 
-The wrapper should only copy already-built artifacts into the LXD containers,
-install production dependencies inside those containers, and restart the
-managed services.
+On `nodev2`, install the six-hour pull updater from the host checkout:
+
+```bash
+cd ~/repos/mclauncher
+apps/scripts/install-host-pull-updater.sh
+```
+
+The updater fetches `origin/main`, exits if there are no changes, refuses to run
+on a dirty checkout, builds the apps, deploys built artifacts into `mc-manager`
+and `mc-server-1`, and restarts only `mc-manager` and `mc-agent`.
+
+Logs are written to `~/.local/state/mclauncher/auto-update.log`.
 
 ### Project Structure
 
