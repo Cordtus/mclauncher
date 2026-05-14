@@ -22,7 +22,17 @@ export interface PasskeyServiceConfig {
   challengeTtlMs: number;
   sessionTtlMs: number;
   userVerification: "preferred" | "required" | "discouraged";
+  registrationCodes?: PasskeyRegistrationCodeInput[];
 }
+
+export interface PasskeyRegistrationCodeInput {
+  code: string;
+  label?: string;
+}
+
+export type PasskeyRegistrationAuthorization =
+  | { type: "admin-session" }
+  | { type: "registration-code"; code: string };
 
 interface PasskeyCredential {
   id: string;
@@ -30,6 +40,8 @@ interface PasskeyCredential {
   rpId: string;
   origin: string;
   publicKeyPem: string;
+  algorithm?: "ES256";
+  curve?: "P-256";
   counter: number;
   transports: string[];
   createdAt: string;
@@ -43,6 +55,8 @@ interface PasskeyChallenge {
   origin: string;
   name?: string;
   userId?: string;
+  authorizedBy?: "admin-session" | "registration-code";
+  registrationCodeId?: string;
   expiresAt: number;
 }
 
@@ -52,16 +66,32 @@ interface PasskeySession {
   expiresAt: number;
 }
 
+interface StoredRegistrationCode {
+  id: string;
+  codeHash: string;
+  label?: string;
+  source: "env" | "generated";
+  createdAt: string;
+  usedAt?: string;
+  usedByCredentialId?: string;
+}
+
 interface PasskeyStore {
   credentials: PasskeyCredential[];
   challenges: Record<string, PasskeyChallenge>;
   sessions: Record<string, PasskeySession>;
+  registrationCodes: Record<string, StoredRegistrationCode>;
 }
 
+const PASSKEY_ALGORITHM = "ES256" as const;
+const PASSKEY_COSE_ALG = -7;
+const PASSKEY_CURVE = "P-256" as const;
+const PASSKEY_NAMED_CURVE = "secp256r1";
 const EMPTY_STORE: PasskeyStore = {
   credentials: [],
   challenges: {},
   sessions: {},
+  registrationCodes: {},
 };
 
 function base64url(buffer: Buffer | Uint8Array): string {
@@ -82,9 +112,23 @@ function sha256(buffer: Buffer | string): Buffer {
   return createHash("sha256").update(buffer).digest();
 }
 
+function normalizeRegistrationCode(code: string): string {
+  return code.trim();
+}
+
+function hashRegistrationCode(code: string): string {
+  return base64url(sha256(normalizeRegistrationCode(code)));
+}
+
 function sameBase64url(a: string, b: string): boolean {
   const left = fromBase64url(a);
   const right = fromBase64url(b);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+function sameString(a: string, b: string): boolean {
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
@@ -154,14 +198,14 @@ function credentialPublicKeyToPem(coseKey: Map<any, any>) {
   const x = coseKey.get(-2);
   const y = coseKey.get(-3);
 
-  if (kty !== 2 || alg !== -7 || crv !== 1 || !Buffer.isBuffer(x) || !Buffer.isBuffer(y)) {
-    throw new Error("Only ES256 P-256 passkeys are supported");
+  if (kty !== 2 || alg !== PASSKEY_COSE_ALG || crv !== 1 || !Buffer.isBuffer(x) || !Buffer.isBuffer(y)) {
+    throw new Error("Only ES256 secp256r1/P-256 passkeys are supported");
   }
 
   return createPublicKey({
     key: {
       kty: "EC",
-      crv: "P-256",
+      crv: PASSKEY_CURVE,
       x: base64url(x),
       y: base64url(y),
       ext: true,
@@ -211,7 +255,9 @@ function assertUserFlags(flags: number, userVerification: PasskeyServiceConfig["
 }
 
 export class PasskeyService {
-  constructor(private readonly config: PasskeyServiceConfig) {}
+  constructor(private readonly config: PasskeyServiceConfig) {
+    this.syncConfiguredRegistrationCodes();
+  }
 
   isEnabled() {
     return this.config.enabled;
@@ -226,7 +272,14 @@ export class PasskeyService {
       rpId: rp?.rpId || this.config.rpId || null,
       origin: rp?.origin || this.config.origin || null,
       userVerification: this.config.userVerification,
+      algorithm: {
+        name: PASSKEY_ALGORITHM,
+        coseAlg: PASSKEY_COSE_ALG,
+        curve: PASSKEY_CURVE,
+        namedCurve: PASSKEY_NAMED_CURVE,
+      },
       hasPasskeys: store.credentials.length > 0,
+      registrationCodesAvailable: Object.values(store.registrationCodes).some((code) => !code.usedAt),
     };
   }
 
@@ -234,12 +287,22 @@ export class PasskeyService {
     return this.readStore().credentials.length > 0;
   }
 
-  registrationOptions(context: PasskeyRequestContext, name: string) {
+  hasRegistrationCodes() {
+    return Object.values(this.readStore().registrationCodes).some((code) => !code.usedAt);
+  }
+
+  registrationOptions(
+    context: PasskeyRequestContext,
+    name: string,
+    authorization: PasskeyRegistrationAuthorization = { type: "admin-session" }
+  ) {
     this.assertEnabled();
     const { rpId, origin } = this.resolveRp(context, true);
     const store = this.readStore();
     const challenge = base64url(randomBytes(32));
     const userId = base64url(randomBytes(16));
+    const registrationCode =
+      authorization.type === "registration-code" ? this.findRegistrationCode(store, authorization.code) : null;
 
     store.challenges[challenge] = {
       type: "registration",
@@ -248,6 +311,8 @@ export class PasskeyService {
       origin,
       name,
       userId,
+      authorizedBy: authorization.type,
+      registrationCodeId: registrationCode?.id,
       expiresAt: Date.now() + this.config.challengeTtlMs,
     };
     this.writeStore(store);
@@ -260,7 +325,7 @@ export class PasskeyService {
         name: "admin",
         displayName: "Minecraft Gateway Admin",
       },
-      pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+      pubKeyCredParams: [{ type: "public-key", alg: PASSKEY_COSE_ALG }],
       timeout: this.config.challengeTtlMs,
       attestation: "none",
       authenticatorSelection: {
@@ -304,19 +369,44 @@ export class PasskeyService {
       throw new Error("Passkey is already registered");
     }
 
+    const registrationCode = challenge.registrationCodeId
+      ? store.registrationCodes[challenge.registrationCodeId]
+      : null;
+    if (challenge.registrationCodeId && (!registrationCode || registrationCode.usedAt)) {
+      throw new Error("Invalid or already used passkey setup code");
+    }
+
+    const now = Date.now();
     store.credentials.push({
       id: credentialId,
       name: challenge.name || "Admin passkey",
       rpId: challenge.rpId,
       origin: challenge.origin,
       publicKeyPem: parsed.publicKeyPem,
+      algorithm: PASSKEY_ALGORITHM,
+      curve: PASSKEY_CURVE,
       counter: parsed.counter,
       transports: Array.isArray(body?.response?.transports) ? body.response.transports : [],
-      createdAt: new Date().toISOString(),
+      createdAt: new Date(now).toISOString(),
     });
+    if (registrationCode) {
+      registrationCode.usedAt = new Date(now).toISOString();
+      registrationCode.usedByCredentialId = credentialId;
+    }
+    const sessionToken = base64url(randomBytes(32));
+    store.sessions[sessionToken] = {
+      credentialId,
+      createdAt: now,
+      expiresAt: now + this.config.sessionTtlMs,
+    };
     this.writeStore(store);
 
-    return { ok: true, credentialId };
+    return {
+      ok: true,
+      credentialId,
+      sessionToken,
+      expiresAt: new Date(store.sessions[sessionToken].expiresAt).toISOString(),
+    };
   }
 
   authenticationOptions(context: PasskeyRequestContext) {
@@ -344,7 +434,6 @@ export class PasskeyService {
         .map((credential) => ({
           id: credential.id,
           type: "public-key",
-          transports: credential.transports,
         })),
     };
   }
@@ -425,6 +514,8 @@ export class PasskeyService {
       id: credential.id,
       name: credential.name,
       rpId: credential.rpId,
+      algorithm: credential.algorithm || PASSKEY_ALGORITHM,
+      curve: credential.curve || PASSKEY_CURVE,
       createdAt: credential.createdAt,
       lastUsedAt: credential.lastUsedAt || null,
     }));
@@ -439,6 +530,53 @@ export class PasskeyService {
     }
     this.writeStore(store);
     return store.credentials.length !== before;
+  }
+
+  listRegistrationCodes() {
+    const store = this.readStore();
+    return Object.values(store.registrationCodes)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .map((code) => ({
+        id: code.id,
+        label: code.label || null,
+        source: code.source,
+        createdAt: code.createdAt,
+        usedAt: code.usedAt || null,
+        usedByCredentialId: code.usedByCredentialId || null,
+      }));
+  }
+
+  createRegistrationCode(label?: string) {
+    this.assertEnabled();
+    const store = this.readStore();
+    const code = base64url(randomBytes(18));
+    const createdAt = new Date().toISOString();
+    const id = base64url(randomBytes(12));
+    store.registrationCodes[id] = {
+      id,
+      codeHash: hashRegistrationCode(code),
+      label: label?.trim() || undefined,
+      source: "generated",
+      createdAt,
+    };
+    this.writeStore(store);
+    return {
+      id,
+      code,
+      label: store.registrationCodes[id].label || null,
+      source: "generated" as const,
+      createdAt,
+      usedAt: null,
+      usedByCredentialId: null,
+    };
+  }
+
+  deleteRegistrationCode(id: string) {
+    const store = this.readStore();
+    if (!store.registrationCodes[id]) return false;
+    delete store.registrationCodes[id];
+    this.writeStore(store);
+    return true;
   }
 
   private assertEnabled() {
@@ -487,6 +625,17 @@ export class PasskeyService {
     }
   }
 
+  private findRegistrationCode(store: PasskeyStore, code: string) {
+    const normalized = normalizeRegistrationCode(code);
+    if (!normalized) throw new Error("Missing passkey setup code");
+    const codeHash = hashRegistrationCode(normalized);
+    const entry = Object.values(store.registrationCodes).find(
+      (candidate) => !candidate.usedAt && sameString(candidate.codeHash, codeHash)
+    );
+    if (!entry) throw new Error("Invalid or already used passkey setup code");
+    return entry;
+  }
+
   private consumeChallenge(store: PasskeyStore, challengeValue: string, type: PasskeyChallenge["type"]) {
     const challenge = store.challenges[challengeValue];
     if (!challenge || challenge.type !== type) throw new Error("Passkey challenge not found");
@@ -498,6 +647,35 @@ export class PasskeyService {
     return challenge;
   }
 
+  private syncConfiguredRegistrationCodes() {
+    const configuredCodes = this.config.registrationCodes || [];
+    if (configuredCodes.length === 0) return;
+
+    const store = this.readStore();
+    let changed = false;
+    for (const configured of configuredCodes) {
+      const code = normalizeRegistrationCode(configured.code);
+      if (!code) continue;
+      const codeHash = hashRegistrationCode(code);
+      const exists = Object.values(store.registrationCodes).some((entry) =>
+        sameString(entry.codeHash, codeHash)
+      );
+      if (exists) continue;
+
+      const id = base64url(randomBytes(12));
+      store.registrationCodes[id] = {
+        id,
+        codeHash,
+        label: configured.label?.trim() || undefined,
+        source: "env",
+        createdAt: new Date().toISOString(),
+      };
+      changed = true;
+    }
+
+    if (changed) this.writeStore(store);
+  }
+
   private readStore(): PasskeyStore {
     try {
       const parsed = JSON.parse(fs.readFileSync(this.config.storeFile, "utf8"));
@@ -505,10 +683,11 @@ export class PasskeyService {
         credentials: Array.isArray(parsed.credentials) ? parsed.credentials : [],
         challenges: parsed.challenges || {},
         sessions: parsed.sessions || {},
+        registrationCodes: parsed.registrationCodes || {},
       };
       return this.cleanupStore(store);
     } catch {
-      return { ...EMPTY_STORE, challenges: {}, sessions: {}, credentials: [] };
+      return { ...EMPTY_STORE, challenges: {}, sessions: {}, credentials: [], registrationCodes: {} };
     }
   }
 

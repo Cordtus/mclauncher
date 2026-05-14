@@ -22,7 +22,7 @@ No Docker, no host services. Everything runs in LXD containers.
 - Packwiz modpack sync
 - One-click LuckPerms installation
 - Snapshot backups
-- Configurable admin access with token and passkey authentication
+- Configurable admin access with passkeys, one-time setup codes, and optional token fallback
 
 ## Quick Start
 
@@ -39,7 +39,7 @@ cd mclauncher
 sudo ./apps/scripts/create-management-container.sh mc-manager 8080
 ```
 
-This creates the management container and outputs an admin token. Save this token!
+This creates the management container and outputs a one-time passkey setup code. Save this code until the first admin passkey is registered.
 
 ### 2. Create Minecraft Server(s)
 
@@ -62,8 +62,8 @@ Parameters:
 
 1. Navigate to `http://<host-ip>:8080`
 2. Open **Admin Access** in the header
-3. Paste the admin token printed by setup
-4. Optional: register a passkey from the same dialog when the gateway is served over HTTPS or localhost. The admin token is required to bootstrap the first passkey.
+3. If no passkey is registered yet, paste the one-time setup code printed by setup
+4. Register a passkey from the same dialog when the gateway is served over HTTPS or localhost. After a passkey is registered, any device that has that synced passkey can sign in without entering a token or setup code.
 
 ## Management
 
@@ -146,10 +146,15 @@ apps/
 
 - Management backend binds to 0.0.0.0:8080 inside container
 - LXD proxy exposes port 8080 on host
-- CIDR filtering restricts access to LAN ranges (`192.168.0.0/24` and `10.70.48.0/24` by default)
-- Admin token or passkey session required for server inventory, settings, logs, mod management, and all write operations
-- Admin browser sessions are stored in HttpOnly `SameSite=Strict` cookies; token entry is a bootstrap exchange and is not persisted in browser storage
+- Admin routes are safe to place behind a public HTTPS hostname when passkey auth is enabled and token auth is disabled; `ADMIN_REQUIRE_CIDR=true` can still add LAN/VPN CIDR restrictions
+- Optional CIDR filtering uses `ALLOW_CIDRS` (`127.0.0.0/8`, `192.168.0.0/24`, `10.70.48.0/24`, and `10.172.19.0/24` by default)
+- A passkey session is required for server inventory, settings, logs, mod management, and all write operations unless token auth is explicitly enabled
+- Admin browser sessions are stored in HttpOnly `SameSite=Strict` cookies; token entry is a fallback exchange and is not persisted in browser storage
 - Passkeys use WebAuthn and require a secure browser context: HTTPS or localhost
+- Passkey registration uses ES256 P-256/secp256r1 credentials
+- One-time setup codes can pre-approve admins for passkey registration only; consumed codes are hashed in `/opt/mc-lxd-manager/passkeys.json` and cannot manage servers
+- `PASSKEY_REGISTRATION_CODES` can seed setup codes at startup with comma-separated `label:code` or `code` entries; existing admins can create additional one-time setup codes from **Admin Access**
+- Passkey login does not require an existing admin-token session once at least one passkey is registered
 - Passkey login requires user verification by default (`PASSKEY_USER_VERIFICATION=required`)
 - Unsafe admin API requests require a same-origin `Origin`/`Referer`; keep Caddy forwarding `Host` and `X-Forwarded-Proto`
 - If `PASSKEY_RP_ID` is configured for a public domain, also set `PASSKEY_ORIGIN` to the exact HTTPS origin
@@ -183,19 +188,21 @@ On the current `nodev2` deployment, the reachable Minecraft LXD proxy is host
 TCP `34567`, so the router rule is WAN TCP `25565` →
 `192.168.0.170:34567`. Players still enter only `mc.basementnodes.ca`.
 
-Do not expose the admin gateway to WAN. Keep the admin hostname restricted to
-LAN ranges and share only the Minecraft join address with players.
+The admin gateway can be exposed through a public HTTPS hostname when
+`ADMIN_AUTH_METHODS=passkey` and setup codes are treated as one-time secrets.
+For extra network gating, set `ADMIN_REQUIRE_CIDR=true` and include LAN plus
+the WireGuard VPN (`10.172.19.0/24` by default) in `ALLOW_CIDRS`.
 
 ## Troubleshooting
 
 **Server not appearing in UI:**
-- If the portal says admin access is required, the server inventory is hidden by design; open **Admin Access** and sign in with the admin token or passkey.
+- If the portal says admin access is required, the server inventory is hidden by design; open **Admin Access** and sign in with a passkey, one-time setup code, or enabled admin token.
 - Check agent is running: `lxc exec mc-server-1 -- systemctl status mc-agent`
 - Check registration: `lxc exec mc-manager -- cat /opt/mc-lxd-manager/servers.json`
 - Check network: `lxc list` (verify container IPs)
 
 **Cannot upload files:**
-- Verify Admin Access has a valid token or active passkey session
+- Verify Admin Access has an active passkey session or enabled token session
 - Check browser console for errors
 
 **Minecraft won't start:**

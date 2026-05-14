@@ -12,14 +12,14 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { createHmac, randomBytes, timingSafeEqual } from "crypto";
 import "dotenv/config";
-import { PasskeyService } from "./services/passkeys.js";
+import { PasskeyService, type PasskeyRegistrationAuthorization, type PasskeyRegistrationCodeInput } from "./services/passkeys.js";
 import * as modpack from "./services/modpack.js";
 
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number(process.env.PORT || 8080);
 const REGISTRY_FILE = process.env.REGISTRY_FILE || "/opt/mc-lxd-manager/servers.json";
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
-const ALLOW_CIDRS = (process.env.ALLOW_CIDRS ?? "127.0.0.0/8,192.168.0.0/24,10.70.48.0/24")
+const ALLOW_CIDRS = (process.env.ALLOW_CIDRS ?? "127.0.0.0/8,192.168.0.0/24,10.70.48.0/24,10.172.19.0/24")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
@@ -36,7 +36,7 @@ const ADMIN_AUTH_METHODS = new Set(
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean)
 );
-const ADMIN_REQUIRE_CIDR = (process.env.ADMIN_REQUIRE_CIDR ?? "true").toLowerCase() !== "false";
+const ADMIN_REQUIRE_CIDR = (process.env.ADMIN_REQUIRE_CIDR ?? "false").toLowerCase() !== "false";
 const PASSKEYS_ENABLED = (process.env.PASSKEYS_ENABLED ?? "true").toLowerCase() !== "false";
 const PASSKEY_USER_VERIFICATION = (
   ["preferred", "required", "discouraged"].includes(process.env.PASSKEY_USER_VERIFICATION || "")
@@ -46,6 +46,7 @@ const PASSKEY_USER_VERIFICATION = (
 const PASSKEY_STORE_FILE = process.env.PASSKEY_STORE_FILE || path.join(path.dirname(REGISTRY_FILE), "passkeys.json");
 const PASSKEY_SESSION_TTL_MS = Number(process.env.PASSKEY_SESSION_TTL_MS || 12 * 60 * 60 * 1000);
 const PASSKEY_CHALLENGE_TTL_MS = Number(process.env.PASSKEY_CHALLENGE_TTL_MS || 5 * 60 * 1000);
+const PASSKEY_REGISTRATION_CODES = parsePasskeyRegistrationCodes(process.env.PASSKEY_REGISTRATION_CODES || "");
 const ADMIN_COOKIE_NAME = process.env.ADMIN_COOKIE_NAME || "mclx_admin";
 const ADMIN_COOKIE_TTL_MS = Number(process.env.ADMIN_COOKIE_TTL_MS || PASSKEY_SESSION_TTL_MS);
 const DEFAULT_MINECRAFT_PORT = 25565;
@@ -106,6 +107,22 @@ type PublicMrpackCacheEntry = {
 const MODPACK_LOADERS = new Set<ModpackLoader>(["fabric", "forge", "neoforge", "quilt"]);
 const publicModpackCache = new Map<string, PublicModpackCacheEntry>();
 const publicMrpackCache = new Map<string, PublicMrpackCacheEntry>();
+
+function parsePasskeyRegistrationCodes(value: string): PasskeyRegistrationCodeInput[] {
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const separator = entry.indexOf(":");
+      if (separator <= 0) return { code: entry };
+      return {
+        label: entry.slice(0, separator).trim() || undefined,
+        code: entry.slice(separator + 1).trim(),
+      };
+    })
+    .filter((entry) => entry.code.length > 0);
+}
 
 function asModpackLoader(value: unknown): ModpackLoader | null {
   if (typeof value !== "string") return null;
@@ -239,6 +256,7 @@ const passkeys = new PasskeyService({
   challengeTtlMs: PASSKEY_CHALLENGE_TTL_MS,
   sessionTtlMs: PASSKEY_SESSION_TTL_MS,
   userVerification: PASSKEY_USER_VERIFICATION,
+  registrationCodes: PASSKEY_REGISTRATION_CODES,
 });
 
 function adminAuthConfigured() {
@@ -248,9 +266,13 @@ function adminAuthConfigured() {
   );
 }
 
-if (!adminAuthConfigured()) {
+function adminBootstrapConfigured() {
+  return adminAuthConfigured() || (ADMIN_AUTH_METHODS.has("passkey") && passkeys.hasRegistrationCodes());
+}
+
+if (!adminBootstrapConfigured()) {
   console.warn(
-    "Warning: no admin authentication credential is configured. Set ADMIN_TOKEN to bootstrap gateway admin access."
+    "Warning: no admin authentication credential is configured. Set PASSKEY_REGISTRATION_CODES or ADMIN_TOKEN to bootstrap gateway admin access."
   );
 }
 
@@ -437,6 +459,7 @@ function requireSameOriginUnsafeApi(req: Request, res: Response, next: () => voi
     req.path === "/api/auth/logout" ||
     req.path === "/api/auth/passkeys/register/options" ||
     req.path === "/api/auth/passkeys/register/verify" ||
+    req.path.startsWith("/api/auth/passkeys/registration-codes") ||
     (req.method === "DELETE" && req.path.startsWith("/api/auth/passkeys/"))
   );
   const auth = String(req.headers.authorization || "");
@@ -619,6 +642,26 @@ function requireAdmin(req: Request, res: Response, next: () => void) {
   return next();
 }
 
+function passkeyRegistrationAuthorization(req: Request, res: Response): PasskeyRegistrationAuthorization | null {
+  const ip = clientIp(req);
+  if (!requestAllowedByCidr(req)) {
+    res.status(403).json({ error: `Forbidden from ${ip}` });
+    return null;
+  }
+  if (requestHasAdminAuth(req)) return { type: "admin-session" };
+
+  const setupCode =
+    typeof req.body?.setupCode === "string"
+      ? req.body.setupCode
+      : typeof req.body?.code === "string"
+        ? req.body.code
+        : "";
+  if (setupCode.trim()) return { type: "registration-code", code: setupCode };
+
+  res.status(401).json({ error: "Admin session or one-time passkey setup code required" });
+  return null;
+}
+
 app.use(requireSameOriginUnsafeApi);
 
 // Proxy helper
@@ -710,20 +753,28 @@ app.post("/api/auth/token/login", authRateLimit, (req, res) => {
   }
 });
 
-app.post("/api/auth/passkeys/register/options", requireAdmin, (req, res) => {
+app.post("/api/auth/passkeys/register/options", authRateLimit, (req, res) => {
   try {
+    const authorization = passkeyRegistrationAuthorization(req, res);
+    if (!authorization) return;
     const name = typeof req.body?.name === "string" && req.body.name.trim()
       ? req.body.name.trim()
       : "Admin passkey";
-    res.json({ publicKey: passkeys.registrationOptions(authContext(req), name) });
+    res.json({ publicKey: passkeys.registrationOptions(authContext(req), name, authorization) });
   } catch (err: any) {
-    res.status(400).json({ error: err.message });
+    res.status(401).json({ error: err.message });
   }
 });
 
-app.post("/api/auth/passkeys/register/verify", requireAdmin, (req, res) => {
+app.post("/api/auth/passkeys/register/verify", authRateLimit, (req, res) => {
   try {
-    res.json(passkeys.verifyRegistration(authContext(req), req.body));
+    if (!requestAllowedByCidr(req)) {
+      return res.status(403).json({ error: `Forbidden from ${clientIp(req)}` });
+    }
+    const result = passkeys.verifyRegistration(authContext(req), req.body);
+    setAdminCookie(req, res, `passkey.${result.sessionToken}`, new Date(result.expiresAt).getTime());
+    const { sessionToken: _sessionToken, ...safeResult } = result;
+    res.json(safeResult);
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
@@ -756,6 +807,25 @@ app.post("/api/auth/passkeys/login/verify", authRateLimit, (req, res) => {
 
 app.get("/api/auth/passkeys", requireAdmin, (_req, res) => {
   res.json({ credentials: passkeys.listCredentials() });
+});
+
+app.get("/api/auth/passkeys/registration-codes", requireAdmin, (_req, res) => {
+  res.json({ codes: passkeys.listRegistrationCodes() });
+});
+
+app.post("/api/auth/passkeys/registration-codes", requireAdmin, (req, res) => {
+  try {
+    const label = typeof req.body?.label === "string" ? req.body.label : undefined;
+    res.status(201).json({ code: passkeys.createRegistrationCode(label) });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete("/api/auth/passkeys/registration-codes/:id", requireAdmin, (req, res) => {
+  const deleted = passkeys.deleteRegistrationCode(req.params.id);
+  if (!deleted) return res.status(404).json({ error: "Passkey setup code not found" });
+  res.json({ ok: true });
 });
 
 app.delete("/api/auth/passkeys/:id", requireAdmin, (req, res) => {

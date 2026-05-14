@@ -97,12 +97,21 @@ export function passkeysAvailable(): boolean {
   );
 }
 
-export async function registerPasskey(name: string) {
+export type PasskeyRegistrationCode = {
+  id: string;
+  label: string | null;
+  source: "env" | "generated";
+  createdAt: string;
+  usedAt: string | null;
+  usedByCredentialId: string | null;
+};
+
+export async function registerPasskey(name: string, setupCode?: string) {
   const optionsResponse = await fetch("/api/auth/passkeys/register/options", {
     method: "POST",
     headers: jsonAuthHeaders(),
     credentials: "include",
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, setupCode: setupCode?.trim() || undefined }),
   });
   const optionsData = await readJsonResponse(optionsResponse);
   const credential = await navigator.credentials.create({
@@ -118,6 +127,34 @@ export async function registerPasskey(name: string) {
     body: JSON.stringify(serializeRegistrationCredential(credential)),
   });
   return readJsonResponse(verificationResponse);
+}
+
+export async function createPasskeyRegistrationCode(label?: string) {
+  const response = await fetch("/api/auth/passkeys/registration-codes", {
+    method: "POST",
+    headers: jsonAuthHeaders(),
+    credentials: "include",
+    body: JSON.stringify({ label: label?.trim() || undefined }),
+  });
+  const data = await readJsonResponse(response);
+  return data.code as PasskeyRegistrationCode & { code: string };
+}
+
+export async function listPasskeyRegistrationCodes() {
+  const response = await fetch("/api/auth/passkeys/registration-codes", {
+    credentials: "include",
+  });
+  const data = await readJsonResponse(response);
+  return data.codes as PasskeyRegistrationCode[];
+}
+
+export async function deletePasskeyRegistrationCode(id: string) {
+  const response = await fetch(`/api/auth/passkeys/registration-codes/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+    credentials: "include",
+  });
+  return readJsonResponse(response);
 }
 
 export async function loginWithPasskey() {

@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { createServer, type Server } from 'http';
+import { createECDH, createHash } from 'crypto';
 import JSZip from 'jszip';
 
 vi.mock('./services/modrinth.js', () => ({
@@ -56,6 +57,93 @@ function close(server: Server): Promise<void> {
   });
 }
 
+function base64url(value: Buffer | string): string {
+  return Buffer.from(value)
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+function cborUnsigned(value: number): Buffer {
+  if (value < 24) return Buffer.from([value]);
+  if (value < 256) return Buffer.from([0x18, value]);
+  throw new Error('Test CBOR encoder only supports small integers');
+}
+
+function cborNegative(value: number): Buffer {
+  return cborUnsigned(-1 - value).map((byte, index) => index === 0 ? byte | 0x20 : byte);
+}
+
+function cborBytes(value: Buffer): Buffer {
+  if (value.length < 24) return Buffer.concat([Buffer.from([0x40 | value.length]), value]);
+  if (value.length < 256) return Buffer.concat([Buffer.from([0x58, value.length]), value]);
+  throw new Error('Test CBOR encoder only supports short byte strings');
+}
+
+function cborText(value: string): Buffer {
+  const bytes = Buffer.from(value);
+  if (bytes.length < 24) return Buffer.concat([Buffer.from([0x60 | bytes.length]), bytes]);
+  if (bytes.length < 256) return Buffer.concat([Buffer.from([0x78, bytes.length]), bytes]);
+  throw new Error('Test CBOR encoder only supports short text strings');
+}
+
+function cborMap(entries: Array<[Buffer, Buffer]>): Buffer {
+  return Buffer.concat([Buffer.from([0xa0 | entries.length]), ...entries.flat()]);
+}
+
+function buildRegistrationCredential(publicKey: any, rpId: string, origin: string) {
+  const ecdh = createECDH('prime256v1');
+  ecdh.generateKeys();
+  const publicKeyBytes = ecdh.getPublicKey();
+  const x = publicKeyBytes.subarray(1, 33);
+  const y = publicKeyBytes.subarray(33, 65);
+  const credentialId = Buffer.from('test-passkey-credential');
+  const coseKey = cborMap([
+    [cborUnsigned(1), cborUnsigned(2)],
+    [cborUnsigned(3), cborNegative(-7)],
+    [cborNegative(-1), cborUnsigned(1)],
+    [cborNegative(-2), cborBytes(x)],
+    [cborNegative(-3), cborBytes(y)],
+  ]);
+  const credentialIdLength = Buffer.alloc(2);
+  credentialIdLength.writeUInt16BE(credentialId.length);
+  const attestedCredentialData = Buffer.concat([
+    Buffer.alloc(16),
+    credentialIdLength,
+    credentialId,
+    coseKey,
+  ]);
+  const counter = Buffer.alloc(4);
+  const authData = Buffer.concat([
+    createHash('sha256').update(rpId).digest(),
+    Buffer.from([0x45]),
+    counter,
+    attestedCredentialData,
+  ]);
+  const attestationObject = cborMap([
+    [cborText('fmt'), cborText('none')],
+    [cborText('authData'), cborBytes(authData)],
+    [cborText('attStmt'), cborMap([])],
+  ]);
+  const clientData = Buffer.from(JSON.stringify({
+    type: 'webauthn.create',
+    challenge: publicKey.challenge,
+    origin,
+  }));
+
+  return {
+    id: base64url(credentialId),
+    rawId: base64url(credentialId),
+    type: 'public-key',
+    response: {
+      clientDataJSON: base64url(clientData),
+      attestationObject: base64url(attestationObject),
+      transports: ['internal'],
+    },
+  };
+}
+
 describe('management gateway routes', () => {
   const servers: Server[] = [];
   const tempDirs: string[] = [];
@@ -67,9 +155,19 @@ describe('management gateway routes', () => {
     }
     delete process.env.REGISTRY_FILE;
     delete process.env.ADMIN_TOKEN;
+    delete process.env.ADMIN_AUTH_METHODS;
+    delete process.env.ADMIN_REQUIRE_CIDR;
     delete process.env.ALLOW_CIDRS;
     delete process.env.AGENT_ALLOWED_CIDRS;
     delete process.env.AGENT_ALLOWED_PORTS;
+    delete process.env.PASSKEYS_ENABLED;
+    delete process.env.PASSKEY_ORIGIN;
+    delete process.env.PASSKEY_REGISTRATION_CODES;
+    delete process.env.PASSKEY_RP_ID;
+    delete process.env.PASSKEY_STORE_FILE;
+    delete process.env.PASSKEY_USER_VERIFICATION;
+    delete process.env.TRUST_PROXY;
+    delete process.env.TRUST_PROXY_CIDRS;
     delete process.env.WEB_DIST_DIR;
     vi.resetModules();
   });
@@ -187,6 +285,31 @@ describe('management gateway routes', () => {
     expect(await adminResponse.json()).toEqual([]);
   });
 
+  it('allows admin auth attempts from the default WireGuard VPN CIDR', async () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'mc-gateway-test-'));
+    tempDirs.push(tempDir);
+    const registryFile = path.join(tempDir, 'servers.json');
+    writeFileSync(registryFile, JSON.stringify({ servers: [] }));
+
+    process.env.REGISTRY_FILE = registryFile;
+    process.env.ADMIN_TOKEN = 'test-token';
+    process.env.ADMIN_REQUIRE_CIDR = 'true';
+    process.env.TRUST_PROXY = 'true';
+    process.env.WEB_DIST_DIR = tempDir;
+
+    const { app } = await import('./index.js');
+    const gateway = createServer(app);
+    await listen(gateway);
+    servers.push(gateway);
+
+    const response = await fetch(`${baseUrl(gateway)}/api/servers`, {
+      headers: { 'X-Forwarded-For': '10.172.19.42' },
+    });
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: 'Unauthorized' });
+  });
+
   it('exchanges an admin token for an HttpOnly cookie session', async () => {
     const tempDir = mkdtempSync(path.join(tmpdir(), 'mc-gateway-test-'));
     tempDirs.push(tempDir);
@@ -220,6 +343,228 @@ describe('management gateway routes', () => {
     });
     expect(sessionResponse.status).toBe(200);
     expect(await sessionResponse.json()).toEqual({ authenticated: true });
+  });
+
+  it('offers passkey login without an admin token when a passkey is already registered', async () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'mc-gateway-test-'));
+    tempDirs.push(tempDir);
+    const registryFile = path.join(tempDir, 'servers.json');
+    const passkeyStoreFile = path.join(tempDir, 'passkeys.json');
+    writeFileSync(registryFile, JSON.stringify({ servers: [] }));
+    writeFileSync(passkeyStoreFile, JSON.stringify({
+      credentials: [
+        {
+          id: 'cmVnaXN0ZXJlZC1wYXNza2V5',
+          name: 'Admin passkey',
+          rpId: 'gateway.example.test',
+          origin: 'https://gateway.example.test',
+          publicKeyPem: 'unused in option generation',
+          counter: 0,
+          transports: ['internal'],
+          createdAt: new Date().toISOString(),
+        },
+      ],
+      challenges: {},
+      sessions: {},
+    }));
+
+    process.env.REGISTRY_FILE = registryFile;
+    process.env.ALLOW_CIDRS = '127.0.0.0/8';
+    process.env.WEB_DIST_DIR = tempDir;
+    process.env.PASSKEY_ORIGIN = 'https://gateway.example.test';
+    process.env.PASSKEY_STORE_FILE = passkeyStoreFile;
+
+    const { app } = await import('./index.js');
+    const gateway = createServer(app);
+    await listen(gateway);
+    servers.push(gateway);
+
+    const sessionResponse = await fetch(`${baseUrl(gateway)}/api/auth/session`);
+    expect(sessionResponse.status).toBe(401);
+
+    const optionsResponse = await fetch(`${baseUrl(gateway)}/api/auth/passkeys/login/options`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    expect(optionsResponse.status).toBe(200);
+    const body = await optionsResponse.json();
+    expect(body.publicKey.rpId).toBe('gateway.example.test');
+    expect(body.publicKey.allowCredentials).toEqual([
+      {
+        id: 'cmVnaXN0ZXJlZC1wYXNza2V5',
+        type: 'public-key',
+      },
+    ]);
+  });
+
+  it('allows a one-time setup code to create passkey registration options without admin auth', async () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'mc-gateway-test-'));
+    tempDirs.push(tempDir);
+    const registryFile = path.join(tempDir, 'servers.json');
+    const passkeyStoreFile = path.join(tempDir, 'passkeys.json');
+    writeFileSync(registryFile, JSON.stringify({ servers: [] }));
+
+    process.env.REGISTRY_FILE = registryFile;
+    process.env.WEB_DIST_DIR = tempDir;
+    process.env.PASSKEY_ORIGIN = 'https://gateway.example.test';
+    process.env.PASSKEY_REGISTRATION_CODES = 'alice:setup-secret';
+    process.env.PASSKEY_STORE_FILE = passkeyStoreFile;
+
+    const { app } = await import('./index.js');
+    const gateway = createServer(app);
+    await listen(gateway);
+    servers.push(gateway);
+
+    const optionsResponse = await fetch(`${baseUrl(gateway)}/api/auth/passkeys/register/options`, {
+      method: 'POST',
+      headers: {
+        Origin: baseUrl(gateway),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ name: 'Alice', setupCode: 'setup-secret' }),
+    });
+    expect(optionsResponse.status).toBe(200);
+    const optionsBody = await optionsResponse.json();
+    expect(optionsBody.publicKey.pubKeyCredParams).toEqual([{ type: 'public-key', alg: -7 }]);
+
+    const store = JSON.parse(readFileSync(passkeyStoreFile, 'utf8'));
+    const [setupCode] = Object.values(store.registrationCodes) as any[];
+    expect(setupCode.label).toBe('alice');
+    expect(setupCode.usedAt).toBeUndefined();
+    expect(setupCode.codeHash).not.toContain('setup-secret');
+
+    const reusedCodeResponse = await fetch(`${baseUrl(gateway)}/api/auth/passkeys/register/options`, {
+      method: 'POST',
+      headers: {
+        Origin: baseUrl(gateway),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ name: 'Alice again', setupCode: 'setup-secret' }),
+    });
+    expect(reusedCodeResponse.status).toBe(200);
+
+    const adminResponse = await fetch(`${baseUrl(gateway)}/api/servers`);
+    expect(adminResponse.status).toBe(503);
+  });
+
+  it('spends a one-time setup code only after passkey registration verifies', async () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'mc-gateway-test-'));
+    tempDirs.push(tempDir);
+    const registryFile = path.join(tempDir, 'servers.json');
+    const passkeyStoreFile = path.join(tempDir, 'passkeys.json');
+    writeFileSync(registryFile, JSON.stringify({ servers: [] }));
+
+    process.env.REGISTRY_FILE = registryFile;
+    process.env.WEB_DIST_DIR = tempDir;
+    process.env.PASSKEY_ORIGIN = 'https://gateway.example.test';
+    process.env.PASSKEY_REGISTRATION_CODES = 'alice:setup-secret';
+    process.env.PASSKEY_STORE_FILE = passkeyStoreFile;
+
+    const { app } = await import('./index.js');
+    const gateway = createServer(app);
+    await listen(gateway);
+    servers.push(gateway);
+
+    const optionsResponse = await fetch(`${baseUrl(gateway)}/api/auth/passkeys/register/options`, {
+      method: 'POST',
+      headers: {
+        Origin: baseUrl(gateway),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ name: 'Alice', setupCode: 'setup-secret' }),
+    });
+    expect(optionsResponse.status).toBe(200);
+    const optionsBody = await optionsResponse.json();
+    const credential = buildRegistrationCredential(
+      optionsBody.publicKey,
+      'gateway.example.test',
+      'https://gateway.example.test'
+    );
+
+    const verifyResponse = await fetch(`${baseUrl(gateway)}/api/auth/passkeys/register/verify`, {
+      method: 'POST',
+      headers: {
+        Origin: baseUrl(gateway),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(credential),
+    });
+    expect(verifyResponse.status).toBe(200);
+    expect(verifyResponse.headers.get('set-cookie')).toContain('mclx_admin=passkey.');
+    expect(await verifyResponse.json()).toEqual({
+      ok: true,
+      credentialId: credential.id,
+      expiresAt: expect.any(String),
+    });
+
+    const store = JSON.parse(readFileSync(passkeyStoreFile, 'utf8'));
+    const [setupCode] = Object.values(store.registrationCodes) as any[];
+    expect(setupCode.usedAt).toEqual(expect.any(String));
+    expect(setupCode.usedByCredentialId).toBe(credential.id);
+    expect(store.credentials).toEqual([
+      expect.objectContaining({
+        id: credential.id,
+        name: 'Alice',
+        algorithm: 'ES256',
+        curve: 'P-256',
+      }),
+    ]);
+
+    const reusedCodeResponse = await fetch(`${baseUrl(gateway)}/api/auth/passkeys/register/options`, {
+      method: 'POST',
+      headers: {
+        Origin: baseUrl(gateway),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ name: 'Alice again', setupCode: 'setup-secret' }),
+    });
+    expect(reusedCodeResponse.status).toBe(401);
+  });
+
+  it('lets authenticated admins generate one-time passkey setup codes', async () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'mc-gateway-test-'));
+    tempDirs.push(tempDir);
+    const registryFile = path.join(tempDir, 'servers.json');
+    const passkeyStoreFile = path.join(tempDir, 'passkeys.json');
+    writeFileSync(registryFile, JSON.stringify({ servers: [] }));
+
+    process.env.REGISTRY_FILE = registryFile;
+    process.env.ADMIN_TOKEN = 'test-token';
+    process.env.WEB_DIST_DIR = tempDir;
+    process.env.PASSKEY_STORE_FILE = passkeyStoreFile;
+
+    const { app } = await import('./index.js');
+    const gateway = createServer(app);
+    await listen(gateway);
+    servers.push(gateway);
+
+    const createResponse = await fetch(`${baseUrl(gateway)}/api/auth/passkeys/registration-codes`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer test-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ label: 'Bob phone' }),
+    });
+    expect(createResponse.status).toBe(201);
+    const created = await createResponse.json();
+    expect(created.code.label).toBe('Bob phone');
+    expect(created.code.code).toEqual(expect.any(String));
+
+    const listResponse = await fetch(`${baseUrl(gateway)}/api/auth/passkeys/registration-codes`, {
+      headers: { Authorization: 'Bearer test-token' },
+    });
+    expect(listResponse.status).toBe(200);
+    const list = await listResponse.json();
+    expect(list.codes).toEqual([
+      expect.objectContaining({
+        id: created.code.id,
+        label: 'Bob phone',
+        usedAt: null,
+      }),
+    ]);
+    expect(JSON.stringify(list)).not.toContain(created.code.code);
   });
 
   it('blocks cookie-authenticated unsafe API requests without a same-origin header', async () => {

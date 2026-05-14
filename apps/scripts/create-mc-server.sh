@@ -289,32 +289,75 @@ lxc exec "$MANAGER_CONTAINER" -- bash -c '
 set -euo pipefail
 REGISTER_DIR="$1"
 PAYLOAD_FILE="$REGISTER_DIR/register-server.json"
-CURL_CONFIG="$REGISTER_DIR/curl.conf"
 
 cleanup() {
   rm -rf "$REGISTER_DIR"
 }
 trap cleanup EXIT
 
-ADMIN_TOKEN=$(sed -n "s/^ADMIN_TOKEN=//p" /opt/mc-lxd-manager/.env | head -n1)
-if [ -z "$ADMIN_TOKEN" ]; then
-  echo "ADMIN_TOKEN is not set in /opt/mc-lxd-manager/.env" >&2
-  exit 1
-fi
+REGISTRY_FILE=$(sed -n "s/^REGISTRY_FILE=//p" /opt/mc-lxd-manager/.env | head -n1)
+REGISTRY_FILE="${REGISTRY_FILE:-/opt/mc-lxd-manager/servers.json}"
+AGENT_ALLOWED_CIDRS=$(sed -n "s/^AGENT_ALLOWED_CIDRS=//p" /opt/mc-lxd-manager/.env | head -n1)
+AGENT_ALLOWED_CIDRS="${AGENT_ALLOWED_CIDRS:-10.70.48.0/24}"
+AGENT_ALLOWED_PORTS=$(sed -n "s/^AGENT_ALLOWED_PORTS=//p" /opt/mc-lxd-manager/.env | head -n1)
+AGENT_ALLOWED_PORTS="${AGENT_ALLOWED_PORTS:-9090}"
 
-install -m 600 -o root -g root /dev/null "$CURL_CONFIG"
-{
-  printf "%s\n" "request = \"POST\""
-  printf "%s\n" "url = \"http://127.0.0.1:8080/api/servers/register\""
-  printf "header = \"Authorization: Bearer %s\"\n" "$ADMIN_TOKEN"
-  printf "%s\n" "header = \"Content-Type: application/json\""
-  printf "data-binary = \"@%s\"\n" "$PAYLOAD_FILE"
-  printf "%s\n" "fail"
-  printf "%s\n" "silent"
-  printf "%s\n" "show-error"
-} > "$CURL_CONFIG"
+node - "$PAYLOAD_FILE" "$REGISTRY_FILE" "$AGENT_ALLOWED_CIDRS" "$AGENT_ALLOWED_PORTS" <<'"'"'NODE'"'"'
+const fs = require("fs");
+const path = require("path");
 
-curl --config "$CURL_CONFIG"
+const [, , payloadFile, registryFile, allowedCidrsValue, allowedPortsValue] = process.argv;
+const payload = JSON.parse(fs.readFileSync(payloadFile, "utf8"));
+const registry = fs.existsSync(registryFile)
+  ? JSON.parse(fs.readFileSync(registryFile, "utf8"))
+  : { servers: [] };
+const allowedCidrs = allowedCidrsValue.split(",").map((value) => value.trim()).filter(Boolean);
+const allowedPorts = new Set(allowedPortsValue.split(",").map((value) => value.trim()).filter(Boolean));
+
+function ipInCidr(ip, cidr) {
+  const ipMatch = ip.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  const cidrMatch = cidr.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)\/(\d{1,2})$/);
+  if (!ipMatch || !cidrMatch) return false;
+  const ipParts = ipMatch.slice(1).map(Number);
+  const netParts = cidrMatch.slice(1, 5).map(Number);
+  const bits = Number(cidrMatch[5]);
+  const ipNum = ((ipParts[0] << 24) >>> 0) + (ipParts[1] << 16) + (ipParts[2] << 8) + ipParts[3];
+  const netNum = ((netParts[0] << 24) >>> 0) + (netParts[1] << 16) + (netParts[2] << 8) + netParts[3];
+  const mask = bits === 0 ? 0 : (~0 >>> (32 - bits)) << (32 - bits);
+  return (ipNum & mask) === (netNum & mask);
+}
+
+if (!Array.isArray(registry.servers)) {
+  registry.servers = [];
+}
+
+if (registry.servers.some((server) => server.name === payload.name)) {
+  throw new Error(`Server ${payload.name} is already registered`);
+}
+
+const agentUrl = new URL(payload.agent_url);
+if (agentUrl.protocol !== "http:" || agentUrl.pathname !== "/" || agentUrl.search || agentUrl.hash) {
+  throw new Error("Generated agent_url is invalid");
+}
+const agentPort = agentUrl.port || "80";
+if (!allowedPorts.has(agentPort)) {
+  throw new Error(`Generated agent_url port ${agentPort} is not in AGENT_ALLOWED_PORTS`);
+}
+if (!allowedCidrs.some((cidr) => ipInCidr(agentUrl.hostname, cidr))) {
+  throw new Error(`Generated agent_url host ${agentUrl.hostname} is outside AGENT_ALLOWED_CIDRS`);
+}
+
+registry.servers.push(payload);
+fs.mkdirSync(path.dirname(registryFile), { recursive: true });
+const tempFile = path.join(path.dirname(registryFile), `.${path.basename(registryFile)}.${process.pid}.${Date.now()}.tmp`);
+fs.writeFileSync(tempFile, JSON.stringify(registry, null, 2), { mode: 0o600 });
+fs.chmodSync(tempFile, 0o600);
+fs.renameSync(tempFile, registryFile);
+fs.chmodSync(registryFile, 0o600);
+NODE
+
+chown mcmanager:mcmanager "$REGISTRY_FILE"
+chmod 600 "$REGISTRY_FILE"
 ' -- "$MANAGER_REGISTER_DIR"
 
 echo ""

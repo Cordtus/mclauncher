@@ -9,14 +9,43 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
     <script>
-      // Polyfill for crypto.randomUUID (needed for Radix UI components)
-      if (!crypto.randomUUID) {
-        crypto.randomUUID = function() {
-          return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
-            (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
-          );
+      (() => {
+        const cryptoApi = globalThis.crypto;
+        if (!cryptoApi || typeof cryptoApi.randomUUID === "function" || typeof cryptoApi.getRandomValues !== "function") {
+          return;
+        }
+
+        const byteToHex = Array.from({ length: 256 }, (_, index) => index.toString(16).padStart(2, "0"));
+
+        cryptoApi.randomUUID = () => {
+          const bytes = cryptoApi.getRandomValues(new Uint8Array(16));
+          bytes[6] = (bytes[6] & 0x0f) | 0x40;
+          bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+          return [
+            byteToHex[bytes[0]],
+            byteToHex[bytes[1]],
+            byteToHex[bytes[2]],
+            byteToHex[bytes[3]],
+            "-",
+            byteToHex[bytes[4]],
+            byteToHex[bytes[5]],
+            "-",
+            byteToHex[bytes[6]],
+            byteToHex[bytes[7]],
+            "-",
+            byteToHex[bytes[8]],
+            byteToHex[bytes[9]],
+            "-",
+            byteToHex[bytes[10]],
+            byteToHex[bytes[11]],
+            byteToHex[bytes[12]],
+            byteToHex[bytes[13]],
+            byteToHex[bytes[14]],
+            byteToHex[bytes[15]],
+          ].join("");
         };
-      }
+      })();
     </script>
     <style>
       body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Arial, sans-serif; margin: 2rem; }

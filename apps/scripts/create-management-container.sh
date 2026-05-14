@@ -11,7 +11,15 @@ CONTAINER_NAME="${1:-mc-manager}"
 PUBLIC_PORT="${2:-8080}"
 ADMIN_TOKEN="${3:-$(openssl rand -hex 32)}"
 PUBLIC_LISTEN="${PUBLIC_LISTEN:-127.0.0.1}"
-ADMIN_ALLOW_CIDRS="${ADMIN_ALLOW_CIDRS:-127.0.0.0/8,192.168.0.0/24,10.70.48.0/24}"
+ADMIN_ALLOW_CIDRS="${ADMIN_ALLOW_CIDRS:-127.0.0.0/8,192.168.0.0/24,10.70.48.0/24,10.172.19.0/24}"
+ADMIN_AUTH_METHODS="${ADMIN_AUTH_METHODS:-passkey}"
+ADMIN_REQUIRE_CIDR="${ADMIN_REQUIRE_CIDR:-false}"
+if [ -n "${PASSKEY_REGISTRATION_CODES:-}" ]; then
+  PASSKEY_REGISTRATION_CODE=""
+else
+  PASSKEY_REGISTRATION_CODE="${PASSKEY_REGISTRATION_CODE:-$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')}"
+  PASSKEY_REGISTRATION_CODES="initial:${PASSKEY_REGISTRATION_CODE}"
+fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TMP_FILES=()
@@ -93,21 +101,26 @@ chown -R mcmanager:mcmanager /opt/mc-lxd-manager
 "
 
 # Create environment file
-lxc exec "$CONTAINER_NAME" -- bash -c "cat > /opt/mc-lxd-manager/.env <<EOF
-HOST=0.0.0.0
-PORT=8080
-TRUST_PROXY=false
-ALLOW_CIDRS=${ADMIN_ALLOW_CIDRS}
-ADMIN_TOKEN=${ADMIN_TOKEN}
-ADMIN_AUTH_METHODS=token,passkey
-PASSKEYS_ENABLED=true
-PASSKEY_RP_NAME=MC LXD Manager
-PASSKEY_STORE_FILE=/opt/mc-lxd-manager/passkeys.json
-REGISTRY_FILE=/opt/mc-lxd-manager/servers.json
-EOF
-chown mcmanager:mcmanager /opt/mc-lxd-manager/.env
-chmod 600 /opt/mc-lxd-manager/.env
-"
+ENV_FILE="$(mktemp /tmp/mclauncher-env.XXXXXX)"
+TMP_FILES+=("$ENV_FILE")
+chmod 600 "$ENV_FILE"
+{
+  printf '%s\n' 'HOST=0.0.0.0'
+  printf '%s\n' 'PORT=8080'
+  printf '%s\n' 'TRUST_PROXY=false'
+  printf 'ALLOW_CIDRS=%s\n' "$ADMIN_ALLOW_CIDRS"
+  printf 'ADMIN_REQUIRE_CIDR=%s\n' "$ADMIN_REQUIRE_CIDR"
+  printf 'ADMIN_TOKEN=%s\n' "$ADMIN_TOKEN"
+  printf 'ADMIN_AUTH_METHODS=%s\n' "$ADMIN_AUTH_METHODS"
+  printf '%s\n' 'PASSKEYS_ENABLED=true'
+  printf '%s\n' 'PASSKEY_RP_NAME=MC LXD Manager'
+  printf 'PASSKEY_REGISTRATION_CODES=%s\n' "$PASSKEY_REGISTRATION_CODES"
+  printf '%s\n' 'PASSKEY_STORE_FILE=/opt/mc-lxd-manager/passkeys.json'
+  printf '%s\n' 'REGISTRY_FILE=/opt/mc-lxd-manager/servers.json'
+} > "$ENV_FILE"
+lxc file push "$ENV_FILE" "$CONTAINER_NAME/opt/mc-lxd-manager/.env"
+lxc exec "$CONTAINER_NAME" -- chown mcmanager:mcmanager /opt/mc-lxd-manager/.env
+lxc exec "$CONTAINER_NAME" -- chmod 600 /opt/mc-lxd-manager/.env
 
 # Create systemd service
 lxc exec "$CONTAINER_NAME" -- bash -c "cat > /etc/systemd/system/mc-manager.service <<'EOF'
@@ -151,11 +164,19 @@ echo "==> Management container created!"
 echo ""
 echo "Container: $CONTAINER_NAME"
 echo "Web UI: http://${PUBLIC_LISTEN}:${PUBLIC_PORT}"
-echo "Admin Token: ${ADMIN_TOKEN}"
+if [ -n "$PASSKEY_REGISTRATION_CODE" ]; then
+  echo "One-Time Passkey Setup Code: ${PASSKEY_REGISTRATION_CODE}"
+else
+  echo "One-Time Passkey Setup Codes: imported from PASSKEY_REGISTRATION_CODES"
+fi
+if [[ ",${ADMIN_AUTH_METHODS}," == *",token,"* ]]; then
+  echo "Admin Token: ${ADMIN_TOKEN}"
+fi
 echo ""
-echo "IMPORTANT: Save this token!"
-echo "Open Admin Access in the gateway and paste this token. You can register a passkey there when serving the gateway over HTTPS or localhost."
-echo "For LAN access, put Caddy or another trusted reverse proxy in front of the management container and keep admin routes LAN-only."
+echo "IMPORTANT: Save the setup code; each code can be used once to register an admin passkey."
+echo "Open Admin Access in the gateway, paste the setup code, and register a passkey over HTTPS or localhost."
+echo "After registering a passkey, synced passkeys can sign in on other devices without entering a token or setup code."
+echo "Admin routes are passkey-gated by default. Set ADMIN_REQUIRE_CIDR=true if you also want LAN/VPN CIDR restrictions."
 echo ""
 echo "Commands:"
 echo "  lxc exec $CONTAINER_NAME -- systemctl status mc-manager"

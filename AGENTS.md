@@ -146,7 +146,7 @@ lxc exec mc-server-1 -- journalctl -u mc-agent -f
 
 ### API Gateway Pattern (apps/server)
 - Registry loaded from filesystem on each request (no in-memory cache)
-- All write operations require `requireAdmin` middleware (CIDR + token auth)
+- All protected operations require `requireAdmin` middleware (passkey session, or token auth when explicitly enabled; optional CIDR filtering can add LAN/VPN gating)
 - Proxy helper: `proxyToAgent(agentUrl, path, options)`
 - File uploads proxied using FormData + Blob
 
@@ -188,10 +188,11 @@ lxc exec mc-server-1 -- journalctl -u mc-agent -f
 
 ## Security Model
 
-1. **CIDR filtering**: Management API restricts to LAN ranges (192.168.0.0/16, 10.0.0.0/8)
-2. **Token auth**: Admin token required for write operations (create/update/delete)
-3. **Internal-only agents**: Control agents on port 9090 never exposed outside container network
-4. **No host services**: Everything isolated in LXD containers
+1. **Passkey gating**: Protected management operations require an admin passkey session by default; registered passkeys can start a new admin session without first entering a token
+2. **One-time setup codes**: Pre-approved admins can use a one-time code only to register an ES256 P-256/secp256r1 passkey; setup codes do not authorize server management
+3. **Optional CIDR filtering**: `ADMIN_REQUIRE_CIDR=true` restricts admin auth attempts to LAN and WireGuard VPN ranges
+4. **Internal-only agents**: Control agents on port 9090 never exposed outside container network
+5. **No host services**: Everything isolated in LXD containers
 
 ## Testing and Debugging
 
@@ -225,7 +226,7 @@ lxc exec mc-server-1 -- journalctl -u minecraft -n 100
 # List servers (no auth required for read)
 curl http://localhost:8080/api/servers
 
-# Register server (requires admin token)
+# Register server (requires admin auth)
 curl -X POST http://localhost:8080/api/servers/register \
   -H "Authorization: Bearer YOUR_TOKEN" \
   -H "Content-Type: application/json" \
@@ -275,9 +276,12 @@ All three apps use ES modules (`"type": "module"` in package.json):
 - `HOST` - Bind address (default: 0.0.0.0)
 - `PORT` - HTTP port (default: 8080)
 - `REGISTRY_FILE` - Server registry path (default: /opt/mc-lxd-manager/servers.json)
-- `ADMIN_TOKEN` - Authentication token
-- `ALLOW_CIDRS` - Comma-separated CIDR ranges (default: 192.168.0.0/16,10.0.0.0/8)
-- `TRUST_PROXY` - Trust X-Forwarded-For header (default: true)
+- `ADMIN_TOKEN` - Optional authentication token when `ADMIN_AUTH_METHODS` includes `token`
+- `ADMIN_AUTH_METHODS` - Comma-separated admin auth methods (default: token,passkey in the server; management setup script defaults to passkey)
+- `PASSKEY_REGISTRATION_CODES` - Comma-separated one-time setup codes as `label:code` or `code`; codes authorize only passkey registration and are stored hashed after import
+- `ADMIN_REQUIRE_CIDR` - Require `ALLOW_CIDRS` for admin auth and protected routes (default: false)
+- `ALLOW_CIDRS` - Comma-separated CIDR ranges used when `ADMIN_REQUIRE_CIDR=true` (default: 127.0.0.0/8,192.168.0.0/24,10.70.48.0/24,10.172.19.0/24)
+- `TRUST_PROXY` - Trust X-Forwarded-For header (default: false)
 
 ### Control agent (`apps/agent`)
 - `AGENT_PORT` - HTTP port (default: 9090)

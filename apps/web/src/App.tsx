@@ -20,6 +20,7 @@ import {
   KeyRound,
   Fingerprint,
   LogOut,
+  Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { ModBrowser } from "@/components/ModBrowser";
@@ -71,10 +72,14 @@ import {
   requiresClientMods,
 } from "@/lib/minecraft";
 import {
+  createPasskeyRegistrationCode,
+  deletePasskeyRegistrationCode,
+  listPasskeyRegistrationCodes,
   loginWithPasskey,
   logoutPasskeySession,
   passkeysAvailable,
   registerPasskey,
+  type PasskeyRegistrationCode,
 } from "@/lib/passkeys";
 
 type ServerRow = {
@@ -110,12 +115,13 @@ type PublicAccessState = {
   checkedAt?: string;
 };
 
-function copyToClipboard(text: string) {
-  // Use Clipboard API if available (HTTPS), otherwise use fallback (HTTP)
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).catch(err => console.error('Clipboard API failed:', err));
-  } else {
-    // Fallback for HTTP or older browsers
+async function copyToClipboard(text: string) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+
     const textarea = document.createElement('textarea');
     textarea.value = text;
     textarea.style.position = 'fixed';
@@ -123,11 +129,13 @@ function copyToClipboard(text: string) {
     document.body.appendChild(textarea);
     textarea.select();
     try {
-      document.execCommand('copy');
-    } catch (err) {
-      console.error('Copy fallback failed:', err);
+      return document.execCommand('copy');
+    } finally {
+      document.body.removeChild(textarea);
     }
-    document.body.removeChild(textarea);
+  } catch (err) {
+    console.error('Copy failed:', err);
+    return false;
   }
 }
 
@@ -154,6 +162,11 @@ export function App() {
   const [serverInventoryBlocked, setServerInventoryBlocked] = useState(false);
   const [authConfig, setAuthConfig] = useState<any | null>(null);
   const [passkeyName, setPasskeyName] = useState("Admin passkey");
+  const [passkeySetupCode, setPasskeySetupCode] = useState("");
+  const [setupCodeLabel, setSetupCodeLabel] = useState("");
+  const [createdSetupCode, setCreatedSetupCode] = useState<{ id: string; code: string } | null>(null);
+  const [setupCodes, setSetupCodes] = useState<PasskeyRegistrationCode[]>([]);
+  const [setupCodeDeleteId, setSetupCodeDeleteId] = useState<string | null>(null);
   const [isPasskeyBusy, setIsPasskeyBusy] = useState(false);
   const hasAdminAccess = isAdminAuthenticated;
 
@@ -378,6 +391,26 @@ export function App() {
   async function checkAdminSession() {
     setIsAdminAuthenticated(await readAdminSession());
   }
+
+  async function loadSetupCodes() {
+    if (!isAdminAuthenticated) {
+      setSetupCodes([]);
+      return;
+    }
+    try {
+      setSetupCodes(await listPasskeyRegistrationCodes());
+    } catch {
+      setSetupCodes([]);
+    }
+  }
+
+  useEffect(() => {
+    if (!adminAccessDialog || !isAdminAuthenticated) {
+      setSetupCodes([]);
+      return;
+    }
+    void loadSetupCodes();
+  }, [adminAccessDialog, isAdminAuthenticated]);
 
   // Fetch TPS for running servers periodically
   useEffect(() => {
@@ -1008,13 +1041,49 @@ export function App() {
   const handleRegisterPasskey = async () => {
     setIsPasskeyBusy(true);
     try {
-      await registerPasskey(passkeyName.trim() || "Admin passkey");
+      await registerPasskey(passkeyName.trim() || "Admin passkey", passkeySetupCode);
+      setIsAdminAuthenticated(true);
+      setPasskeySetupCode("");
       toast.success("Passkey registered");
       await loadAuthConfig();
+      await refresh();
     } catch (err: any) {
       toast.error(err.message || "Failed to register passkey");
     } finally {
       setIsPasskeyBusy(false);
+    }
+  };
+
+  const handleCreateSetupCode = async () => {
+    setIsPasskeyBusy(true);
+    setCreatedSetupCode(null);
+    try {
+      const created = await createPasskeyRegistrationCode(setupCodeLabel);
+      setCreatedSetupCode({ id: created.id, code: created.code });
+      setSetupCodeLabel("");
+      toast.success("One-time setup code created");
+      await loadAuthConfig();
+      await loadSetupCodes();
+    } catch (err: any) {
+      setCreatedSetupCode(null);
+      toast.error(err.message || "Failed to create setup code");
+    } finally {
+      setIsPasskeyBusy(false);
+    }
+  };
+
+  const handleDeleteSetupCode = async (id: string) => {
+    setSetupCodeDeleteId(id);
+    try {
+      await deletePasskeyRegistrationCode(id);
+      setSetupCodes((codes) => codes.filter((code) => code.id !== id));
+      setCreatedSetupCode((current) => current?.id === id ? null : current);
+      toast.success("Setup code revoked");
+      await loadAuthConfig();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to revoke setup code");
+    } finally {
+      setSetupCodeDeleteId(null);
     }
   };
 
@@ -1043,6 +1112,8 @@ export function App() {
     setIsAdminAuthenticated(false);
     setServers([]);
     setLogs("");
+    setSetupCodes([]);
+    setCreatedSetupCode(null);
     setServerInventoryBlocked(true);
     setMessage("Admin access is required to view and manage servers.");
     localStorage.removeItem("ADMIN_TOKEN");
@@ -1060,6 +1131,7 @@ export function App() {
 
   const passkeyConfig = authConfig?.passkeys;
   const canUsePasskeys = passkeysAvailable();
+  const canRegisterPasskey = isAdminAuthenticated || Boolean(passkeySetupCode.trim());
 
   return (
     <TooltipProvider>
@@ -1083,6 +1155,7 @@ export function App() {
               setAdminAccessDialog(open);
               if (open) {
                 setAdminToken("");
+                setCreatedSetupCode(null);
                 loadAuthConfig();
                 checkAdminSession();
               }
@@ -1101,7 +1174,7 @@ export function App() {
                 <DialogHeader>
                   <DialogTitle>Admin Access</DialogTitle>
                   <DialogDescription>
-                    Use a passkey or token for server changes from this browser.
+                    Use a registered passkey for server changes, or use a one-time setup code to add one.
                   </DialogDescription>
                 </DialogHeader>
                 <div className="space-y-4">
@@ -1110,7 +1183,7 @@ export function App() {
                       <div>
                         <p className="text-sm font-medium">Passkeys</p>
                         <p className="text-xs text-muted-foreground">
-                          {passkeyConfig?.hasPasskeys ? "Passkey sign-in is available." : "Sign in with the admin token first, then register a passkey."}
+                          {passkeyConfig?.hasPasskeys ? "Registered passkeys can sign in from any synced device." : "No passkeys are registered yet. Use a one-time setup code to add the first one."}
                         </p>
                       </div>
                       <Badge variant={isAdminAuthenticated ? "default" : "outline"}>
@@ -1121,6 +1194,15 @@ export function App() {
                       <p className="rounded-sm border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-300">
                         Passkeys require HTTPS or localhost in this browser.
                       </p>
+                    )}
+                    {!isAdminAuthenticated && (
+                      <Input
+                        type="password"
+                        value={passkeySetupCode}
+                        onChange={(event) => setPasskeySetupCode(event.target.value)}
+                        placeholder="One-time setup code"
+                        className="rounded-sm"
+                      />
                     )}
                     <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
                       <Input
@@ -1134,7 +1216,7 @@ export function App() {
                         variant="outline"
                         className="rounded-sm"
                         onClick={handleRegisterPasskey}
-                        disabled={!canUsePasskeys || !isAdminAuthenticated || isPasskeyBusy}
+                        disabled={!canUsePasskeys || !canRegisterPasskey || isPasskeyBusy}
                       >
                         <Fingerprint className="mr-2 h-4 w-4" />
                         Set Up
@@ -1160,6 +1242,8 @@ export function App() {
                             setIsAdminAuthenticated(false);
                             setServers([]);
                             setLogs("");
+                            setSetupCodes([]);
+                            setCreatedSetupCode(null);
                             setServerInventoryBlocked(true);
                             setMessage("Admin access is required to view and manage servers.");
                             toast.success("Admin session cleared");
@@ -1170,6 +1254,92 @@ export function App() {
                         </Button>
                       )}
                     </div>
+                    {isAdminAuthenticated && (
+                      <div className="rounded-sm border p-3">
+                        <Label htmlFor="setupCodeLabel">Pre-approve Admin</Label>
+                        <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_auto]">
+                          <Input
+                            id="setupCodeLabel"
+                            value={setupCodeLabel}
+                            onChange={(event) => setSetupCodeLabel(event.target.value)}
+                            placeholder="Name or device"
+                            className="rounded-sm"
+                          />
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="rounded-sm"
+                            onClick={handleCreateSetupCode}
+                            disabled={isPasskeyBusy || setupCodeDeleteId !== null}
+                          >
+                            <KeyRound className="mr-2 h-4 w-4" />
+                            Create Code
+                          </Button>
+                        </div>
+                        {createdSetupCode && (
+                          <div className="mt-3 flex items-center gap-2 rounded-sm bg-muted p-2">
+                            <code className="flex-1 break-all text-xs">{createdSetupCode.code}</code>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              className="rounded-sm"
+                              aria-label="Copy setup code"
+                              onClick={async () => {
+                                const copied = await copyToClipboard(createdSetupCode.code);
+                                if (copied) {
+                                  toast.success("Setup code copied");
+                                } else {
+                                  toast.error("Setup code copy failed");
+                                }
+                              }}
+                            >
+                              <Copy className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        )}
+                        {setupCodes.length > 0 && (
+                          <div className="mt-3 space-y-2">
+                            {setupCodes.map((code) => (
+                              <div key={code.id} className="flex items-center gap-2 rounded-sm border px-2 py-1.5">
+                                <div className="min-w-0 flex-1">
+                                  <p className="truncate text-xs font-medium">{code.label || "Setup code"}</p>
+                                  <p className="text-[11px] text-muted-foreground">
+                                    {code.usedAt
+                                      ? `Used ${new Date(code.usedAt).toLocaleString()}`
+                                      : "Unused"}
+                                  </p>
+                                  {code.usedByCredentialId && (
+                                    <p className="truncate text-[11px] text-muted-foreground">
+                                      Passkey {code.usedByCredentialId}
+                                    </p>
+                                  )}
+                                </div>
+                                <Badge variant={code.usedAt ? "secondary" : "outline"}>
+                                  {code.usedAt ? "Used" : "Open"}
+                                </Badge>
+                                {code.source === "env" && (
+                                  <Badge variant="secondary">Config</Badge>
+                                )}
+                                {!code.usedAt && code.source === "generated" && (
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="ghost"
+                                    className="rounded-sm"
+                                    aria-label="Revoke setup code"
+                                    disabled={setupCodeDeleteId === code.id}
+                                    onClick={() => handleDeleteSetupCode(code.id)}
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </Button>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   <Separator />
@@ -1185,7 +1355,7 @@ export function App() {
                       className="rounded-sm"
                     />
                     <p className="text-xs text-muted-foreground mt-1">
-                      Token access is the bootstrap and fallback method. Use it once to register a passkey.
+                      Token access is a fallback only when token auth is enabled on the server.
                     </p>
                   </div>
                   <p className="text-xs text-muted-foreground">
