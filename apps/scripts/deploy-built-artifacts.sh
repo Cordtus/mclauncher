@@ -18,7 +18,7 @@ echo "    Server: $SERVER_CONTAINER"
 "$LXC_BIN" file push "$REPO_ROOT/apps/server/package.json" "$MANAGER_CONTAINER/opt/mc-lxd-manager/apps/server/package.json"
 "$LXC_BIN" file push -r "$REPO_ROOT/apps/web/dist/" "$MANAGER_CONTAINER/opt/mc-lxd-manager/apps/web/"
 "$LXC_BIN" file push -r "$REPO_ROOT/apps/server/dist/" "$MANAGER_CONTAINER/opt/mc-lxd-manager/apps/server/"
-"$LXC_BIN" exec "$MANAGER_CONTAINER" -- bash -lc 'chown mcmanager:mcmanager /opt/mc-lxd-manager/package.json /opt/mc-lxd-manager/apps/web/package.json /opt/mc-lxd-manager/apps/server/package.json && cd /opt/mc-lxd-manager/apps/server && npm install --omit=dev'
+"$LXC_BIN" exec "$MANAGER_CONTAINER" -- bash -lc 'chown -R mcmanager:mcmanager /opt/mc-lxd-manager/package.json /opt/mc-lxd-manager/apps/web/package.json /opt/mc-lxd-manager/apps/server/package.json /opt/mc-lxd-manager/apps/web/dist /opt/mc-lxd-manager/apps/server/dist && cd /opt/mc-lxd-manager/apps/server && npm install --omit=dev'
 "$LXC_BIN" exec "$MANAGER_CONTAINER" -- systemctl restart mc-manager
 "$LXC_BIN" exec "$MANAGER_CONTAINER" -- systemctl is-active mc-manager
 
