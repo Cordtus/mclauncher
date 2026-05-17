@@ -101,7 +101,60 @@ describe("PasskeyService", () => {
       const [code] = Object.values(store.registrationCodes) as any[];
       expect(code.label).toBe("Alice");
       expect(code.source).toBe("env");
+      expect(code.hashAlgorithm).toBe("sha256");
+      expect(code.codeHash).toEqual(expect.any(String));
+      expect(code.code).toBeUndefined();
       expect(code.usedAt).toBeUndefined();
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("migrates legacy plaintext registration codes to sha256 hashes", () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), "mc-passkeys-test-"));
+    try {
+      const storeFile = path.join(tempDir, "passkeys.json");
+      writeFileSync(storeFile, JSON.stringify({
+        credentials: [],
+        challenges: {},
+        sessions: {},
+        registrationCodes: {
+          legacy: {
+            id: "legacy",
+            code: "legacy-secret",
+            label: "Legacy Admin",
+            source: "generated",
+            createdAt: "2026-01-01T00:00:00.000Z",
+          },
+        },
+      }));
+      const service = new PasskeyService({
+        enabled: true,
+        rpName: "MC LXD Manager",
+        storeFile,
+        challengeTtlMs: 5 * 60 * 1000,
+        sessionTtlMs: 12 * 60 * 60 * 1000,
+        userVerification: "preferred",
+      });
+
+      service.registrationOptions(
+        { host: "gateway.example.test", origin: "https://gateway.example.test" },
+        "Legacy Admin",
+        { type: "registration-code", code: "legacy-secret" },
+      );
+
+      const storeText = readFileSync(storeFile, "utf8");
+      expect(storeText).not.toContain("legacy-secret");
+      const store = JSON.parse(storeText);
+      const code = store.registrationCodes.legacy;
+      expect(code).toEqual(expect.objectContaining({
+        id: "legacy",
+        label: "Legacy Admin",
+        source: "generated",
+        hashAlgorithm: "sha256",
+      }));
+      expect(code.code).toBeUndefined();
+      expect(code.codeHash).toEqual(expect.any(String));
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }

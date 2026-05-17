@@ -522,7 +522,7 @@ describe('management gateway routes', () => {
     expect(reusedCodeResponse.status).toBe(401);
   });
 
-  it('lets authenticated admins generate one-time passkey setup codes', async () => {
+  it('requires the root-only host command to generate one-time passkey setup codes', async () => {
     const tempDir = mkdtempSync(path.join(tmpdir(), 'mc-gateway-test-'));
     tempDirs.push(tempDir);
     const registryFile = path.join(tempDir, 'servers.json');
@@ -547,24 +547,60 @@ describe('management gateway routes', () => {
       },
       body: JSON.stringify({ label: 'Bob phone' }),
     });
-    expect(createResponse.status).toBe(201);
-    const created = await createResponse.json();
-    expect(created.code.label).toBe('Bob phone');
-    expect(created.code.code).toEqual(expect.any(String));
+    expect(createResponse.status).toBe(405);
+    const rejected = await createResponse.json();
+    expect(rejected.error).toContain('root-only host command');
 
     const listResponse = await fetch(`${baseUrl(gateway)}/api/auth/passkeys/registration-codes`, {
       headers: { Authorization: 'Bearer test-token' },
     });
     expect(listResponse.status).toBe(200);
     const list = await listResponse.json();
-    expect(list.codes).toEqual([
-      expect.objectContaining({
-        id: created.code.id,
-        label: 'Bob phone',
-        usedAt: null,
-      }),
-    ]);
-    expect(JSON.stringify(list)).not.toContain(created.code.code);
+    expect(list.codes).toEqual([]);
+  });
+
+  it('lets the root-only operator command generate one-time passkey setup codes', async () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'mc-gateway-test-'));
+    tempDirs.push(tempDir);
+    const registryFile = path.join(tempDir, 'servers.json');
+    const passkeyStoreFile = path.join(tempDir, 'passkeys.json');
+    writeFileSync(registryFile, JSON.stringify({ servers: [] }));
+
+    process.env.REGISTRY_FILE = registryFile;
+    process.env.ADMIN_AUTH_METHODS = 'passkey,token';
+    process.env.ADMIN_TOKEN = 'test-token';
+    process.env.WEB_DIST_DIR = tempDir;
+    process.env.PASSKEY_STORE_FILE = passkeyStoreFile;
+
+    const { createPasskeySetupCodeForCommand } = await import('./index.js');
+
+    const blocked = () => createPasskeySetupCodeForCommand(['--label', 'Host invite'], {
+      getuid: () => 1000,
+    });
+    expect(blocked).toThrow('must be run as root');
+
+    const result = createPasskeySetupCodeForCommand(['--label', 'Host invite', '--json'], {
+      requireRoot: false,
+    });
+    expect(result.help).toBe(false);
+    if (result.help) throw new Error('unexpected help result');
+    expect(result.code.label).toBe('Host invite');
+    expect(result.code.code).toEqual(expect.any(String));
+    expect(JSON.parse(result.output).code).toBe(result.code.code);
+
+    const storeText = readFileSync(passkeyStoreFile, 'utf8');
+    expect(storeText).not.toContain(result.code.code);
+    const store = JSON.parse(storeText);
+    const [storedCode] = Object.values(store.registrationCodes) as any[];
+    expect(storedCode).toEqual(expect.objectContaining({
+      id: result.code.id,
+      label: 'Host invite',
+      source: 'generated',
+      hashAlgorithm: 'sha256',
+    }));
+    expect(storedCode.codeHash).toEqual(expect.any(String));
+    expect(storedCode.code).toBeUndefined();
+    expect(storedCode.usedAt).toBeUndefined();
   });
 
   it('blocks cookie-authenticated unsafe API requests without a same-origin header', async () => {

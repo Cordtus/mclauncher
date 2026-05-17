@@ -72,7 +72,6 @@ import {
   requiresClientMods,
 } from "@/lib/minecraft";
 import {
-  createPasskeyRegistrationCode,
   deletePasskeyRegistrationCode,
   listPasskeyRegistrationCodes,
   loginWithPasskey,
@@ -163,8 +162,6 @@ export function App() {
   const [authConfig, setAuthConfig] = useState<any | null>(null);
   const [passkeyName, setPasskeyName] = useState("Admin passkey");
   const [passkeySetupCode, setPasskeySetupCode] = useState("");
-  const [setupCodeLabel, setSetupCodeLabel] = useState("");
-  const [createdSetupCode, setCreatedSetupCode] = useState<{ id: string; code: string } | null>(null);
   const [setupCodes, setSetupCodes] = useState<PasskeyRegistrationCode[]>([]);
   const [setupCodeDeleteId, setSetupCodeDeleteId] = useState<string | null>(null);
   const [isPasskeyBusy, setIsPasskeyBusy] = useState(false);
@@ -1054,30 +1051,11 @@ export function App() {
     }
   };
 
-  const handleCreateSetupCode = async () => {
-    setIsPasskeyBusy(true);
-    setCreatedSetupCode(null);
-    try {
-      const created = await createPasskeyRegistrationCode(setupCodeLabel);
-      setCreatedSetupCode({ id: created.id, code: created.code });
-      setSetupCodeLabel("");
-      toast.success("One-time setup code created");
-      await loadAuthConfig();
-      await loadSetupCodes();
-    } catch (err: any) {
-      setCreatedSetupCode(null);
-      toast.error(err.message || "Failed to create setup code");
-    } finally {
-      setIsPasskeyBusy(false);
-    }
-  };
-
   const handleDeleteSetupCode = async (id: string) => {
     setSetupCodeDeleteId(id);
     try {
       await deletePasskeyRegistrationCode(id);
       setSetupCodes((codes) => codes.filter((code) => code.id !== id));
-      setCreatedSetupCode((current) => current?.id === id ? null : current);
       toast.success("Setup code revoked");
       await loadAuthConfig();
     } catch (err: any) {
@@ -1113,7 +1091,6 @@ export function App() {
     setServers([]);
     setLogs("");
     setSetupCodes([]);
-    setCreatedSetupCode(null);
     setServerInventoryBlocked(true);
     setMessage("Admin access is required to view and manage servers.");
     localStorage.removeItem("ADMIN_TOKEN");
@@ -1155,7 +1132,6 @@ export function App() {
               setAdminAccessDialog(open);
               if (open) {
                 setAdminToken("");
-                setCreatedSetupCode(null);
                 loadAuthConfig();
                 checkAdminSession();
               }
@@ -1243,7 +1219,6 @@ export function App() {
                             setServers([]);
                             setLogs("");
                             setSetupCodes([]);
-                            setCreatedSetupCode(null);
                             setServerInventoryBlocked(true);
                             setMessage("Admin access is required to view and manage servers.");
                             toast.success("Admin session cleared");
@@ -1254,90 +1229,46 @@ export function App() {
                         </Button>
                       )}
                     </div>
-                    {isAdminAuthenticated && (
+                    {isAdminAuthenticated && setupCodes.length > 0 && (
                       <div className="rounded-sm border p-3">
-                        <Label htmlFor="setupCodeLabel">Pre-approve Admin</Label>
-                        <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_auto]">
-                          <Input
-                            id="setupCodeLabel"
-                            value={setupCodeLabel}
-                            onChange={(event) => setSetupCodeLabel(event.target.value)}
-                            placeholder="Name or device"
-                            className="rounded-sm"
-                          />
-                          <Button
-                            type="button"
-                            variant="outline"
-                            className="rounded-sm"
-                            onClick={handleCreateSetupCode}
-                            disabled={isPasskeyBusy || setupCodeDeleteId !== null}
-                          >
-                            <KeyRound className="mr-2 h-4 w-4" />
-                            Create Code
-                          </Button>
-                        </div>
-                        {createdSetupCode && (
-                          <div className="mt-3 flex items-center gap-2 rounded-sm bg-muted p-2">
-                            <code className="flex-1 break-all text-xs">{createdSetupCode.code}</code>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="ghost"
-                              className="rounded-sm"
-                              aria-label="Copy setup code"
-                              onClick={async () => {
-                                const copied = await copyToClipboard(createdSetupCode.code);
-                                if (copied) {
-                                  toast.success("Setup code copied");
-                                } else {
-                                  toast.error("Setup code copy failed");
-                                }
-                              }}
-                            >
-                              <Copy className="h-4 w-4" />
-                            </Button>
-                          </div>
-                        )}
-                        {setupCodes.length > 0 && (
-                          <div className="mt-3 space-y-2">
-                            {setupCodes.map((code) => (
-                              <div key={code.id} className="flex items-center gap-2 rounded-sm border px-2 py-1.5">
-                                <div className="min-w-0 flex-1">
-                                  <p className="truncate text-xs font-medium">{code.label || "Setup code"}</p>
-                                  <p className="text-[11px] text-muted-foreground">
-                                    {code.usedAt
-                                      ? `Used ${new Date(code.usedAt).toLocaleString()}`
-                                      : "Unused"}
+                        <div className="space-y-2">
+                          {setupCodes.map((code) => (
+                            <div key={code.id} className="flex items-center gap-2 rounded-sm border px-2 py-1.5">
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-xs font-medium">{code.label || "Setup code"}</p>
+                                <p className="text-[11px] text-muted-foreground">
+                                  {code.usedAt
+                                    ? `Used ${new Date(code.usedAt).toLocaleString()}`
+                                    : "Unused"}
+                                </p>
+                                {code.usedByCredentialId && (
+                                  <p className="truncate text-[11px] text-muted-foreground">
+                                    Passkey {code.usedByCredentialId}
                                   </p>
-                                  {code.usedByCredentialId && (
-                                    <p className="truncate text-[11px] text-muted-foreground">
-                                      Passkey {code.usedByCredentialId}
-                                    </p>
-                                  )}
-                                </div>
-                                <Badge variant={code.usedAt ? "secondary" : "outline"}>
-                                  {code.usedAt ? "Used" : "Open"}
-                                </Badge>
-                                {code.source === "env" && (
-                                  <Badge variant="secondary">Config</Badge>
-                                )}
-                                {!code.usedAt && code.source === "generated" && (
-                                  <Button
-                                    type="button"
-                                    size="sm"
-                                    variant="ghost"
-                                    className="rounded-sm"
-                                    aria-label="Revoke setup code"
-                                    disabled={setupCodeDeleteId === code.id}
-                                    onClick={() => handleDeleteSetupCode(code.id)}
-                                  >
-                                    <Trash2 className="h-4 w-4" />
-                                  </Button>
                                 )}
                               </div>
-                            ))}
-                          </div>
-                        )}
+                              <Badge variant={code.usedAt ? "secondary" : "outline"}>
+                                {code.usedAt ? "Used" : "Open"}
+                              </Badge>
+                              {code.source === "env" && (
+                                <Badge variant="secondary">Config</Badge>
+                              )}
+                              {!code.usedAt && code.source === "generated" && (
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  className="rounded-sm"
+                                  aria-label="Revoke setup code"
+                                  disabled={setupCodeDeleteId === code.id}
+                                  onClick={() => handleDeleteSetupCode(code.id)}
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              )}
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     )}
                   </div>

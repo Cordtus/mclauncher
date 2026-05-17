@@ -80,6 +80,22 @@ lxc exec mc-server-1 -- systemctl status mc-agent
 lxc exec mc-server-1 -- journalctl -u minecraft -f
 ```
 
+### Create a One-Time Passkey Setup Code
+
+Run this on the LXD host as root when you need to invite another management
+admin:
+
+```bash
+sudo ./apps/scripts/create-passkey-setup-code.sh --label "Alice phone"
+```
+
+The command executes the installed management backend inside `mc-manager`,
+prints the plaintext code once to stdout, and stores only a SHA-256 hash of the
+setup code in `/opt/mc-lxd-manager/passkeys.json`. The code can only register a
+passkey; it does not authorize server management by itself. Set
+`MCLAUNCHER_MANAGER_CONTAINER` if the manager container is not named
+`mc-manager`.
+
 ### Stop/Start Containers
 
 ```bash
@@ -152,8 +168,8 @@ apps/
 - Admin browser sessions are stored in HttpOnly `SameSite=Strict` cookies; token entry is a fallback exchange and is not persisted in browser storage
 - Passkeys use WebAuthn and require a secure browser context: HTTPS or localhost
 - Passkey registration uses ES256 P-256/secp256r1 credentials
-- One-time setup codes can pre-approve admins for passkey registration only; consumed codes are hashed in `/opt/mc-lxd-manager/passkeys.json` and cannot manage servers
-- `PASSKEY_REGISTRATION_CODES` can seed setup codes at startup with comma-separated `label:code` or `code` entries; existing admins can create additional one-time setup codes from **Admin Access**
+- One-time setup codes can pre-approve admins for passkey registration only; codes are stored as SHA-256 hashes in `/opt/mc-lxd-manager/passkeys.json`, consumed codes are marked used, and setup codes cannot manage servers
+- `PASSKEY_REGISTRATION_CODES` can seed setup codes at startup with comma-separated `label:code` or `code` entries; host operators can create additional one-time setup codes with `sudo ./apps/scripts/create-passkey-setup-code.sh --label "Admin name"`
 - Passkey login does not require an existing admin-token session once at least one passkey is registered
 - Passkey login requires user verification by default (`PASSKEY_USER_VERIFICATION=required`)
 - Unsafe admin API requests require a same-origin `Origin`/`Referer`; keep Caddy forwarding `Host` and `X-Forwarded-Proto`

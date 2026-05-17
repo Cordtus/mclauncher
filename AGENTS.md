@@ -201,6 +201,16 @@ lxc exec mc-server-1 -- journalctl -u mc-agent -f
 lxc exec mc-manager -- cat /opt/mc-lxd-manager/servers.json
 ```
 
+### Create a one-time passkey setup code
+```bash
+sudo ./apps/scripts/create-passkey-setup-code.sh --label "Admin device"
+```
+
+This host-side command is intentionally root-only. It invokes the compiled
+management backend in `mc-manager`, prints the plaintext setup code once to
+stdout, and stores only a SHA-256 hash in
+`/opt/mc-lxd-manager/passkeys.json`.
+
 ### Verify agent is running
 ```bash
 lxc exec mc-server-1 -- systemctl status mc-agent
@@ -223,8 +233,9 @@ lxc exec mc-server-1 -- journalctl -u minecraft -n 100
 
 ### Test API endpoints
 ```bash
-# List servers (no auth required for read)
-curl http://localhost:8080/api/servers
+# List servers (requires admin auth)
+curl http://localhost:8080/api/servers \
+  -H "Authorization: Bearer YOUR_TOKEN"
 
 # Register server (requires admin auth)
 curl -X POST http://localhost:8080/api/servers/register \

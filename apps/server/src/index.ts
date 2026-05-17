@@ -65,6 +65,11 @@ const AGENT_ALLOWED_PORTS = new Set(
     .map((s) => s.trim())
     .filter(Boolean)
 );
+const ENTRYPOINT_FILE = fileURLToPath(import.meta.url);
+const CREATE_PASSKEY_SETUP_CODE_COMMAND = "create-passkey-setup-code";
+const isMainEntrypoint = process.argv[1] === ENTRYPOINT_FILE;
+const isCreatePasskeySetupCodeCommand =
+  isMainEntrypoint && process.argv[2] === CREATE_PASSKEY_SETUP_CODE_COMMAND;
 
 interface ServerEntry {
   name: string;
@@ -270,10 +275,97 @@ function adminBootstrapConfigured() {
   return adminAuthConfigured() || (ADMIN_AUTH_METHODS.has("passkey") && passkeys.hasRegistrationCodes());
 }
 
-if (!adminBootstrapConfigured()) {
+if (!isCreatePasskeySetupCodeCommand && !adminBootstrapConfigured()) {
   console.warn(
     "Warning: no admin authentication credential is configured. Set PASSKEY_REGISTRATION_CODES or ADMIN_TOKEN to bootstrap gateway admin access."
   );
+}
+
+interface CreatePasskeySetupCodeOptions {
+  label?: string;
+  json: boolean;
+  help: boolean;
+}
+
+function createPasskeySetupCodeUsage() {
+  return [
+    "Usage: node apps/server/dist/index.js create-passkey-setup-code [--label LABEL] [--json]",
+    "",
+    "Creates one one-time passkey setup code in PASSKEY_STORE_FILE.",
+    "This command must be run as root.",
+  ].join("\n");
+}
+
+function parseCreatePasskeySetupCodeArgs(args: string[]): CreatePasskeySetupCodeOptions {
+  const options: CreatePasskeySetupCodeOptions = { json: false, help: false };
+
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "-h" || arg === "--help") {
+      options.help = true;
+      continue;
+    }
+    if (arg === "--json") {
+      options.json = true;
+      continue;
+    }
+    if (arg === "--label") {
+      const label = args[i + 1];
+      if (!label) throw new Error("Missing value for --label");
+      options.label = label;
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--label=")) {
+      options.label = arg.slice("--label=".length);
+      if (!options.label) throw new Error("Missing value for --label");
+      continue;
+    }
+    if (arg.startsWith("-")) {
+      throw new Error(`Unknown option: ${arg}`);
+    }
+    if (options.label) throw new Error("Only one label can be provided");
+    options.label = arg;
+  }
+
+  return options;
+}
+
+function assertRootOnlyCommand(getuid: (() => number | undefined) | undefined = process.getuid) {
+  if (typeof getuid !== "function" || getuid() !== 0) {
+    throw new Error("create-passkey-setup-code must be run as root");
+  }
+}
+
+function formatCreatedPasskeySetupCode(
+  code: ReturnType<PasskeyService["createRegistrationCode"]>,
+  json: boolean
+) {
+  if (json) return JSON.stringify(code, null, 2);
+
+  return [
+    `One-Time Passkey Setup Code: ${code.code}`,
+    `Code ID: ${code.id}`,
+    `Label: ${code.label || "(none)"}`,
+    `Created At: ${code.createdAt}`,
+    "Use this code once in Admin Access to register a passkey.",
+  ].join("\n");
+}
+
+function createPasskeySetupCodeForCommand(
+  args: string[],
+  options: { requireRoot?: boolean; getuid?: () => number | undefined } = {}
+) {
+  const parsed = parseCreatePasskeySetupCodeArgs(args);
+  if (parsed.help) return { help: true as const, output: createPasskeySetupCodeUsage() };
+  if (options.requireRoot !== false) assertRootOnlyCommand(options.getuid);
+
+  const code = passkeys.createRegistrationCode(parsed.label);
+  return {
+    help: false as const,
+    code,
+    output: formatCreatedPasskeySetupCode(code, parsed.json),
+  };
 }
 
 // Load server registry
@@ -813,13 +905,10 @@ app.get("/api/auth/passkeys/registration-codes", requireAdmin, (_req, res) => {
   res.json({ codes: passkeys.listRegistrationCodes() });
 });
 
-app.post("/api/auth/passkeys/registration-codes", requireAdmin, (req, res) => {
-  try {
-    const label = typeof req.body?.label === "string" ? req.body.label : undefined;
-    res.status(201).json({ code: passkeys.createRegistrationCode(label) });
-  } catch (err: any) {
-    res.status(400).json({ error: err.message });
-  }
+app.post("/api/auth/passkeys/registration-codes", requireAdmin, (_req, res) => {
+  res.status(405).json({
+    error: "Passkey setup codes must be created with the root-only host command.",
+  });
 });
 
 app.delete("/api/auth/passkeys/registration-codes/:id", requireAdmin, (req, res) => {
@@ -2278,10 +2367,20 @@ app.get("*", (req, res) => {
   });
 });
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  app.listen(PORT, HOST, () => {
-    console.log(`Management backend listening on http://${HOST}:${PORT}`);
-  });
+if (isMainEntrypoint) {
+  if (process.argv[2] === CREATE_PASSKEY_SETUP_CODE_COMMAND) {
+    try {
+      const result = createPasskeySetupCodeForCommand(process.argv.slice(3));
+      console.log(result.output);
+    } catch (err: any) {
+      console.error(`Error: ${err.message}`);
+      process.exitCode = 1;
+    }
+  } else {
+    app.listen(PORT, HOST, () => {
+      console.log(`Management backend listening on http://${HOST}:${PORT}`);
+    });
+  }
 }
 
-export { app };
+export { app, createPasskeySetupCodeForCommand };

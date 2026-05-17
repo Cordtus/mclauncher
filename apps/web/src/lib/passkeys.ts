@@ -129,17 +129,6 @@ export async function registerPasskey(name: string, setupCode?: string) {
   return readJsonResponse(verificationResponse);
 }
 
-export async function createPasskeyRegistrationCode(label?: string) {
-  const response = await fetch("/api/auth/passkeys/registration-codes", {
-    method: "POST",
-    headers: jsonAuthHeaders(),
-    credentials: "include",
-    body: JSON.stringify({ label: label?.trim() || undefined }),
-  });
-  const data = await readJsonResponse(response);
-  return data.code as PasskeyRegistrationCode & { code: string };
-}
-
 export async function listPasskeyRegistrationCodes() {
   const response = await fetch("/api/auth/passkeys/registration-codes", {
     credentials: "include",

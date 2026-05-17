@@ -69,6 +69,7 @@ interface PasskeySession {
 interface StoredRegistrationCode {
   id: string;
   codeHash: string;
+  hashAlgorithm?: typeof REGISTRATION_CODE_HASH_ALGORITHM;
   label?: string;
   source: "env" | "generated";
   createdAt: string;
@@ -87,6 +88,7 @@ const PASSKEY_ALGORITHM = "ES256" as const;
 const PASSKEY_COSE_ALG = -7;
 const PASSKEY_CURVE = "P-256" as const;
 const PASSKEY_NAMED_CURVE = "secp256r1";
+const REGISTRATION_CODE_HASH_ALGORITHM = "sha256" as const;
 const EMPTY_STORE: PasskeyStore = {
   credentials: [],
   challenges: {},
@@ -118,6 +120,11 @@ function normalizeRegistrationCode(code: string): string {
 
 function hashRegistrationCode(code: string): string {
   return base64url(sha256(normalizeRegistrationCode(code)));
+}
+
+function registrationCodeHashMatches(entry: StoredRegistrationCode, codeHash: string): boolean {
+  const algorithm = entry.hashAlgorithm || REGISTRATION_CODE_HASH_ALGORITHM;
+  return algorithm === REGISTRATION_CODE_HASH_ALGORITHM && sameString(entry.codeHash, codeHash);
 }
 
 function sameBase64url(a: string, b: string): boolean {
@@ -555,6 +562,7 @@ export class PasskeyService {
     store.registrationCodes[id] = {
       id,
       codeHash: hashRegistrationCode(code),
+      hashAlgorithm: REGISTRATION_CODE_HASH_ALGORITHM,
       label: label?.trim() || undefined,
       source: "generated",
       createdAt,
@@ -630,7 +638,7 @@ export class PasskeyService {
     if (!normalized) throw new Error("Missing passkey setup code");
     const codeHash = hashRegistrationCode(normalized);
     const entry = Object.values(store.registrationCodes).find(
-      (candidate) => !candidate.usedAt && sameString(candidate.codeHash, codeHash)
+      (candidate) => !candidate.usedAt && registrationCodeHashMatches(candidate, codeHash)
     );
     if (!entry) throw new Error("Invalid or already used passkey setup code");
     return entry;
@@ -658,7 +666,7 @@ export class PasskeyService {
       if (!code) continue;
       const codeHash = hashRegistrationCode(code);
       const exists = Object.values(store.registrationCodes).some((entry) =>
-        sameString(entry.codeHash, codeHash)
+        registrationCodeHashMatches(entry, codeHash)
       );
       if (exists) continue;
 
@@ -666,6 +674,7 @@ export class PasskeyService {
       store.registrationCodes[id] = {
         id,
         codeHash,
+        hashAlgorithm: REGISTRATION_CODE_HASH_ALGORITHM,
         label: configured.label?.trim() || undefined,
         source: "env",
         createdAt: new Date().toISOString(),
@@ -679,16 +688,80 @@ export class PasskeyService {
   private readStore(): PasskeyStore {
     try {
       const parsed = JSON.parse(fs.readFileSync(this.config.storeFile, "utf8"));
+      const normalizedRegistrationCodes = this.normalizeStoredRegistrationCodes(parsed.registrationCodes || {});
       const store: PasskeyStore = {
         credentials: Array.isArray(parsed.credentials) ? parsed.credentials : [],
         challenges: parsed.challenges || {},
         sessions: parsed.sessions || {},
-        registrationCodes: parsed.registrationCodes || {},
+        registrationCodes: normalizedRegistrationCodes.registrationCodes,
       };
-      return this.cleanupStore(store);
+      const cleaned = this.cleanupStore(store);
+      if (normalizedRegistrationCodes.changed) {
+        try {
+          this.writeStore(cleaned);
+        } catch {
+          // Best effort migration; keep using the normalized in-memory store.
+        }
+      }
+      return cleaned;
     } catch {
       return { ...EMPTY_STORE, challenges: {}, sessions: {}, credentials: [], registrationCodes: {} };
     }
+  }
+
+  private normalizeStoredRegistrationCodes(input: Record<string, any>) {
+    const registrationCodes: Record<string, StoredRegistrationCode> = {};
+    let changed = false;
+
+    for (const [key, value] of Object.entries(input)) {
+      if (!value || typeof value !== "object") {
+        changed = true;
+        continue;
+      }
+
+      const id = typeof value.id === "string" && value.id ? value.id : key;
+      const codeHash = typeof value.codeHash === "string" && value.codeHash
+        ? value.codeHash
+        : typeof value.code === "string" && value.code.trim()
+          ? hashRegistrationCode(value.code)
+          : "";
+
+      if (!codeHash) {
+        changed = true;
+        continue;
+      }
+
+      const hashAlgorithm = value.hashAlgorithm === REGISTRATION_CODE_HASH_ALGORITHM
+        ? value.hashAlgorithm
+        : REGISTRATION_CODE_HASH_ALGORITHM;
+
+      const normalized: StoredRegistrationCode = {
+        id,
+        codeHash,
+        hashAlgorithm,
+        label: typeof value.label === "string" && value.label.trim() ? value.label.trim() : undefined,
+        source: value.source === "env" ? "env" : "generated",
+        createdAt: typeof value.createdAt === "string" && value.createdAt
+          ? value.createdAt
+          : new Date().toISOString(),
+        usedAt: typeof value.usedAt === "string" ? value.usedAt : undefined,
+        usedByCredentialId: typeof value.usedByCredentialId === "string" ? value.usedByCredentialId : undefined,
+      };
+
+      registrationCodes[id] = normalized;
+      changed ||= key !== id
+        || value.id !== id
+        || value.codeHash !== normalized.codeHash
+        || value.hashAlgorithm !== normalized.hashAlgorithm
+        || "code" in value
+        || value.label !== normalized.label
+        || value.source !== normalized.source
+        || value.createdAt !== normalized.createdAt
+        || value.usedAt !== normalized.usedAt
+        || value.usedByCredentialId !== normalized.usedByCredentialId;
+    }
+
+    return { registrationCodes, changed };
   }
 
   private cleanupStore(store: PasskeyStore) {
@@ -706,8 +779,28 @@ export class PasskeyService {
     const dir = path.dirname(this.config.storeFile);
     fs.mkdirSync(dir, { recursive: true });
     const tempFile = path.join(dir, `.${path.basename(this.config.storeFile)}.${process.pid}.${Date.now()}.tmp`);
+    let existingOwner: { uid: number; gid: number } | null = null;
+    try {
+      const existing = fs.statSync(this.config.storeFile);
+      existingOwner = { uid: existing.uid, gid: existing.gid };
+    } catch {
+      try {
+        const parent = fs.statSync(dir);
+        existingOwner = { uid: parent.uid, gid: parent.gid };
+      } catch {
+        existingOwner = null;
+      }
+    }
+
     try {
       fs.writeFileSync(tempFile, JSON.stringify(this.cleanupStore(store), null, 2), { mode: 0o600 });
+      if (existingOwner && typeof process.getuid === "function" && process.getuid() === 0) {
+        try {
+          fs.chownSync(tempFile, existingOwner.uid, existingOwner.gid);
+        } catch {
+          // Best effort; owner preservation only works when permitted.
+        }
+      }
       try {
         fs.chmodSync(tempFile, 0o600);
       } catch {
