@@ -105,6 +105,19 @@ if [ "$INSTALL_MODE" = "user" ] && [ "$LINGER_STATUS" != "yes" ] && [ "${SERVER_
   echo "Run 'sudo loginctl enable-linger $INSTALL_USER' or set SERVER_LIFECYCLE_ALLOW_SESSION_SERVICE=true to allow a login-session-scoped controller." >&2
   exit 1
 fi
+if [ "$INSTALL_MODE" = "user" ]; then
+  USER_RUNTIME_DIR="/run/user/$(id -u)"
+  if [ -z "${XDG_RUNTIME_DIR:-}" ] && [ -d "$USER_RUNTIME_DIR" ]; then
+    export XDG_RUNTIME_DIR="$USER_RUNTIME_DIR"
+  fi
+  if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -S "$XDG_RUNTIME_DIR/bus" ]; then
+    export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+  fi
+  if ! systemctl --user show-environment >/dev/null 2>&1; then
+    echo "Cannot reach the systemd user manager for $INSTALL_USER. Ensure lingering is enabled and /run/user/$(id -u)/bus is available." >&2
+    exit 1
+  fi
+fi
 
 install -d -m 755 "$(dirname "$SERVICE_FILE")"
 if [ "$INSTALL_MODE" = "system" ]; then
