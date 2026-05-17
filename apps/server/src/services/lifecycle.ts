@@ -62,6 +62,14 @@ function lifecycleUsesSudo() {
   return (process.env.SERVER_LIFECYCLE_USE_SUDO || "false").toLowerCase() === "true";
 }
 
+function lifecycleControllerUrl() {
+  return process.env.SERVER_LIFECYCLE_CONTROLLER_URL || "";
+}
+
+function lifecycleControllerToken() {
+  return process.env.SERVER_LIFECYCLE_CONTROLLER_TOKEN || "";
+}
+
 function commandLooksExecutable(command: string) {
   if (!command.includes("/")) return true;
   try {
@@ -73,6 +81,12 @@ function commandLooksExecutable(command: string) {
 }
 
 function lifecycleUnavailableReason(command: string) {
+  const controllerUrl = lifecycleControllerUrl();
+  if (controllerUrl) {
+    if (!lifecycleControllerToken()) return "Lifecycle controller URL is configured but SERVER_LIFECYCLE_CONTROLLER_TOKEN is missing";
+    return undefined;
+  }
+
   if (!commandLooksExecutable(command)) {
     return `Lifecycle controller is not executable: ${command}`;
   }
@@ -171,6 +185,26 @@ function runController(command: string, args: string[], request: unknown, option
   });
 }
 
+async function postControllerRequest(request: unknown): Promise<LifecycleActionResult> {
+  const controllerUrl = lifecycleControllerUrl();
+  const token = lifecycleControllerToken();
+  if (!controllerUrl || !token) throw new Error("Lifecycle controller URL/token is not configured");
+
+  const response = await fetch(new URL("/lifecycle", controllerUrl), {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(request),
+  });
+  const body = await response.json().catch(() => ({})) as LifecycleActionResult & { error?: string };
+  if (!response.ok) {
+    throw new Error(body.error || `Lifecycle controller failed with HTTP ${response.status}`);
+  }
+  return body;
+}
+
 export async function runLifecycleAction(
   action: string,
   values: Record<string, unknown>,
@@ -178,6 +212,15 @@ export async function runLifecycleAction(
 ): Promise<LifecycleActionResult> {
   if (!LIFECYCLE_ACTIONS.has(action)) {
     throw new Error(`Lifecycle action is not allowed: ${action}`);
+  }
+
+  const request = {
+    action,
+    params: values,
+  };
+
+  if (lifecycleControllerUrl()) {
+    return postControllerRequest(request);
   }
 
   const helper = lifecycleCommand();
@@ -193,8 +236,5 @@ export async function runLifecycleAction(
 
   const command = lifecycleUsesSudo() ? "sudo" : helper;
   const args = lifecycleUsesSudo() ? ["-n", helper, ...controllerArgs] : controllerArgs;
-  return runController(command, args, {
-    action,
-    params: values,
-  }, options);
+  return runController(command, args, request, options);
 }

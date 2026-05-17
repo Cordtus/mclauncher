@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from "child_process";
-import { randomBytes } from "crypto";
+import { randomBytes, timingSafeEqual } from "crypto";
 import fs from "fs";
+import http from "http";
 import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -18,6 +19,7 @@ const DEFAULT_MAX_ACTIVE = Math.min(Number.isInteger(configuredMaxActive) && con
 const ARCHIVE_IMAGE_PREFIX = process.env.SERVER_ARCHIVE_IMAGE_PREFIX || "mc-archive-";
 const DEFAULT_LOCK_FILE = process.env.SERVER_LIFECYCLE_LOCK_FILE || "/run/lock/mc-server-lifecycle.lock";
 const CONTROLLER_ACTIONS = new Set(["list", "create", "archive", "restore", "delete-archive"]);
+const CONTROLLER_MAX_BODY_BYTES = Number(process.env.SERVER_LIFECYCLE_CONTROLLER_MAX_BODY_BYTES || 64 * 1024);
 
 function usage() {
   return [
@@ -30,6 +32,7 @@ function usage() {
     "  restore --archive-id ID [--name NAME] [--public-port PORT]",
     "  delete-archive --archive-id ID",
     "  controller",
+    "  serve-controller",
     "",
     "Common options:",
     "  --json",
@@ -97,7 +100,7 @@ function fail(options, err) {
 function requireRoot(action) {
   if (action === "list") return;
   if (typeof process.getuid !== "function" || process.getuid() !== 0) {
-    throw new Error("mc-server-lifecycle must be run as root for controller, create, archive, restore, and delete-archive");
+    throw new Error("mc-server-lifecycle must be run as root for controller, serve-controller, create, archive, restore, and delete-archive");
   }
 }
 
@@ -596,6 +599,88 @@ function runController(options) {
   return withLifecycleLock(sanitized.options, () => dispatchLifecycleAction(sanitized.action, sanitized.options));
 }
 
+function controllerToken() {
+  const token = process.env.SERVER_LIFECYCLE_CONTROLLER_TOKEN || "";
+  if (token.length < 32) {
+    throw new Error("SERVER_LIFECYCLE_CONTROLLER_TOKEN must be set to at least 32 characters");
+  }
+  return token;
+}
+
+function bearerToken(header) {
+  const value = String(header || "");
+  return value.startsWith("Bearer ") ? value.slice("Bearer ".length).trim() : "";
+}
+
+function tokenMatches(candidate, expected) {
+  const left = Buffer.from(String(candidate || ""));
+  const right = Buffer.from(expected);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+function readRequestBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > CONTROLLER_MAX_BODY_BYTES) {
+        reject(new Error("Request body too large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", reject);
+  });
+}
+
+function sendJson(res, status, body) {
+  res.writeHead(status, {
+    "Content-Type": "application/json",
+    "X-Content-Type-Options": "nosniff",
+  });
+  res.end(`${JSON.stringify(body)}\n`);
+}
+
+function serveController(options) {
+  const host = process.env.SERVER_LIFECYCLE_CONTROLLER_HOST || options.host || "127.0.0.1";
+  const port = parsePort(options.port || process.env.SERVER_LIFECYCLE_CONTROLLER_PORT, 9107, "controller-port");
+  const expectedToken = controllerToken();
+
+  const server = http.createServer(async (req, res) => {
+    try {
+      if (req.method === "GET" && req.url === "/healthz") {
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+
+      if (req.method !== "POST" || req.url !== "/lifecycle") {
+        sendJson(res, 404, { error: "not found" });
+        return;
+      }
+
+      if (!tokenMatches(bearerToken(req.headers.authorization), expectedToken)) {
+        sendJson(res, 401, { error: "unauthorized" });
+        return;
+      }
+
+      const rawBody = await readRequestBody(req);
+      const request = rawBody.trim() ? JSON.parse(rawBody) : {};
+      const sanitized = sanitizeControllerRequest(request, options);
+      const result = withLifecycleLock(sanitized.options, () => dispatchLifecycleAction(sanitized.action, sanitized.options));
+      sendJson(res, 200, result);
+    } catch (err) {
+      sendJson(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  server.listen(port, host, () => {
+    process.stdout.write(`mc-server lifecycle controller listening on ${host}:${port}\n`);
+  });
+}
+
 function main() {
   const { action, options } = parseArgs(process.argv.slice(2));
   if (options.help || !action) {
@@ -610,6 +695,9 @@ function main() {
   switch (action) {
     case "controller":
       printResult(options, runController(options));
+      return;
+    case "serve-controller":
+      serveController(options);
       return;
     case "list":
       printResult(options, listState(options));

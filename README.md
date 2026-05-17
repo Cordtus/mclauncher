@@ -134,10 +134,18 @@ sudo ./apps/scripts/mc-server-lifecycle.mjs restore \
 ```
 
 The web UI exposes these actions from **Server Fleet**. If the panel says the
-host lifecycle controller needs setup, either run the helper from the LXD host
-as root or configure `SERVER_LIFECYCLE_COMMAND` plus a narrow sudo rule for the
-management service. Do not grant the gateway broad `lxc` or shell sudo access;
-the sudo target should be limited to the controller entry point:
+host lifecycle controller needs setup, install the host-side controller from
+the LXD host:
+
+```bash
+sudo ./apps/scripts/install-lifecycle-controller.sh
+```
+
+That creates a root-owned, token-protected controller bound to the LXD host
+address and writes only the controller URL/token into the management
+container. If you use the direct sudo command mode instead, do not grant the
+gateway broad `lxc` or shell sudo access; the sudo target should be limited to
+the controller entry point:
 
 ```sudoers
 mcmanager ALL=(root) NOPASSWD: /opt/mc-lxd-manager/apps/scripts/mc-server-lifecycle.mjs controller --json

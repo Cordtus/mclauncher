@@ -226,8 +226,15 @@ sudo ./apps/scripts/mc-server-lifecycle.mjs restore --archive-id ARCHIVE_ID --na
 
 The web UI exposes the same workflow under **Server Fleet**. Archive metadata
 is stored in `/opt/mc-lxd-manager/server-archives.json`; active servers remain
-in `/opt/mc-lxd-manager/servers.json`. If sudo is used for UI lifecycle
-actions, grant only the controller entry point, for example:
+in `/opt/mc-lxd-manager/servers.json`. For UI lifecycle actions, prefer the
+host-side token controller installed with:
+
+```bash
+sudo ./apps/scripts/install-lifecycle-controller.sh
+```
+
+If sudo is used inside the management container instead, grant only the
+controller entry point, for example:
 
 ```sudoers
 mcmanager ALL=(root) NOPASSWD: /opt/mc-lxd-manager/apps/scripts/mc-server-lifecycle.mjs controller --json
@@ -313,6 +320,8 @@ All three apps use ES modules (`"type": "module"` in package.json):
 - `MAX_ACTIVE_SERVERS` - Maximum registered active server slots (default: 3)
 - `SERVER_LIFECYCLE_COMMAND` - Optional explicit path to the root-only lifecycle controller script
 - `SERVER_LIFECYCLE_USE_SUDO` - Run `SERVER_LIFECYCLE_COMMAND controller --json` with `sudo -n` from the gateway when a narrow sudoers rule has been configured (default: false)
+- `SERVER_LIFECYCLE_CONTROLLER_URL` - Optional host-side lifecycle controller URL used instead of direct command execution
+- `SERVER_LIFECYCLE_CONTROLLER_TOKEN` - Bearer token for the host-side lifecycle controller
 - `ADMIN_TOKEN` - Optional authentication token when `ADMIN_AUTH_METHODS` includes `token`
 - `ADMIN_AUTH_METHODS` - Comma-separated admin auth methods (default: token,passkey in the server; management setup script defaults to passkey)
 - `PASSKEY_REGISTRATION_CODES` - Comma-separated one-time setup codes as `label:code` or `code`; codes authorize only passkey registration and are stored hashed after import

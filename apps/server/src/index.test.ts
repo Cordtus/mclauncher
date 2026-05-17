@@ -157,6 +157,8 @@ describe('management gateway routes', () => {
     delete process.env.SERVER_ARCHIVES_FILE;
     delete process.env.SERVER_LIFECYCLE_COMMAND;
     delete process.env.SERVER_LIFECYCLE_USE_SUDO;
+    delete process.env.SERVER_LIFECYCLE_CONTROLLER_URL;
+    delete process.env.SERVER_LIFECYCLE_CONTROLLER_TOKEN;
     delete process.env.TEST_CONTROLLER_REQUEST_FILE;
     delete process.env.MAX_ACTIVE_SERVERS;
     delete process.env.ADMIN_TOKEN;
@@ -849,6 +851,72 @@ describe('management gateway routes', () => {
         mcVersion: '1.21.1',
         memoryMb: 4096,
         cpuLimit: '2',
+        publicPort: 34568,
+      },
+    });
+  });
+
+  it('routes lifecycle mutations through a host lifecycle controller URL when configured', async () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'mc-gateway-test-'));
+    tempDirs.push(tempDir);
+    const registryFile = path.join(tempDir, 'servers.json');
+    const requestFile = path.join(tempDir, 'controller-url-request.json');
+    writeFileSync(registryFile, JSON.stringify({ servers: [] }));
+
+    const lifecycleController = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+      req.on('end', () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        writeFileSync(requestFile, JSON.stringify({
+          method: req.method,
+          url: req.url,
+          authorization: req.headers.authorization,
+          body,
+        }, null, 2));
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ ok: true, message: `url ${body.action}` }));
+      });
+    });
+    await listen(lifecycleController);
+    servers.push(lifecycleController);
+
+    process.env.REGISTRY_FILE = registryFile;
+    process.env.SERVER_LIFECYCLE_CONTROLLER_URL = baseUrl(lifecycleController);
+    process.env.SERVER_LIFECYCLE_CONTROLLER_TOKEN = 'x'.repeat(32);
+    process.env.ADMIN_TOKEN = 'test-token';
+    process.env.ALLOW_CIDRS = '127.0.0.0/8';
+    process.env.WEB_DIST_DIR = tempDir;
+
+    const { app } = await import('./index.js');
+    const gateway = createServer(app);
+    await listen(gateway);
+    servers.push(gateway);
+
+    const response = await fetch(`${baseUrl(gateway)}/api/server-lifecycle/archives/archive-1/restore`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer test-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        name: 'mc-server-2',
+        public_port: 34568,
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, message: 'url restore' });
+
+    const recorded = JSON.parse(readFileSync(requestFile, 'utf8'));
+    expect(recorded.method).toBe('POST');
+    expect(recorded.url).toBe('/lifecycle');
+    expect(recorded.authorization).toBe(`Bearer ${'x'.repeat(32)}`);
+    expect(recorded.body).toEqual({
+      action: 'restore',
+      params: {
+        archiveId: 'archive-1',
+        name: 'mc-server-2',
         publicPort: 34568,
       },
     });
