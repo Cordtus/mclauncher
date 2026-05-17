@@ -32,6 +32,7 @@ export interface LifecycleState {
   maxActiveServers: number;
   activeServers: number;
   slotsAvailable: number;
+  activeServerNames: string[];
   archives: ServerArchiveRecord[];
 }
 
@@ -40,6 +41,10 @@ export interface LifecycleActionResult {
   message?: string;
   archive?: ServerArchiveRecord;
   archives?: ServerArchiveRecord[];
+  maxActiveServers?: number;
+  activeServers?: number;
+  slotsAvailable?: number;
+  activeServerNames?: string[];
   server?: unknown;
   rawOutput?: string;
 }
@@ -108,18 +113,48 @@ function readArchivesFile(file: string): ServerArchiveRecord[] {
   return [];
 }
 
-export function getLifecycleState(options: LifecycleOptions, activeServers: number): LifecycleState {
-  const command = lifecycleCommand();
-  const unavailableReason = lifecycleUnavailableReason(command);
+function fallbackLifecycleState(options: LifecycleOptions, activeServerNames: string[], unavailableReason?: string): LifecycleState {
   const archives = readArchivesFile(options.archivesFile);
+  const maxActiveServers = Math.min(options.maxActiveServers, HARD_MAX_ACTIVE_SERVERS);
+  const activeServers = activeServerNames.length;
   return {
     configured: !unavailableReason,
     unavailableReason,
-    maxActiveServers: Math.min(options.maxActiveServers, HARD_MAX_ACTIVE_SERVERS),
+    maxActiveServers,
     activeServers,
-    slotsAvailable: Math.max(0, Math.min(options.maxActiveServers, HARD_MAX_ACTIVE_SERVERS) - activeServers),
+    slotsAvailable: Math.max(0, maxActiveServers - activeServers),
+    activeServerNames,
     archives,
   };
+}
+
+export async function getLifecycleState(options: LifecycleOptions, activeServerNames: string[]): Promise<LifecycleState> {
+  const command = lifecycleCommand();
+  const unavailableReason = lifecycleUnavailableReason(command);
+  const fallback = fallbackLifecycleState(options, activeServerNames, unavailableReason);
+  if (unavailableReason) return fallback;
+
+  try {
+    const result = await runLifecycleAction("list", {}, options);
+    const maxActiveServers = Math.min(Number(result.maxActiveServers || options.maxActiveServers), HARD_MAX_ACTIVE_SERVERS);
+    const controllerNames = Array.isArray(result.activeServerNames)
+      ? result.activeServerNames.map((name) => String(name)).filter(Boolean)
+      : [];
+    const activeServers = Number.isInteger(result.activeServers)
+      ? Number(result.activeServers)
+      : controllerNames.length || fallback.activeServers;
+    return {
+      configured: true,
+      maxActiveServers,
+      activeServers,
+      slotsAvailable: Math.max(0, maxActiveServers - activeServers),
+      activeServerNames: controllerNames.length > 0 ? controllerNames : fallback.activeServerNames,
+      archives: Array.isArray(result.archives) ? result.archives : fallback.archives,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return fallbackLifecycleState(options, activeServerNames, `Lifecycle controller list failed: ${message}`);
+  }
 }
 
 function runController(command: string, args: string[], request: unknown, options: LifecycleOptions): Promise<LifecycleActionResult> {
@@ -181,6 +216,11 @@ function runController(command: string, args: string[], request: unknown, option
       }
     });
 
+    child.stdin.on("error", (err: any) => {
+      if (err?.code === "EPIPE") return;
+      clearTimeout(timeout);
+      reject(err);
+    });
     child.stdin.end(`${JSON.stringify(request)}\n`);
   });
 }

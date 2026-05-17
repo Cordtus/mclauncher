@@ -99,6 +99,7 @@ function fail(options, err) {
 
 function requireRoot(action) {
   if (action === "list") return;
+  if (action === "serve-controller" && (process.env.SERVER_LIFECYCLE_ALLOW_NON_ROOT || "false").toLowerCase() === "true") return;
   if (typeof process.getuid !== "function" || process.getuid() !== 0) {
     throw new Error("mc-server-lifecycle must be run as root for controller, serve-controller, create, archive, restore, and delete-archive");
   }
@@ -503,6 +504,7 @@ function listState(options) {
     maxActiveServers: maxActive,
     activeServers: activeNames.size,
     slotsAvailable: Math.max(0, maxActive - activeNames.size),
+    activeServerNames: [...activeNames].sort(),
     archives,
   };
 }

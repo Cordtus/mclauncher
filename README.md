@@ -60,7 +60,7 @@ Parameters:
 - Optional: Manager container name (default: mc-manager)
 
 Active server registration is capped at 3 slots. After the first server is
-online, use the **Server Fleet** panel in the UI or the root-only lifecycle
+online, use the **Server Fleet** panel in the UI or the host lifecycle
 controller to create additional servers, archive a server into an LXD image, or
 restore an archived server.
 
@@ -104,7 +104,7 @@ passkey; it does not authorize server management by itself. Set
 
 ### Create, Archive, and Restore Servers
 
-The lifecycle controller is intentionally root-only because it creates and
+The lifecycle controller is intentionally narrow because it creates and
 deletes LXD containers and published images. It stores active servers in
 `/opt/mc-lxd-manager/servers.json` and archived image metadata in
 `/opt/mc-lxd-manager/server-archives.json`. The controller entry point accepts
@@ -138,14 +138,17 @@ host lifecycle controller needs setup, install the host-side controller from
 the LXD host:
 
 ```bash
-sudo ./apps/scripts/install-lifecycle-controller.sh
+./apps/scripts/install-lifecycle-controller.sh
 ```
 
-That creates a root-owned, token-protected controller bound to the LXD host
-address and writes only the controller URL/token into the management
-container. If you use the direct sudo command mode instead, do not grant the
-gateway broad `lxc` or shell sudo access; the sudo target should be limited to
-the controller entry point:
+Run the installer as root for a system service, or as a dedicated host user
+that already has LXD admin access for a systemd user service. User-service
+installs require systemd lingering; the installer tries to enable it and stops
+before configuring `mc-manager` if it cannot. In both modes it creates a
+token-protected controller bound to the LXD host address and writes only the
+controller URL/token into the management container. If you use the direct sudo
+command mode instead, do not grant the gateway broad `lxc` or shell sudo
+access; the sudo target should be limited to the controller entry point:
 
 ```sudoers
 mcmanager ALL=(root) NOPASSWD: /opt/mc-lxd-manager/apps/scripts/mc-server-lifecycle.mjs controller --json

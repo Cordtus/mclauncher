@@ -922,6 +922,156 @@ describe('management gateway routes', () => {
     });
   });
 
+  it('uses controller-backed lifecycle state for slot display and manual registration limits', async () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'mc-gateway-test-'));
+    tempDirs.push(tempDir);
+    const registryFile = path.join(tempDir, 'servers.json');
+    writeFileSync(registryFile, JSON.stringify({
+      servers: [
+        {
+          name: 'mc-server-1',
+          agent_url: 'http://127.0.0.1:9090',
+          public_port: 34567,
+          memory_mb: 4096,
+          edition: 'paper',
+          mc_version: '1.21.1',
+        },
+        {
+          name: 'mc-server-2',
+          agent_url: 'http://127.0.0.2:9090',
+          public_port: 34568,
+          memory_mb: 4096,
+          edition: 'paper',
+          mc_version: '1.21.1',
+        },
+      ],
+    }));
+    const requests: unknown[] = [];
+
+    const lifecycleController = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+      req.on('end', () => {
+        if (req.headers.authorization !== `Bearer ${'x'.repeat(32)}`) {
+          res.statusCode = 401;
+          res.end(JSON.stringify({ error: 'unauthorized' }));
+          return;
+        }
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        requests.push(body);
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({
+          ok: true,
+          maxActiveServers: 3,
+          activeServers: 3,
+          slotsAvailable: 0,
+          activeServerNames: ['mc-server-1', 'mc-server-2', 'mc-server-3'],
+          archives: [],
+        }));
+      });
+    });
+    await listen(lifecycleController);
+    servers.push(lifecycleController);
+
+    process.env.REGISTRY_FILE = registryFile;
+    process.env.SERVER_LIFECYCLE_CONTROLLER_URL = baseUrl(lifecycleController);
+    process.env.SERVER_LIFECYCLE_CONTROLLER_TOKEN = 'x'.repeat(32);
+    process.env.ADMIN_TOKEN = 'test-token';
+    process.env.ALLOW_CIDRS = '127.0.0.0/8';
+    process.env.AGENT_ALLOWED_CIDRS = '127.0.0.0/8';
+    process.env.WEB_DIST_DIR = tempDir;
+
+    const { app } = await import('./index.js');
+    const gateway = createServer(app);
+    await listen(gateway);
+    servers.push(gateway);
+
+    const lifecycleResponse = await fetch(`${baseUrl(gateway)}/api/server-lifecycle`, {
+      headers: { Authorization: 'Bearer test-token' },
+    });
+
+    expect(lifecycleResponse.status).toBe(200);
+    expect(await lifecycleResponse.json()).toMatchObject({
+      configured: true,
+      activeServers: 3,
+      slotsAvailable: 0,
+      activeServerNames: ['mc-server-1', 'mc-server-2', 'mc-server-3'],
+    });
+
+    const registerResponse = await fetch(`${baseUrl(gateway)}/api/servers/register`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer test-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        name: 'mc-server-4',
+        agent_url: 'http://127.0.0.4:9090',
+      }),
+    });
+
+    expect(registerResponse.status).toBe(400);
+    expect(await registerResponse.json()).toEqual({ error: 'Maximum active server limit reached (3)' });
+    expect(requests).toEqual([
+      { action: 'list', params: {} },
+      { action: 'list', params: {} },
+    ]);
+  });
+
+  it('fails closed on manual registration when configured controller counting is unavailable', async () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'mc-gateway-test-'));
+    tempDirs.push(tempDir);
+    const registryFile = path.join(tempDir, 'servers.json');
+    writeFileSync(registryFile, JSON.stringify({
+      servers: [
+        {
+          name: 'mc-server-1',
+          agent_url: 'http://127.0.0.1:9090',
+          public_port: 34567,
+          memory_mb: 4096,
+          edition: 'paper',
+          mc_version: '1.21.1',
+        },
+      ],
+    }));
+
+    const lifecycleController = createServer((_req, res) => {
+      res.statusCode = 503;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: 'controller down' }));
+    });
+    await listen(lifecycleController);
+    servers.push(lifecycleController);
+
+    process.env.REGISTRY_FILE = registryFile;
+    process.env.SERVER_LIFECYCLE_CONTROLLER_URL = baseUrl(lifecycleController);
+    process.env.SERVER_LIFECYCLE_CONTROLLER_TOKEN = 'x'.repeat(32);
+    process.env.ADMIN_TOKEN = 'test-token';
+    process.env.ALLOW_CIDRS = '127.0.0.0/8';
+    process.env.AGENT_ALLOWED_CIDRS = '127.0.0.0/8';
+    process.env.WEB_DIST_DIR = tempDir;
+
+    const { app } = await import('./index.js');
+    const gateway = createServer(app);
+    await listen(gateway);
+    servers.push(gateway);
+
+    const response = await fetch(`${baseUrl(gateway)}/api/servers/register`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer test-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        name: 'mc-server-2',
+        agent_url: 'http://127.0.0.2:9090',
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: 'Lifecycle controller list failed: controller down' });
+  });
+
   it('does not expose agent tokens when saving server config', async () => {
     const tempDir = mkdtempSync(path.join(tmpdir(), 'mc-gateway-test-'));
     tempDirs.push(tempDir);

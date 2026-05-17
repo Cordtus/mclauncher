@@ -1012,19 +1012,26 @@ function lifecycleOptions() {
   };
 }
 
+function registryServerNames(registry: ServerRegistry) {
+  return registry.servers.map((server) => server.name).filter(Boolean);
+}
+
+function lifecycleCountIsAuthoritative() {
+  return Boolean(
+    process.env.SERVER_LIFECYCLE_CONTROLLER_URL ||
+    process.env.SERVER_LIFECYCLE_COMMAND ||
+    (process.env.SERVER_LIFECYCLE_USE_SUDO || "false").toLowerCase() === "true"
+  );
+}
+
 // Server fleet lifecycle state and host-backed create/archive/restore actions
-app.get("/api/server-lifecycle", requireAdmin, (_req, res) => {
+app.get("/api/server-lifecycle", requireAdmin, async (_req, res) => {
   const registry = loadRegistry();
-  res.json(getLifecycleState(lifecycleOptions(), registry.servers.length));
+  res.json(await getLifecycleState(lifecycleOptions(), registryServerNames(registry)));
 });
 
 app.post("/api/server-lifecycle/create", requireAdmin, async (req, res) => {
   try {
-    const registry = loadRegistry();
-    if (registry.servers.length >= MAX_ACTIVE_SERVERS) {
-      return res.status(400).json({ error: `Maximum active server limit reached (${MAX_ACTIVE_SERVERS})` });
-    }
-
     const result = await runLifecycleAction("create", {
       name: req.body?.name,
       edition: req.body?.edition,
@@ -1055,11 +1062,6 @@ app.post("/api/servers/:name/archive", requireAdmin, async (req, res) => {
 app.post("/api/server-lifecycle/archives/:id/restore", requireAdmin, async (req, res) => {
   try {
     assertSafePathSegment(req.params.id, "archive id");
-    const registry = loadRegistry();
-    if (registry.servers.length >= MAX_ACTIVE_SERVERS) {
-      return res.status(400).json({ error: `Maximum active server limit reached (${MAX_ACTIVE_SERVERS})` });
-    }
-
     const result = await runLifecycleAction("restore", {
       archiveId: req.params.id,
       name: req.body?.name,
@@ -1084,7 +1086,7 @@ app.delete("/api/server-lifecycle/archives/:id", requireAdmin, async (req, res) 
 });
 
 // Register server (called manually or by setup script)
-app.post("/api/servers/register", requireAdmin, (req, res) => {
+app.post("/api/servers/register", requireAdmin, async (req, res) => {
   try {
     const {
       name,
@@ -1111,7 +1113,13 @@ app.post("/api/servers/register", requireAdmin, (req, res) => {
     if (existing) {
       return res.status(400).json({ error: "Server already registered" });
     }
-    if (registry.servers.length >= MAX_ACTIVE_SERVERS) {
+    const lifecycleState = await getLifecycleState(lifecycleOptions(), registryServerNames(registry));
+    if (!lifecycleState.configured && lifecycleCountIsAuthoritative()) {
+      return res.status(400).json({ error: lifecycleState.unavailableReason || "Lifecycle controller is unavailable" });
+    }
+    const activeServerNames = new Set(lifecycleState.activeServerNames);
+    const projectedActiveServers = activeServerNames.has(name) ? lifecycleState.activeServers : lifecycleState.activeServers + 1;
+    if (projectedActiveServers > MAX_ACTIVE_SERVERS) {
       return res.status(400).json({ error: `Maximum active server limit reached (${MAX_ACTIVE_SERVERS})` });
     }
     const normalizedAgentUrl = validateAgentUrl(agent_url);

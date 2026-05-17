@@ -193,7 +193,7 @@ lxc exec mc-server-1 -- journalctl -u mc-agent -f
 3. **Optional CIDR filtering**: `ADMIN_REQUIRE_CIDR=true` restricts admin auth attempts to LAN and WireGuard VPN ranges
 4. **Internal-only agents**: Control agents on port 9090 never exposed outside container network
 5. **No host services**: Everything isolated in LXD containers
-6. **Root-only lifecycle controller**: Creating, archiving, restoring, and deleting archived server images is performed by the controller entry point in `apps/scripts/mc-server-lifecycle.mjs`. It must run as root because it controls LXD containers/images. The web gateway can call only `controller --json`, which accepts an allowlisted lifecycle request, takes a lock, and enforces the hard limit of 3 live server containers.
+6. **Narrow lifecycle controller**: Creating, archiving, restoring, and deleting archived server images is performed by the controller entry point in `apps/scripts/mc-server-lifecycle.mjs`. It must run on the LXD host as root or as a dedicated user with LXD admin access. The web gateway can call only the host token controller or `controller --json`, both of which accept allowlisted lifecycle requests, take a lock, and enforce the hard limit of 3 live server containers.
 
 ## Testing and Debugging
 
@@ -227,10 +227,12 @@ sudo ./apps/scripts/mc-server-lifecycle.mjs restore --archive-id ARCHIVE_ID --na
 The web UI exposes the same workflow under **Server Fleet**. Archive metadata
 is stored in `/opt/mc-lxd-manager/server-archives.json`; active servers remain
 in `/opt/mc-lxd-manager/servers.json`. For UI lifecycle actions, prefer the
-host-side token controller installed with:
+host-side token controller installed as root or as a host user that already has
+LXD admin access. User-service installs require systemd lingering; the
+installer stops before configuring `mc-manager` if lingering cannot be enabled.
 
 ```bash
-sudo ./apps/scripts/install-lifecycle-controller.sh
+./apps/scripts/install-lifecycle-controller.sh
 ```
 
 If sudo is used inside the management container instead, grant only the
@@ -318,7 +320,7 @@ All three apps use ES modules (`"type": "module"` in package.json):
 - `REGISTRY_FILE` - Server registry path (default: /opt/mc-lxd-manager/servers.json)
 - `SERVER_ARCHIVES_FILE` - Archived server metadata path (default: /opt/mc-lxd-manager/server-archives.json)
 - `MAX_ACTIVE_SERVERS` - Maximum registered active server slots (default: 3)
-- `SERVER_LIFECYCLE_COMMAND` - Optional explicit path to the root-only lifecycle controller script
+- `SERVER_LIFECYCLE_COMMAND` - Optional explicit path to the narrow lifecycle controller script
 - `SERVER_LIFECYCLE_USE_SUDO` - Run `SERVER_LIFECYCLE_COMMAND controller --json` with `sudo -n` from the gateway when a narrow sudoers rule has been configured (default: false)
 - `SERVER_LIFECYCLE_CONTROLLER_URL` - Optional host-side lifecycle controller URL used instead of direct command execution
 - `SERVER_LIFECYCLE_CONTROLLER_TOKEN` - Bearer token for the host-side lifecycle controller
