@@ -110,7 +110,7 @@ function ProjectIcon({
   if (!src || failed) {
     return (
       <div
-        className={`${className} flex shrink-0 items-center justify-center rounded-sm border border-border/70 bg-muted/60 text-muted-foreground`}
+        className={`${className} flex shrink-0 items-center justify-center rounded-sm border border-slate-700 bg-slate-900 text-slate-400`}
         aria-label={`${title} icon unavailable`}
       >
         <Package2 className="h-5 w-5" />
@@ -122,7 +122,7 @@ function ProjectIcon({
     <img
       src={src}
       alt=""
-      className={`${className} shrink-0 rounded-sm border border-border/70 bg-muted object-cover`}
+      className={`${className} shrink-0 rounded-sm border border-slate-700 bg-slate-900 object-cover`}
       onError={() => setFailed(true)}
     />
   );
@@ -491,9 +491,9 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
   const itemLabelPluralTitle = type === 'plugin' ? 'Plugins' : 'Mods';
 
   return (
-    <div className="space-y-4 overflow-hidden">
+    <div className="space-y-4 overflow-hidden text-slate-100">
       {message && (
-        <div className="p-3 bg-primary/10 border border-primary/20 rounded-lg text-sm">
+        <div className="rounded-sm border border-sky-400/25 bg-sky-400/10 p-3 text-sm text-sky-100">
           {message}
         </div>
       )}
@@ -505,11 +505,11 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
             placeholder={`Search ${itemLabelPlural}...`}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="pl-9 rounded-sm"
+            className="rounded-sm border-slate-700 bg-slate-950 pl-9"
           />
         </div>
         <Select value={category} onValueChange={setCategory}>
-          <SelectTrigger className="w-full rounded-sm">
+          <SelectTrigger className="w-full rounded-sm border-slate-700 bg-slate-950">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -519,7 +519,7 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
           </SelectContent>
         </Select>
         <Select value={sortBy} onValueChange={setSortBy}>
-          <SelectTrigger className="w-full rounded-sm">
+          <SelectTrigger className="w-full rounded-sm border-slate-700 bg-slate-950">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -530,7 +530,7 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
         </Select>
       </div>
 
-      <div className="text-sm text-muted-foreground">
+      <div className="text-sm text-slate-400">
         Showing {itemLabelPlural} compatible with {mcVersion} ({loader})
       </div>
 
@@ -540,14 +540,14 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
             <h3 className="text-lg font-semibold">Recommended {itemLabelPluralTitle}</h3>
             <Badge variant="outline">Quick Install</Badge>
           </div>
-          <p className="text-sm text-muted-foreground">
+          <p className="text-sm text-slate-400">
             Common {itemLabelPlural} for {loader}. Open one to review compatibility and install.
           </p>
-          <div className="grid max-h-[27.75rem] grid-cols-1 gap-3 overflow-y-auto overflow-x-hidden pr-2 md:grid-cols-2 xl:grid-cols-3">
+          <div className="grid max-h-[min(58vh,34rem)] grid-cols-1 gap-3 overflow-y-auto overflow-x-hidden pr-3 md:grid-cols-2">
             {recommendedMods.map((mod) => (
               <Card
                 key={mod.slug}
-                className="h-[8.5rem] cursor-pointer overflow-hidden rounded-sm border-border/70 transition-colors hover:border-primary/80 hover:bg-primary/5"
+                className="min-h-[8.75rem] cursor-pointer overflow-hidden rounded-sm border-slate-800 bg-slate-950 transition-colors hover:border-emerald-400/70 hover:bg-emerald-400/[0.055]"
                 onClick={() => searchModBySlug(mod.slug)}
               >
                 <CardHeader className="pb-3">
@@ -555,12 +555,12 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
                     <ProjectIcon title={mod.name} className="h-10 w-10" />
                     <div className="min-w-0 flex-1">
                       <CardTitle className="truncate text-base">{mod.name}</CardTitle>
-                      <CardDescription className="text-xs">{mod.category}</CardDescription>
+                      <CardDescription className="text-xs text-slate-500">{mod.category}</CardDescription>
                     </div>
                   </div>
                 </CardHeader>
                 <CardContent className="pt-0">
-                  <p className="line-clamp-2 text-xs text-muted-foreground">
+                  <p className="line-clamp-2 text-xs leading-5 text-slate-400">
                     {mod.description}
                   </p>
                 </CardContent>
@@ -568,37 +568,37 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
             ))}
           </div>
           <Separator />
-          <p className="text-xs text-center text-muted-foreground">
+          <p className="text-center text-xs text-slate-500">
             Use search to find more {itemLabelPlural} from Modrinth.
           </p>
         </div>
       ) : isSearching ? (
-        <div className="py-12 text-center text-muted-foreground">
+        <div className="py-12 text-center text-slate-400">
           Searching...
         </div>
       ) : mods.length === 0 ? (
-        <div className="py-12 text-center text-muted-foreground">
+        <div className="py-12 text-center text-slate-400">
           No {itemLabelPlural} found. Try different search terms.
         </div>
       ) : (
-        <div className="grid max-h-[23rem] grid-cols-1 gap-3 overflow-y-auto overflow-x-hidden pr-2 lg:grid-cols-2">
+        <div className="grid max-h-[min(58vh,34rem)] grid-cols-1 gap-3 overflow-y-auto overflow-x-hidden pr-3 lg:grid-cols-2">
           {mods.map((mod) => (
             <Card
               key={mod.project_id}
-              className="h-[10.75rem] cursor-pointer overflow-hidden rounded-sm border-border/70 transition-colors hover:border-primary/80 hover:bg-primary/5"
+              className="min-h-[10.5rem] cursor-pointer overflow-hidden rounded-sm border-slate-800 bg-slate-950 transition-colors hover:border-emerald-400/70 hover:bg-emerald-400/[0.055]"
               onClick={() => selectMod(mod)}
             >
               <CardHeader className="pb-3">
                 <div className="flex gap-3">
                   <ProjectIcon src={mod.icon_url} title={mod.title} />
                   <div className="flex-1 min-w-0">
-                    <CardTitle className="text-base truncate">{mod.title}</CardTitle>
-                    <CardDescription className="text-xs truncate">by {mod.author}</CardDescription>
+                    <CardTitle className="truncate text-base">{mod.title}</CardTitle>
+                    <CardDescription className="truncate text-xs text-slate-500">by {mod.author}</CardDescription>
                   </div>
                 </div>
               </CardHeader>
               <CardContent className="pt-0">
-                <p className="text-xs text-muted-foreground line-clamp-2 mb-2">
+                <p className="mb-2 line-clamp-2 text-xs leading-5 text-slate-400">
                   {mod.description}
                 </p>
                 <div className="flex gap-2 flex-wrap">

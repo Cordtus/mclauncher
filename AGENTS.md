@@ -193,6 +193,7 @@ lxc exec mc-server-1 -- journalctl -u mc-agent -f
 3. **Optional CIDR filtering**: `ADMIN_REQUIRE_CIDR=true` restricts admin auth attempts to LAN and WireGuard VPN ranges
 4. **Internal-only agents**: Control agents on port 9090 never exposed outside container network
 5. **No host services**: Everything isolated in LXD containers
+6. **Root-only lifecycle helper**: Creating, archiving, restoring, and deleting archived server images is performed by `apps/scripts/mc-server-lifecycle.mjs`, which must run as root because it controls LXD containers/images. The web gateway can call it only when a narrow sudo or equivalent host-LXD setup is configured.
 
 ## Testing and Debugging
 
@@ -210,6 +211,22 @@ This host-side command is intentionally root-only. It invokes the compiled
 management backend in `mc-manager`, prints the plaintext setup code once to
 stdout, and stores only a SHA-256 hash in
 `/opt/mc-lxd-manager/passkeys.json`.
+
+### Create/archive/restore servers
+```bash
+# Create an active server slot (maximum 3 active servers)
+sudo ./apps/scripts/mc-server-lifecycle.mjs create --name mc-server-2 --edition paper --mc-version 1.21.1 --memory-mb 4096 --cpu-limit 2 --public-port 34568
+
+# Archive a server into an LXD image and free the active slot
+sudo ./apps/scripts/mc-server-lifecycle.mjs archive --name mc-server-1 --label "Survival May 2026"
+
+# Restore an archive into an open active slot
+sudo ./apps/scripts/mc-server-lifecycle.mjs restore --archive-id ARCHIVE_ID --name mc-server-1 --public-port 34567
+```
+
+The web UI exposes the same workflow under **Server Fleet**. Archive metadata
+is stored in `/opt/mc-lxd-manager/server-archives.json`; active servers remain
+in `/opt/mc-lxd-manager/servers.json`.
 
 ### Verify agent is running
 ```bash
@@ -287,6 +304,10 @@ All three apps use ES modules (`"type": "module"` in package.json):
 - `HOST` - Bind address (default: 0.0.0.0)
 - `PORT` - HTTP port (default: 8080)
 - `REGISTRY_FILE` - Server registry path (default: /opt/mc-lxd-manager/servers.json)
+- `SERVER_ARCHIVES_FILE` - Archived server metadata path (default: /opt/mc-lxd-manager/server-archives.json)
+- `MAX_ACTIVE_SERVERS` - Maximum registered active server slots (default: 3)
+- `SERVER_LIFECYCLE_COMMAND` - Optional explicit path to the root-only lifecycle helper
+- `SERVER_LIFECYCLE_USE_SUDO` - Run the lifecycle helper with `sudo -n` from the gateway when a narrow sudoers rule has been configured (default: false)
 - `ADMIN_TOKEN` - Optional authentication token when `ADMIN_AUTH_METHODS` includes `token`
 - `ADMIN_AUTH_METHODS` - Comma-separated admin auth methods (default: token,passkey in the server; management setup script defaults to passkey)
 - `PASSKEY_REGISTRATION_CODES` - Comma-separated one-time setup codes as `label:code` or `code`; codes authorize only passkey registration and are stored hashed after import

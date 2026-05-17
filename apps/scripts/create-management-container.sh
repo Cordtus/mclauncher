@@ -117,6 +117,8 @@ chmod 600 "$ENV_FILE"
   printf 'PASSKEY_REGISTRATION_CODES=%s\n' "$PASSKEY_REGISTRATION_CODES"
   printf '%s\n' 'PASSKEY_STORE_FILE=/opt/mc-lxd-manager/passkeys.json'
   printf '%s\n' 'REGISTRY_FILE=/opt/mc-lxd-manager/servers.json'
+  printf '%s\n' 'SERVER_ARCHIVES_FILE=/opt/mc-lxd-manager/server-archives.json'
+  printf '%s\n' 'MAX_ACTIVE_SERVERS=3'
 } > "$ENV_FILE"
 lxc file push "$ENV_FILE" "$CONTAINER_NAME/opt/mc-lxd-manager/.env"
 lxc exec "$CONTAINER_NAME" -- chown mcmanager:mcmanager /opt/mc-lxd-manager/.env

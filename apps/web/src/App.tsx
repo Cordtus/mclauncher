@@ -21,6 +21,11 @@ import {
   Fingerprint,
   LogOut,
   Trash2,
+  Archive,
+  Plus,
+  Server,
+  DatabaseBackup,
+  HardDrive,
 } from "lucide-react";
 import { toast } from "sonner";
 import { ModBrowser } from "@/components/ModBrowser";
@@ -114,6 +119,32 @@ type PublicAccessState = {
   checkedAt?: string;
 };
 
+type ServerArchive = {
+  id: string;
+  label?: string;
+  sourceName: string;
+  imageAlias: string;
+  createdAt: string;
+  server: {
+    name: string;
+    public_port: number;
+    memory_mb: number;
+    cpu_limit?: string;
+    edition: string;
+    mc_version: string;
+    public_domain?: string;
+  };
+};
+
+type LifecycleState = {
+  configured: boolean;
+  unavailableReason?: string;
+  maxActiveServers: number;
+  activeServers: number;
+  slotsAvailable: number;
+  archives: ServerArchive[];
+};
+
 async function copyToClipboard(text: string) {
   try {
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -149,6 +180,25 @@ export function App() {
   const [serverTps, setServerTps] = useState<Map<string, number | null>>(new Map());
   const [publicAccess, setPublicAccess] = useState<Map<string, PublicAccessState>>(new Map());
   const [helpDialog, setHelpDialog] = useState(false);
+  const [lifecycle, setLifecycle] = useState<LifecycleState | null>(null);
+  const [createServerDialog, setCreateServerDialog] = useState(false);
+  const [archivesDialog, setArchivesDialog] = useState(false);
+  const [archiveTarget, setArchiveTarget] = useState<ServerRow | null>(null);
+  const [archiveLabel, setArchiveLabel] = useState("");
+  const [restoreTarget, setRestoreTarget] = useState<ServerArchive | null>(null);
+  const [isLifecycleBusy, setIsLifecycleBusy] = useState(false);
+  const [newServerForm, setNewServerForm] = useState({
+    name: "",
+    edition: "paper",
+    mcVersion: "1.21.1",
+    memoryMb: 4096,
+    cpuLimit: "2",
+    publicPort: 34567,
+  });
+  const [restoreForm, setRestoreForm] = useState({
+    name: "",
+    publicPort: 34567,
+  });
 
   // Tour state
   const [tourActive, setTourActive] = useState(false);
@@ -250,6 +300,11 @@ export function App() {
       target: null,
       title: "Welcome to MC Manager!",
       content: "Let's take a quick tour of all the features to help you get your Minecraft server up and running. You can skip this tour at any time or restart it from the Help menu.",
+    },
+    {
+      target: "[data-tour='server-fleet']",
+      title: "Server Fleet",
+      content: "Create up to three active servers, archive a server to free a slot, and restore archived server images when you want that world back.",
     },
     {
       target: "[data-tour='server-controls']",
@@ -497,6 +552,25 @@ export function App() {
     }
   }
 
+  async function loadLifecycle() {
+    if (!isAdminAuthenticated && serverInventoryBlocked) {
+      setLifecycle(null);
+      return;
+    }
+    try {
+      const response = await fetch("/api/server-lifecycle", {
+        headers: authHeaders(),
+      });
+      if (!response.ok) {
+        setLifecycle(null);
+        return;
+      }
+      setLifecycle(await response.json());
+    } catch {
+      setLifecycle(null);
+    }
+  }
+
   async function loadServerSettings(server: ServerRow) {
     setSelectedServer(server.name);
     setAdminCommand("");
@@ -574,6 +648,7 @@ export function App() {
       if (res.status === 401 || res.status === 403 || res.status === 503) {
         setServers([]);
         setLogs("");
+        setLifecycle(null);
         setIsAdminAuthenticated(false);
         setServerInventoryBlocked(true);
         setMessage("Admin access is required to view and manage servers.");
@@ -587,6 +662,7 @@ export function App() {
       setIsAdminAuthenticated(true);
       setServerInventoryBlocked(false);
       setMessage("");
+      setTimeout(() => loadLifecycle(), 0);
     } catch (err) {
       setServerInventoryBlocked(false);
       setMessage("Failed to fetch servers");
@@ -647,6 +723,109 @@ export function App() {
       setTimeout(() => refresh(), 2000);
     } catch (err: any) {
       setMessage(err.message || `Failed to ${action} server`);
+    }
+  };
+
+  const handleCreateServer = async () => {
+    setIsLifecycleBusy(true);
+    try {
+      const response = await fetch("/api/server-lifecycle/create", {
+        method: "POST",
+        headers: jsonAuthHeaders(),
+        body: JSON.stringify({
+          name: newServerForm.name.trim() || undefined,
+          edition: newServerForm.edition,
+          mc_version: newServerForm.mcVersion,
+          memory_mb: Number(newServerForm.memoryMb),
+          cpu_limit: newServerForm.cpuLimit,
+          public_port: Number(newServerForm.publicPort),
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || "Failed to create server");
+      toast.success(result.message || "Server created");
+      setCreateServerDialog(false);
+      setNewServerForm((form) => ({ ...form, name: "", publicPort: form.publicPort + 1 }));
+      await refresh();
+      await loadLifecycle();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to create server");
+    } finally {
+      setIsLifecycleBusy(false);
+    }
+  };
+
+  const handleArchiveServer = async () => {
+    if (!archiveTarget) return;
+    setIsLifecycleBusy(true);
+    try {
+      const response = await fetch(`/api/servers/${archiveTarget.name}/archive`, {
+        method: "POST",
+        headers: jsonAuthHeaders(),
+        body: JSON.stringify({ label: archiveLabel.trim() || undefined }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || "Failed to archive server");
+      toast.success(result.message || `${archiveTarget.name} archived`);
+      setArchiveTarget(null);
+      setArchiveLabel("");
+      await refresh();
+      await loadLifecycle();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to archive server");
+    } finally {
+      setIsLifecycleBusy(false);
+    }
+  };
+
+  const openRestoreDialog = (archive: ServerArchive) => {
+    setRestoreTarget(archive);
+    setRestoreForm({
+      name: archive.server.name || archive.sourceName,
+      publicPort: archive.server.public_port || 34567,
+    });
+  };
+
+  const handleRestoreArchive = async () => {
+    if (!restoreTarget) return;
+    setIsLifecycleBusy(true);
+    try {
+      const response = await fetch(`/api/server-lifecycle/archives/${restoreTarget.id}/restore`, {
+        method: "POST",
+        headers: jsonAuthHeaders(),
+        body: JSON.stringify({
+          name: restoreForm.name.trim() || undefined,
+          public_port: Number(restoreForm.publicPort),
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || "Failed to restore archive");
+      toast.success(result.message || "Archive restored");
+      setRestoreTarget(null);
+      await refresh();
+      await loadLifecycle();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to restore archive");
+    } finally {
+      setIsLifecycleBusy(false);
+    }
+  };
+
+  const handleDeleteArchive = async (archive: ServerArchive) => {
+    setIsLifecycleBusy(true);
+    try {
+      const response = await fetch(`/api/server-lifecycle/archives/${archive.id}`, {
+        method: "DELETE",
+        headers: authHeaders(),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || "Failed to delete archive");
+      toast.success(result.message || "Archive deleted");
+      await loadLifecycle();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to delete archive");
+    } finally {
+      setIsLifecycleBusy(false);
     }
   };
 
@@ -1097,6 +1276,7 @@ export function App() {
     setIsAdminAuthenticated(false);
     setServers([]);
     setLogs("");
+    setLifecycle(null);
     setSetupCodes([]);
     setServerInventoryBlocked(true);
     setMessage("Admin access is required to view and manage servers.");
@@ -1119,25 +1299,31 @@ export function App() {
   const tokenAuthEnabled = Array.isArray(authConfig?.authMethods) && authConfig.authMethods.includes("token");
   const hasPasskeys = Boolean(passkeyConfig?.hasPasskeys);
   const registrationOpen = showPasskeyRegistration || (Boolean(authConfig) && !hasPasskeys);
+  const maxActiveServers = lifecycle?.maxActiveServers ?? 3;
+  const slotsAvailable = lifecycle?.slotsAvailable ?? Math.max(0, maxActiveServers - servers.length);
+  const archiveCount = lifecycle?.archives.length ?? 0;
+  const lifecycleUnavailable = lifecycle?.configured === false ? lifecycle.unavailableReason : "";
 
   return (
     <TooltipProvider>
-      <div className="min-h-screen bg-background p-3 sm:p-6">
-        <div className="max-w-7xl mx-auto space-y-4 sm:space-y-6">
+      <div className="min-h-screen bg-[#050914] text-slate-100 [background-image:linear-gradient(rgba(148,163,184,0.055)_1px,transparent_1px),linear-gradient(90deg,rgba(148,163,184,0.055)_1px,transparent_1px)] [background-size:48px_48px]">
+        <div className="mx-auto max-w-7xl space-y-5 px-3 py-4 sm:px-6 sm:py-6">
         {/* Header */}
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-          <div className="flex items-center gap-3 sm:gap-4">
-            <img src="/mc-logo.svg" alt="Minecraft Server" className="h-8 sm:h-10 flex-shrink-0" />
-            <div>
-              <h1 className="text-xl sm:text-2xl md:text-3xl font-bold tracking-tight bg-gradient-to-r from-emerald-300 via-sky-300 to-blue-400 bg-clip-text text-transparent">
+        <div className="flex flex-col gap-4 border-b border-slate-800/90 pb-5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 items-center gap-3 sm:gap-4">
+            <div className="flex h-12 w-12 flex-shrink-0 items-center justify-center border border-emerald-400/30 bg-emerald-400/10 shadow-[0_0_24px_rgba(52,211,153,0.14)]">
+              <img src="/mc-logo.svg" alt="Minecraft Server" className="h-8 w-8 object-contain" />
+            </div>
+            <div className="min-w-0">
+              <h1 className="text-xl font-semibold tracking-tight text-slate-50 sm:text-2xl md:text-3xl">
                 Minecraft Server Manager
               </h1>
-              <p className="text-xs sm:text-sm text-muted-foreground mt-0.5 sm:mt-1">
-                Run servers, share player addresses, and manage worlds.
+              <p className="mt-1 text-xs text-slate-400 sm:text-sm">
+                Server operations, player access, content, and console in one workspace.
               </p>
             </div>
           </div>
-          <div className="flex gap-2 w-full sm:w-auto">
+          <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:flex-nowrap">
             <Dialog open={adminAccessDialog} onOpenChange={(open) => {
               setAdminAccessDialog(open);
               if (open) {
@@ -1429,6 +1615,17 @@ export function App() {
                   </section>
 
                   <section>
+                    <h2 className="text-lg font-bold mb-3 border-b pb-2">Server Fleet</h2>
+                    <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
+                      <li>Up to three active LXD servers can be registered at once.</li>
+                      <li>Use New Server to create another Paper or Vanilla server when a slot is open.</li>
+                      <li>Use Archive Server to stop a server, publish a complete LXD image, remove it from the active slot list, and keep it available for restore.</li>
+                      <li>Use Archives to restore an archived image back into an open slot or remove archive images you no longer need.</li>
+                      <li>Lifecycle actions require the root-only host helper to be configured for the management service.</li>
+                    </ul>
+                  </section>
+
+                  <section>
                     <h2 className="text-lg font-bold mb-3 border-b pb-2">Server Settings</h2>
                     <p className="text-muted-foreground mb-3">Click "Server Settings" to configure your server before launch, then save to apply changes.</p>
 
@@ -1634,6 +1831,306 @@ export function App() {
           </Card>
         )}
 
+        {hasAdminAccess && !serverInventoryBlocked && (
+          <section data-tour="server-fleet" className="grid gap-4 border border-slate-800 bg-[#07111f]/90 p-4 shadow-[0_20px_70px_rgba(0,0,0,0.35)] lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+            <div className="grid gap-4 md:grid-cols-[auto_minmax(0,1fr)] md:items-center">
+              <div className="grid h-20 w-20 place-items-center border border-emerald-400/25 bg-emerald-400/10 text-emerald-200">
+                <Server className="h-9 w-9" />
+              </div>
+              <div className="min-w-0">
+                <div className="mb-2 flex flex-wrap items-center gap-2">
+                  <span className="border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-300">
+                    Server Fleet
+                  </span>
+                  <Badge className="rounded-sm bg-emerald-500 text-slate-950 hover:bg-emerald-500">
+                    {servers.length}/{maxActiveServers} active
+                  </Badge>
+                  <Badge variant="outline" className="rounded-sm border-amber-400/30 text-amber-200">
+                    {archiveCount} archived
+                  </Badge>
+                </div>
+                <h2 className="text-2xl font-semibold text-slate-50">Active Slots and Archives</h2>
+                <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-400">
+                  Keep up to three servers online. Archive a server to stop it, image its full LXD state, and free the slot for another world.
+                </p>
+                {lifecycleUnavailable && (
+                  <p className="mt-3 border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-200">
+                    Host lifecycle actions need setup: {lifecycleUnavailable}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className="grid gap-2 sm:grid-cols-2 lg:w-[22rem]">
+              <Dialog open={createServerDialog} onOpenChange={setCreateServerDialog}>
+                <DialogTrigger asChild>
+                  <Button
+                    className="h-12 rounded-sm bg-emerald-500 text-slate-950 hover:bg-emerald-400"
+                    disabled={slotsAvailable <= 0}
+                  >
+                    <Plus className="mr-2 h-4 w-4" />
+                    New Server
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="w-[min(94vw,34rem)] max-w-none rounded-sm border-slate-800 bg-[#07111f]">
+                  <DialogHeader>
+                    <DialogTitle>Create Server</DialogTitle>
+                    <DialogDescription>
+                      Creates a new LXD-backed Minecraft server when an active slot is available.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="grid gap-4">
+                    <div className="grid gap-2">
+                      <Label htmlFor="new-server-name">Server name</Label>
+                      <Input
+                        id="new-server-name"
+                        value={newServerForm.name}
+                        onChange={(event) => setNewServerForm((form) => ({ ...form, name: event.target.value }))}
+                        placeholder="mc-server-2"
+                        className="rounded-sm"
+                      />
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="grid gap-2">
+                        <Label>Edition</Label>
+                        <Select
+                          value={newServerForm.edition}
+                          onValueChange={(edition) => setNewServerForm((form) => ({ ...form, edition }))}
+                        >
+                          <SelectTrigger className="rounded-sm">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="paper">Paper</SelectItem>
+                            <SelectItem value="vanilla">Vanilla</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="grid gap-2">
+                        <Label htmlFor="new-server-version">Minecraft version</Label>
+                        <Input
+                          id="new-server-version"
+                          value={newServerForm.mcVersion}
+                          onChange={(event) => setNewServerForm((form) => ({ ...form, mcVersion: event.target.value }))}
+                          className="rounded-sm"
+                        />
+                      </div>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      <div className="grid gap-2">
+                        <Label htmlFor="new-server-memory">Memory MB</Label>
+                        <Input
+                          id="new-server-memory"
+                          type="number"
+                          min={1024}
+                          value={newServerForm.memoryMb}
+                          onChange={(event) => setNewServerForm((form) => ({ ...form, memoryMb: Number(event.target.value) }))}
+                          className="rounded-sm"
+                        />
+                      </div>
+                      <div className="grid gap-2">
+                        <Label htmlFor="new-server-cpu">CPU</Label>
+                        <Input
+                          id="new-server-cpu"
+                          value={newServerForm.cpuLimit}
+                          onChange={(event) => setNewServerForm((form) => ({ ...form, cpuLimit: event.target.value }))}
+                          className="rounded-sm"
+                        />
+                      </div>
+                      <div className="grid gap-2">
+                        <Label htmlFor="new-server-port">Public port</Label>
+                        <Input
+                          id="new-server-port"
+                          type="number"
+                          min={1}
+                          max={65535}
+                          value={newServerForm.publicPort}
+                          onChange={(event) => setNewServerForm((form) => ({ ...form, publicPort: Number(event.target.value) }))}
+                          className="rounded-sm"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                  <DialogFooter>
+                    <Button variant="outline" className="rounded-sm" onClick={() => setCreateServerDialog(false)}>
+                      Cancel
+                    </Button>
+                    <Button
+                      className="rounded-sm bg-emerald-500 text-slate-950 hover:bg-emerald-400"
+                      onClick={handleCreateServer}
+                      disabled={isLifecycleBusy || slotsAvailable <= 0 || lifecycle?.configured === false}
+                    >
+                      {isLifecycleBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
+                      Create
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+
+              <Dialog open={archivesDialog} onOpenChange={setArchivesDialog}>
+                <DialogTrigger asChild>
+                  <Button variant="outline" className="h-12 rounded-sm border-amber-400/30 bg-amber-400/10 text-amber-100 hover:bg-amber-400/20">
+                    <Archive className="mr-2 h-4 w-4" />
+                    Archives
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="w-[min(94vw,48rem)] max-w-none rounded-sm border-slate-800 bg-[#07111f]">
+                  <DialogHeader>
+                    <DialogTitle>Archived Servers</DialogTitle>
+                    <DialogDescription>
+                      Restore an archived server into an open active slot, or delete an archive image when it is no longer needed.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="max-h-[60vh] space-y-3 overflow-y-auto pr-1">
+                    {archiveCount === 0 ? (
+                      <div className="border border-slate-800 bg-slate-950 p-6 text-center text-sm text-slate-400">
+                        No server archives yet.
+                      </div>
+                    ) : (
+                      lifecycle?.archives.map((archive) => (
+                        <div key={archive.id} className="grid gap-3 border border-slate-800 bg-slate-950 p-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <h3 className="truncate text-base font-semibold text-slate-100">
+                                {archive.label || archive.sourceName}
+                              </h3>
+                              <Badge variant="secondary" className="rounded-sm">
+                                {archive.server.edition} {archive.server.mc_version}
+                              </Badge>
+                            </div>
+                            <p className="mt-1 text-xs text-slate-500">
+                              {new Date(archive.createdAt).toLocaleString()} · {archive.server.memory_mb}MB · image {archive.imageAlias}
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <Button
+                              size="sm"
+                              className="rounded-sm"
+                              disabled={slotsAvailable <= 0 || isLifecycleBusy}
+                              onClick={() => openRestoreDialog(archive)}
+                            >
+                              <DatabaseBackup className="mr-2 h-4 w-4" />
+                              Restore
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="rounded-sm text-red-200 hover:text-red-100"
+                              disabled={isLifecycleBusy}
+                              onClick={() => handleDeleteArchive(archive)}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </DialogContent>
+              </Dialog>
+            </div>
+          </section>
+        )}
+
+        <Dialog open={Boolean(restoreTarget)} onOpenChange={(open) => !open && setRestoreTarget(null)}>
+          <DialogContent className="w-[min(94vw,32rem)] max-w-none rounded-sm border-slate-800 bg-[#07111f]">
+            <DialogHeader>
+              <DialogTitle>Restore Archive</DialogTitle>
+              <DialogDescription>
+                Launch this image as an active server and register it in the manager.
+              </DialogDescription>
+            </DialogHeader>
+            {restoreTarget && (
+              <div className="grid gap-4">
+                <div className="border border-slate-800 bg-slate-950 p-3 text-sm text-slate-300">
+                  <p className="font-semibold text-slate-100">{restoreTarget.label || restoreTarget.sourceName}</p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {restoreTarget.server.edition} {restoreTarget.server.mc_version} · archived {new Date(restoreTarget.createdAt).toLocaleString()}
+                  </p>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="grid gap-2">
+                    <Label htmlFor="restore-server-name">Server name</Label>
+                    <Input
+                      id="restore-server-name"
+                      value={restoreForm.name}
+                      onChange={(event) => setRestoreForm((form) => ({ ...form, name: event.target.value }))}
+                      className="rounded-sm"
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="restore-server-port">Public port</Label>
+                    <Input
+                      id="restore-server-port"
+                      type="number"
+                      min={1}
+                      max={65535}
+                      value={restoreForm.publicPort}
+                      onChange={(event) => setRestoreForm((form) => ({ ...form, publicPort: Number(event.target.value) }))}
+                      className="rounded-sm"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+            <DialogFooter>
+              <Button variant="outline" className="rounded-sm" onClick={() => setRestoreTarget(null)}>
+                Cancel
+              </Button>
+              <Button
+                className="rounded-sm"
+                onClick={handleRestoreArchive}
+                disabled={isLifecycleBusy || slotsAvailable <= 0 || lifecycle?.configured === false}
+              >
+                {isLifecycleBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <DatabaseBackup className="mr-2 h-4 w-4" />}
+                Restore
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={Boolean(archiveTarget)} onOpenChange={(open) => !open && setArchiveTarget(null)}>
+          <DialogContent className="w-[min(94vw,32rem)] max-w-none rounded-sm border-slate-800 bg-[#07111f]">
+            <DialogHeader>
+              <DialogTitle>Archive Server</DialogTitle>
+              <DialogDescription>
+                This stops the server, publishes an LXD image of the complete game state, removes the active container, and frees one server slot.
+              </DialogDescription>
+            </DialogHeader>
+            {archiveTarget && (
+              <div className="grid gap-4">
+                <div className="border border-amber-400/30 bg-amber-400/10 p-3 text-sm text-amber-100">
+                  Archiving {archiveTarget.name} will disconnect players and take the server offline until it is restored.
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="archive-label">Archive label</Label>
+                  <Input
+                    id="archive-label"
+                    value={archiveLabel}
+                    onChange={(event) => setArchiveLabel(event.target.value)}
+                    placeholder={`${archiveTarget.name} archive`}
+                    className="rounded-sm"
+                  />
+                </div>
+              </div>
+            )}
+            <DialogFooter>
+              <Button variant="outline" className="rounded-sm" onClick={() => setArchiveTarget(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                className="rounded-sm"
+                onClick={handleArchiveServer}
+                disabled={isLifecycleBusy || lifecycle?.configured === false}
+              >
+                {isLifecycleBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Archive className="mr-2 h-4 w-4" />}
+                Archive
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
         {/* Server List */}
         {serverInventoryBlocked ? (
           <Card className="rounded-sm">
@@ -1667,13 +2164,15 @@ export function App() {
         ) : (
           <div className="grid gap-6">
             {servers.map((server) => (
-              <Card key={server.name} className="overflow-hidden rounded-sm border-border/70 bg-card/95 shadow-sm">
-                <CardHeader className="p-4 sm:p-6">
+              <Card key={server.name} className="overflow-hidden rounded-sm border-emerald-400/20 bg-[#07111f]/95 shadow-[0_28px_90px_rgba(0,0,0,0.42)]">
+                <CardHeader className="border-b border-slate-800/90 bg-[linear-gradient(180deg,rgba(15,23,42,0.95),rgba(7,17,31,0.92))] p-4 sm:p-6">
                   <div className="flex flex-col gap-5">
-                    <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                    <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
                       <div className="min-w-0 flex-1">
-                        <CardTitle className="flex items-center gap-2 flex-wrap text-base sm:text-lg">
-                          {server.name}
+                        <div className="mb-3 flex flex-wrap items-center gap-2">
+                          <span className="border border-emerald-400/30 bg-emerald-400/10 px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-200">
+                            Active Server
+                          </span>
                           <Badge
                             variant={getStatusColor(server.status)}
                             className="rounded-sm text-xs"
@@ -1688,19 +2187,22 @@ export function App() {
                               TPS {serverTps.get(server.name)?.toFixed(1) || 'N/A'}
                             </Badge>
                           )}
+                        </div>
+                        <CardTitle className="text-2xl font-semibold tracking-tight text-slate-50 sm:text-3xl">
+                          {server.name}
                         </CardTitle>
-                        <CardDescription className="mt-1 text-xs sm:text-sm">
+                        <CardDescription className="mt-2 text-sm text-slate-400">
                           {server.edition} {server.mc_version} · {server.memory_mb}MB memory · {server.cpu_limit} CPU
                         </CardDescription>
                         {server.minecraft?.online && server.minecraft.players && (
-                          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs sm:text-sm">
-                            <Users className="h-4 w-4 text-muted-foreground" />
-                            <span className="font-medium text-muted-foreground">Players</span>
-                            <Badge variant="secondary" className="rounded-sm">
+                          <div className="mt-4 flex flex-wrap items-center gap-2 text-xs sm:text-sm">
+                            <Users className="h-4 w-4 text-emerald-300" />
+                            <span className="font-medium text-slate-400">Players</span>
+                            <Badge variant="secondary" className="rounded-sm border-slate-700 bg-slate-800 text-slate-100">
                               {server.minecraft.players.online}/{server.minecraft.players.max}
                             </Badge>
                             {server.minecraft.description && (
-                              <span className="text-muted-foreground">
+                              <span className="text-slate-400">
                                 {server.minecraft.description}
                               </span>
                             )}
@@ -1708,217 +2210,185 @@ export function App() {
                         )}
                       </div>
 
-                      <div data-tour="server-controls" className="flex items-center gap-2 w-full sm:w-auto">
+                      <div data-tour="server-controls" className="grid w-full grid-cols-3 gap-2 lg:w-[27rem]">
                       <Button
-                        variant="ghost"
-                        size="icon"
-                        className="rounded-sm h-10 w-10 sm:h-9 sm:w-9 flex-1 sm:flex-none"
+                        variant="outline"
+                        className="h-14 rounded-sm border-emerald-400/30 bg-emerald-400/10 text-emerald-100 transition-all hover:border-emerald-300 hover:bg-emerald-400/20"
                         onClick={() => handleServerAction(server.name, "start")}
                         title="Start"
                       >
-                        <Play className="h-5 w-5 sm:h-4 sm:w-4" />
+                        <Play className="mr-2 h-4 w-4" />
+                        Start
                       </Button>
                       <Button
-                        variant="ghost"
-                        size="icon"
-                        className="rounded-sm h-10 w-10 sm:h-9 sm:w-9 flex-1 sm:flex-none"
+                        variant="outline"
+                        className="h-14 rounded-sm border-red-400/25 bg-red-400/10 text-red-100 transition-all hover:border-red-300 hover:bg-red-400/20"
                         onClick={() => handleServerAction(server.name, "stop")}
                         title="Stop"
                       >
-                        <Square className="h-5 w-5 sm:h-4 sm:w-4" />
+                        <Square className="mr-2 h-4 w-4" />
+                        Stop
                       </Button>
                       <Button
-                        variant="ghost"
-                        size="icon"
-                        className="rounded-sm h-10 w-10 sm:h-9 sm:w-9 flex-1 sm:flex-none"
+                        variant="outline"
+                        className="h-14 rounded-sm border-sky-400/25 bg-sky-400/10 text-sky-100 transition-all hover:border-sky-300 hover:bg-sky-400/20"
                         onClick={() => handleServerAction(server.name, "restart")}
                         title="Restart"
                       >
-                        <RotateCw className="h-5 w-5 sm:h-4 sm:w-4" />
+                        <RotateCw className="mr-2 h-4 w-4" />
+                        Restart
                       </Button>
                       </div>
                     </div>
 
-                    <div className="rounded-sm border border-border/70 bg-muted/20 p-3 sm:p-4">
-                      <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                        <div>
-                          <h3 className="text-sm font-semibold">Connection</h3>
-                          <p className="text-xs text-muted-foreground">
-                            Player-facing addresses and invite text for this server.
-                          </p>
-                        </div>
-                        {server.public_domain && (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="rounded-sm"
-                            onClick={() => {
-                              copyToClipboard(buildPlayerInviteText(server));
-                              toast.success("Player invite copied.");
-                            }}
-                          >
-                            <Copy className="mr-2 h-4 w-4" />
-                            Copy Player Invite
-                          </Button>
-                        )}
-                      </div>
-
-                      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-                        <div data-tour="connection-local" className="rounded-sm border border-emerald-500/20 bg-emerald-500/5 p-3">
-                          <div className="mb-2 flex items-center justify-between gap-3">
-                            <div className="flex items-center gap-2">
-                              <Globe className="h-4 w-4 text-emerald-400" />
-                              <span className="text-sm font-semibold">LAN Address</span>
-                            </div>
-                            {server.minecraft?.online ? (
-                              <Badge className="bg-emerald-500 hover:bg-emerald-600 text-xs">Server running</Badge>
-                            ) : (
-                              <Badge variant="secondary" className="text-xs">Server stopped</Badge>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <code className="min-w-0 flex-1 rounded-sm border border-emerald-500/20 bg-background px-3 py-2 text-sm font-semibold text-emerald-300 break-all">
-                              {getLocalJoinAddress(server) || "Set host IP first"}
-                            </code>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-9 w-9 shrink-0 rounded-sm"
-                              onClick={() => copyToClipboard(getLocalJoinAddress(server))}
-                              title="Copy LAN address"
-                            >
-                              <Copy className="h-4 w-4" />
-                            </Button>
-                          </div>
-                          <p className="mt-2 text-xs text-muted-foreground">
-                            {server.host_ip
-                              ? "For players on the same network."
-                              : "Set Host IP in Server Settings > Network."}
-                          </p>
-                        </div>
-
-                        <div data-tour="connection-public" className="rounded-sm border border-sky-500/20 bg-sky-500/5 p-3">
-                          <div className="mb-2 flex items-center justify-between gap-3">
-                            <div className="flex items-center gap-2">
-                              <Globe className="h-4 w-4 text-sky-400" />
-                              <span className="text-sm font-semibold">Public Address</span>
-                            </div>
-                            {server.public_domain ? (
-                              publicAccess.get(server.name)?.checking ? (
-                                <Badge variant="outline" className="text-xs">Checking reachability</Badge>
-                              ) : publicAccess.get(server.name)?.accessible ? (
-                                <Badge className="bg-emerald-500 hover:bg-emerald-600 text-xs">Reachable externally</Badge>
-                              ) : (
-                                <Badge variant="destructive" className="text-xs">Not reachable</Badge>
-                              )
-                            ) : (
-                              <Badge variant="outline" className="text-xs">Not configured</Badge>
-                            )}
+                    <div className="grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(20rem,0.75fr)]">
+                      <section data-tour="connection-public" className="border border-sky-400/20 bg-sky-400/[0.06] p-4">
+                        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                          <div>
+                            <h3 className="text-sm font-semibold uppercase tracking-[0.16em] text-sky-200">Player Connection</h3>
+                            <p className="mt-1 text-xs text-slate-400">Share the public address, then verify the route before inviting players.</p>
                           </div>
                           {server.public_domain ? (
-                            <>
-                              <div className="flex items-center gap-2">
-                                <code className="min-w-0 flex-1 rounded-sm border border-sky-500/20 bg-background px-3 py-2 text-sm font-semibold text-sky-300 break-all">
-                                  {getPublicJoinAddress(server)}
-                                </code>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-9 w-9 shrink-0 rounded-sm"
-                                  onClick={() => copyToClipboard(getPublicJoinAddress(server))}
-                                  title="Copy public address"
-                                >
-                                  <Copy className="h-4 w-4" />
-                                </Button>
-                              </div>
-                              <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                                <p className="text-xs text-muted-foreground">
-                                  {isDefaultMinecraftPort(server.public_port)
-                                    ? "Players can enter only the domain."
-                                    : `Players must include :${server.public_port}.`}
-                                </p>
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  className="h-7 rounded-sm text-xs"
-                                  onClick={() => checkPublicAccess(server.name)}
-                                  disabled={publicAccess.get(server.name)?.checking}
-                                >
-                                  <RefreshCw className={`mr-1.5 h-3 w-3 ${publicAccess.get(server.name)?.checking ? "animate-spin" : ""}`} />
-                                  Test Public Route
-                                </Button>
-                              </div>
-                              {publicAccess.get(server.name)?.accessible === false && (
-                                <p className="mt-2 text-xs text-amber-600 dark:text-amber-300">
-                                  External check failed. Forward TCP {server.public_port} to {server.host_ip || "nodev2"}:{getHostProxyPort(server)}.
-                                  {publicAccess.get(server.name)?.reason ? ` ${publicAccess.get(server.name)?.reason}` : ""}
-                                </p>
-                              )}
-                            </>
+                            publicAccess.get(server.name)?.checking ? (
+                              <Badge variant="outline" className="w-fit rounded-sm border-sky-400/30 bg-sky-400/10 text-sky-100">Checking</Badge>
+                            ) : publicAccess.get(server.name)?.accessible ? (
+                              <Badge className="w-fit rounded-sm bg-emerald-500 text-slate-950 hover:bg-emerald-500">Reachable externally</Badge>
+                            ) : (
+                              <Badge variant="destructive" className="w-fit rounded-sm">Not reachable</Badge>
+                            )
                           ) : (
-                            <>
-                              <code className="block rounded-sm border bg-background px-3 py-2 text-sm font-semibold text-muted-foreground">
-                                Set a public domain first
-                              </code>
-                              <p className="mt-2 text-xs text-muted-foreground">
-                                Configure the player-facing domain in the Network tab.
-                              </p>
-                            </>
+                            <Badge variant="outline" className="w-fit rounded-sm">Not configured</Badge>
                           )}
                         </div>
-                      </div>
 
-                      {server.public_domain && (
-                        <div className="mt-3 rounded-sm border border-border/70 bg-background/50 p-3">
-                          <div className="grid gap-3 md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-                            <div>
-                              <p className="text-xs font-medium text-muted-foreground">Player Invite</p>
-                              <code className="mt-1 block rounded-sm border bg-background px-3 py-2 text-sm font-semibold break-all">
+                        {server.public_domain ? (
+                          <>
+                            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                              <code className="min-w-0 flex-1 rounded-sm border border-sky-400/25 bg-[#030712] px-4 py-4 text-lg font-semibold text-sky-200 break-all sm:text-2xl">
                                 {getPublicJoinAddress(server)}
                               </code>
+                              <Button
+                                variant="outline"
+                                className="h-14 rounded-sm border-sky-400/30 bg-sky-400/10 text-sky-100 hover:bg-sky-400/20"
+                                onClick={() => copyToClipboard(getPublicJoinAddress(server))}
+                              >
+                                <Copy className="mr-2 h-4 w-4" />
+                                Copy Address
+                              </Button>
                             </div>
-                            <ol className="space-y-1 text-xs text-muted-foreground list-decimal ml-4">
-                              <li>Open Minecraft: Java Edition.</li>
-                              <li>Choose Multiplayer, then Add Server.</li>
-                              <li>Paste the server address and join.</li>
-                              <li>
-                                {requiresClientMods(server.edition)
-                                  ? `Install ${server.edition} for Minecraft ${server.mc_version} and the matching mod list before joining.`
-                                  : `Use Minecraft ${server.mc_version}; server plugins do not require client setup.`}
-                              </li>
-                            </ol>
+                            <div className="mt-4 flex flex-col gap-3 border-t border-sky-400/15 pt-4 sm:flex-row sm:items-center sm:justify-between">
+                              <p className="text-xs text-slate-400">
+                                {isDefaultMinecraftPort(server.public_port)
+                                  ? "Port 25565 is default; players can enter only the domain."
+                                  : `Custom port: players must include :${server.public_port}.`}
+                              </p>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="rounded-sm border-slate-700 bg-slate-950 text-slate-100 hover:bg-slate-900"
+                                onClick={() => checkPublicAccess(server.name)}
+                                disabled={publicAccess.get(server.name)?.checking}
+                              >
+                                <RefreshCw className={`mr-1.5 h-3 w-3 ${publicAccess.get(server.name)?.checking ? "animate-spin" : ""}`} />
+                                Test Public Route
+                              </Button>
+                            </div>
+                            {publicAccess.get(server.name)?.accessible === false && (
+                              <p className="mt-3 border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-200">
+                                External check failed. Forward TCP {server.public_port} to {server.host_ip || "nodev2"}:{getHostProxyPort(server)}.
+                                {publicAccess.get(server.name)?.reason ? ` ${publicAccess.get(server.name)?.reason}` : ""}
+                              </p>
+                            )}
+                          </>
+                        ) : (
+                          <div className="border border-slate-700 bg-slate-950 p-4 text-sm text-slate-400">
+                            Set a player-facing domain in the Network tab.
                           </div>
-                          {publicAccess.get(server.name)?.accessible === false && (
-                            <div className="mt-3 rounded-sm border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
-                              The public route is not reachable yet. Finish the router/firewall forward before sharing this invite:
-                              TCP {server.public_port} to {server.host_ip || "nodev2"}:{getHostProxyPort(server)}.
-                              {publicAccess.get(server.name)?.reason ? ` ${publicAccess.get(server.name)?.reason}` : ""}
-                            </div>
+                        )}
+
+                        <div data-tour="connection-local" className="mt-4 grid gap-3 border-t border-sky-400/15 pt-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                          <div>
+                            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-emerald-200">LAN Address</p>
+                            <code className="mt-1 block rounded-sm border border-emerald-400/20 bg-[#030712] px-3 py-2 text-sm font-semibold text-emerald-200 break-all">
+                              {getLocalJoinAddress(server) || "Set host IP first"}
+                            </code>
+                            <p className="mt-1 text-xs text-slate-500">
+                              {server.host_ip ? "For players on the same network." : "Set Host IP in the Network tab."}
+                            </p>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="rounded-sm text-slate-300 hover:bg-slate-800"
+                            onClick={() => copyToClipboard(getLocalJoinAddress(server))}
+                          >
+                            <Copy className="mr-2 h-4 w-4" />
+                            Copy LAN
+                          </Button>
+                        </div>
+                      </section>
+
+                      <section className="border border-emerald-400/20 bg-emerald-400/[0.055] p-4">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <h3 className="text-sm font-semibold uppercase tracking-[0.16em] text-emerald-200">Player Invite</h3>
+                            <p className="mt-1 text-xs text-slate-400">Copy a clean invite after the public route is ready.</p>
+                          </div>
+                          {server.public_domain && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="rounded-sm border-emerald-400/30 bg-emerald-400/10 text-emerald-100 hover:bg-emerald-400/20"
+                              onClick={() => {
+                                copyToClipboard(buildPlayerInviteText(server));
+                                toast.success("Player invite copied.");
+                              }}
+                            >
+                              <Copy className="mr-2 h-4 w-4" />
+                              Copy
+                            </Button>
                           )}
                         </div>
-                      )}
+                        {server.public_domain ? (
+                          <ol className="mt-5 space-y-3 text-sm text-slate-300">
+                            <li className="flex gap-3"><span className="text-emerald-300">01</span><span>Open Minecraft: Java Edition.</span></li>
+                            <li className="flex gap-3"><span className="text-emerald-300">02</span><span>Choose Multiplayer, then Add Server.</span></li>
+                            <li className="flex gap-3"><span className="text-emerald-300">03</span><span>Paste <span className="font-semibold text-slate-100">{getPublicJoinAddress(server)}</span>.</span></li>
+                            <li className="flex gap-3"><span className="text-emerald-300">04</span><span>{requiresClientMods(server.edition)
+                              ? `Install ${server.edition} for Minecraft ${server.mc_version} and the matching mod list before joining.`
+                              : `Use Minecraft ${server.mc_version}; server plugins do not require client setup.`}</span></li>
+                          </ol>
+                        ) : (
+                          <p className="mt-5 text-sm text-slate-400">Set a public address before sending player invites.</p>
+                        )}
+                      </section>
                     </div>
                   </div>
                 </CardHeader>
-                <CardContent className="border-t border-border/70 p-4 sm:p-6">
-                  <div className="mb-3">
-                    <h3 className="text-sm font-semibold">Manage Server</h3>
-                    <p className="text-xs text-muted-foreground">
+                <CardContent className="border-t border-slate-800/90 bg-[#050b16] p-4 sm:p-6">
+                  <div className="mb-4 flex items-end justify-between gap-4">
+                    <div>
+                    <h3 className="text-sm font-semibold uppercase tracking-[0.16em] text-slate-200">Management</h3>
+                    <p className="mt-1 text-xs text-slate-500">
                       Change runtime, content, settings, and backups from one place.
                     </p>
+                    </div>
                   </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 sm:gap-3">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                     {/* Version Management */}
                     <Dialog>
                       <DialogTrigger asChild>
                         <Button
                           data-tour="version-button"
                           variant="outline"
-                          className="rounded-sm w-full hover:bg-blue-500/10 hover:border-blue-500 transition-all"
+                          className="group h-16 w-full justify-start rounded-sm border-sky-400/20 bg-sky-400/[0.055] text-left text-slate-100 transition-all hover:border-sky-300/60 hover:bg-sky-400/10"
                           onClick={() => setSelectedServer(server.name)}
                         >
-                          <Settings className="mr-2 h-4 w-4" />
-                          Change Version
+                          <Settings className="mr-3 h-5 w-5 text-sky-300" />
+                          <span className="flex flex-col">
+                            <span className="font-semibold">Change Version</span>
+                            <span className="text-xs font-normal text-slate-400">Switch runtime or Minecraft release</span>
+                          </span>
                         </Button>
                       </DialogTrigger>
                       <DialogContent className="rounded-sm">
@@ -1967,14 +2437,17 @@ export function App() {
                           <DialogTrigger asChild>
                             <Button
                               variant="outline"
-                              className="rounded-sm hover:bg-purple-500/10 hover:border-purple-500 transition-all"
+                              className="group h-16 w-full justify-start rounded-sm border-violet-400/20 bg-violet-400/[0.055] text-left text-slate-100 transition-all hover:border-violet-300/60 hover:bg-violet-400/10"
                             >
-                              <Package2 className="mr-2 h-4 w-4" />
-                              Browse Plugins
+                              <Package2 className="mr-3 h-5 w-5 text-violet-300" />
+                              <span className="flex flex-col">
+                                <span className="font-semibold">Browse Plugins</span>
+                                <span className="text-xs font-normal text-slate-400">Install compatible server plugins</span>
+                              </span>
                             </Button>
                           </DialogTrigger>
-                          <DialogContent className="w-[min(94vw,64rem)] max-w-none overflow-hidden rounded-sm p-0">
-                            <DialogHeader className="border-b px-5 py-4 pr-12 text-left">
+                          <DialogContent className="w-[min(94vw,64rem)] max-w-none overflow-hidden rounded-sm border-slate-800 bg-[#07111f] p-0">
+                            <DialogHeader className="border-b border-slate-800 bg-slate-950/70 px-5 py-4 pr-12 text-left">
                               <DialogTitle>Plugin Browser</DialogTitle>
                               <DialogDescription>
                                 Search Modrinth plugins compatible with {server.edition} {server.mc_version}.
@@ -2011,12 +2484,15 @@ export function App() {
                               <TooltipTrigger asChild>
                                 <Button
                                   variant="outline"
-                                  className="rounded-sm w-full hover:bg-purple-500/10 hover:border-purple-500 transition-all"
+                                  className="group h-16 w-full justify-start rounded-sm border-fuchsia-400/20 bg-fuchsia-400/[0.055] text-left text-slate-100 transition-all hover:border-fuchsia-300/60 hover:bg-fuchsia-400/10"
                                   asChild
                                 >
                                   <span>
-                                    <Package className="mr-2 h-4 w-4" />
-                                    Upload Plugin
+                                    <Package className="mr-3 h-5 w-5 text-fuchsia-300" />
+                                    <span className="flex flex-col">
+                                      <span className="font-semibold">Upload Plugin</span>
+                                      <span className="text-xs font-normal text-slate-400">Add a local .jar file</span>
+                                    </span>
                                   </span>
                                 </Button>
                               </TooltipTrigger>
@@ -2037,14 +2513,17 @@ export function App() {
                           <DialogTrigger asChild>
                             <Button
                               variant="outline"
-                              className="rounded-sm hover:bg-purple-500/10 hover:border-purple-500 transition-all"
+                              className="group h-16 w-full justify-start rounded-sm border-violet-400/20 bg-violet-400/[0.055] text-left text-slate-100 transition-all hover:border-violet-300/60 hover:bg-violet-400/10"
                             >
-                              <Package2 className="mr-2 h-4 w-4" />
-                              Browse Mods
+                              <Package2 className="mr-3 h-5 w-5 text-violet-300" />
+                              <span className="flex flex-col">
+                                <span className="font-semibold">Browse Mods</span>
+                                <span className="text-xs font-normal text-slate-400">Install client/server mod files</span>
+                              </span>
                             </Button>
                           </DialogTrigger>
-                          <DialogContent className="w-[min(94vw,64rem)] max-w-none overflow-hidden rounded-sm p-0">
-                            <DialogHeader className="border-b px-5 py-4 pr-12 text-left">
+                          <DialogContent className="w-[min(94vw,64rem)] max-w-none overflow-hidden rounded-sm border-slate-800 bg-[#07111f] p-0">
+                            <DialogHeader className="border-b border-slate-800 bg-slate-950/70 px-5 py-4 pr-12 text-left">
                               <DialogTitle>Mod Browser</DialogTitle>
                               <DialogDescription>
                                 Search Modrinth mods compatible with {server.edition} {server.mc_version}.
@@ -2078,12 +2557,15 @@ export function App() {
                               <TooltipTrigger asChild>
                                 <Button
                                   variant="outline"
-                                  className="rounded-sm w-full hover:bg-orange-500/10 hover:border-orange-500 transition-all"
+                                  className="group h-16 w-full justify-start rounded-sm border-orange-400/20 bg-orange-400/[0.055] text-left text-slate-100 transition-all hover:border-orange-300/60 hover:bg-orange-400/10"
                                   asChild
                                 >
                                   <span>
-                                    <Upload className="mr-2 h-4 w-4" />
-                                    Upload Mod
+                                    <Upload className="mr-3 h-5 w-5 text-orange-300" />
+                                    <span className="flex flex-col">
+                                      <span className="font-semibold">Upload Mod</span>
+                                      <span className="text-xs font-normal text-slate-400">Add a local .jar file</span>
+                                    </span>
                                   </span>
                                 </Button>
                               </TooltipTrigger>
@@ -2113,12 +2595,15 @@ export function App() {
                           <TooltipTrigger asChild>
                             <Button
                               variant="outline"
-                              className="rounded-sm w-full hover:bg-cyan-500/10 hover:border-cyan-500 transition-all"
+                              className="group h-16 w-full justify-start rounded-sm border-cyan-400/20 bg-cyan-400/[0.055] text-left text-slate-100 transition-all hover:border-cyan-300/60 hover:bg-cyan-400/10"
                               asChild
                             >
                               <span>
-                                <Globe className="mr-2 h-4 w-4" />
-                                Upload World
+                                <Globe className="mr-3 h-5 w-5 text-cyan-300" />
+                                <span className="flex flex-col">
+                                  <span className="font-semibold">Upload World</span>
+                                  <span className="text-xs font-normal text-slate-400">Replace world from a zip</span>
+                                </span>
                               </span>
                             </Button>
                           </TooltipTrigger>
@@ -2143,10 +2628,13 @@ export function App() {
                         <Button
                           data-tour="settings-button"
                           variant="outline"
-                          className="rounded-sm hover:bg-blue-500/10 hover:border-blue-500 transition-all"
+                          className="group h-16 w-full justify-start rounded-sm border-slate-600/60 bg-slate-900/70 text-left text-slate-100 transition-all hover:border-slate-400 hover:bg-slate-800"
                         >
-                          <Settings className="mr-2 h-4 w-4" />
-                          Server Settings
+                          <Settings className="mr-3 h-5 w-5 text-slate-300" />
+                          <span className="flex flex-col">
+                            <span className="font-semibold">Server Settings</span>
+                            <span className="text-xs font-normal text-slate-400">Network, gameplay, security</span>
+                          </span>
                         </Button>
                       </DialogTrigger>
                       <DialogContent className="rounded-sm max-w-[95vw] sm:max-w-3xl max-h-[90vh] overflow-y-auto">
@@ -3017,11 +3505,31 @@ export function App() {
                     {/* Create Backup */}
                     <Button
                       variant="outline"
-                      className="rounded-sm hover:bg-amber-500/10 hover:border-amber-500 transition-all"
+                      className="group h-16 justify-start rounded-sm border-amber-400/20 bg-amber-400/[0.055] text-left text-slate-100 transition-all hover:border-amber-300/60 hover:bg-amber-400/10"
                       onClick={() => handleServerAction(server.name, "backup")}
                     >
-                      <Upload className="mr-2 h-4 w-4" />
-                      Create Backup
+                      <HardDrive className="mr-3 h-5 w-5 text-amber-300" />
+                      <span className="flex flex-col">
+                        <span className="font-semibold">Create Backup</span>
+                        <span className="text-xs font-normal text-slate-400">Snapshot the current world</span>
+                      </span>
+                    </Button>
+
+                    {/* Archive Server */}
+                    <Button
+                      variant="outline"
+                      className="group h-16 justify-start rounded-sm border-red-400/20 bg-red-400/[0.055] text-left text-slate-100 transition-all hover:border-red-300/60 hover:bg-red-400/10"
+                      onClick={() => {
+                        setArchiveTarget(server);
+                        setArchiveLabel(`${server.name} ${new Date().toLocaleDateString()}`);
+                      }}
+                      disabled={lifecycle?.configured === false}
+                    >
+                      <Archive className="mr-3 h-5 w-5 text-red-300" />
+                      <span className="flex flex-col">
+                        <span className="font-semibold">Archive Server</span>
+                        <span className="text-xs font-normal text-slate-400">Image and free this slot</span>
+                      </span>
                     </Button>
                   </div>
                 </CardContent>
@@ -3032,12 +3540,12 @@ export function App() {
 
         {/* Console Log Panel */}
         {servers.length > 0 && (
-          <Card data-tour="console" className="rounded-sm border-amber-500/20">
-            <CardHeader className="pb-2 sm:pb-3 p-3 sm:p-6">
+          <Card data-tour="console" className="overflow-hidden rounded-sm border-amber-400/20 bg-[#050b16] shadow-[0_22px_70px_rgba(0,0,0,0.32)]">
+            <CardHeader className="border-b border-amber-400/10 bg-amber-400/[0.045] p-4 sm:p-5">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-1.5 sm:gap-2">
-                  <Terminal className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-amber-500 flex-shrink-0" />
-                  <CardTitle className="text-sm sm:text-base">Server Console</CardTitle>
+                  <Terminal className="h-4 w-4 flex-shrink-0 text-amber-300" />
+                  <CardTitle className="text-sm uppercase tracking-[0.16em] text-amber-100 sm:text-base">Server Console</CardTitle>
                   {isLoadingLogs && (
                     <RefreshCw className="h-3 w-3 animate-spin text-muted-foreground" />
                   )}
@@ -3057,21 +3565,21 @@ export function App() {
               </div>
             </CardHeader>
             {showLogs && (
-              <CardContent className="pt-0 p-3 sm:p-6 sm:pt-0">
-                <div className="bg-black/90 rounded p-2 sm:p-3 font-mono text-[10px] sm:text-xs text-green-400 h-64 overflow-y-auto border border-green-500/20">
+              <CardContent className="p-4 sm:p-5">
+                <div className="h-72 overflow-y-auto rounded-sm border border-emerald-400/20 bg-black p-3 font-mono text-[10px] text-emerald-300 shadow-inner sm:text-xs">
                   {logs ? (
                     <pre className="whitespace-pre-wrap break-words overflow-hidden">{logs}</pre>
                   ) : (
-                    <span className="text-muted-foreground italic">No logs available...</span>
+                    <span className="text-slate-500 italic">No logs available...</span>
                   )}
                 </div>
-                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mt-2 gap-2 text-[10px] sm:text-xs text-muted-foreground">
+                <div className="mt-3 flex flex-col items-start justify-between gap-2 text-[10px] text-slate-500 sm:flex-row sm:items-center sm:text-xs">
                   <span className="leading-tight">Auto-refreshes every 5 seconds</span>
                   <Button
                     variant="ghost"
                     size="sm"
                     onClick={() => fetchLogs()}
-                    className="h-6 text-[10px] sm:text-xs px-2"
+                    className="h-7 rounded-sm px-2 text-[10px] text-slate-300 hover:bg-slate-800 sm:text-xs"
                   >
                     <RefreshCw className="h-3 w-3 mr-1" />
                     Refresh Now

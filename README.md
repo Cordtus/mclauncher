@@ -22,6 +22,7 @@ No Docker, no host services. Everything runs in LXD containers.
 - Packwiz modpack sync
 - One-click LuckPerms installation
 - Snapshot backups
+- Server fleet slots: create up to 3 active servers, archive servers into LXD images, and restore archived servers
 - Configurable admin access with passkeys, one-time setup codes, and optional token fallback
 
 ## Quick Start
@@ -57,6 +58,11 @@ Parameters:
 - Optional: RCON port (default: 25575)
 - Optional: RCON password (auto-generated if omitted)
 - Optional: Manager container name (default: mc-manager)
+
+Active server registration is capped at 3 slots. After the first server is
+online, use the **Server Fleet** panel in the UI or the root-only lifecycle
+helper to create additional servers, archive a server into an LXD image, or
+restore an archived server.
 
 ### 3. Access Web UI
 
@@ -95,6 +101,40 @@ setup code in `/opt/mc-lxd-manager/passkeys.json`. The code can only register a
 passkey; it does not authorize server management by itself. Set
 `MCLAUNCHER_MANAGER_CONTAINER` if the manager container is not named
 `mc-manager`.
+
+### Create, Archive, and Restore Servers
+
+The lifecycle helper is intentionally root-only because it creates and deletes
+LXD containers and published images. It stores active servers in
+`/opt/mc-lxd-manager/servers.json` and archived image metadata in
+`/opt/mc-lxd-manager/server-archives.json`.
+
+```bash
+# Create a second active server slot
+sudo ./apps/scripts/mc-server-lifecycle.mjs create \
+  --name mc-server-2 \
+  --edition paper \
+  --mc-version 1.21.1 \
+  --memory-mb 4096 \
+  --cpu-limit 2 \
+  --public-port 34568
+
+# Stop and archive a server, then free its active slot
+sudo ./apps/scripts/mc-server-lifecycle.mjs archive \
+  --name mc-server-1 \
+  --label "Survival before reset"
+
+# Restore an archived image into an open active slot
+sudo ./apps/scripts/mc-server-lifecycle.mjs restore \
+  --archive-id ARCHIVE_ID \
+  --name mc-server-1 \
+  --public-port 34567
+```
+
+The web UI exposes these actions from **Server Fleet**. If the panel says the
+host lifecycle helper needs setup, either run the helper from the LXD host as
+root or configure `SERVER_LIFECYCLE_COMMAND` plus a narrow sudo rule for the
+management service.
 
 ### Stop/Start Containers
 
@@ -179,6 +219,7 @@ apps/
 - Manager-to-agent URLs are restricted to `AGENT_ALLOWED_CIDRS` and `AGENT_ALLOWED_PORTS` (defaults: `10.70.48.0/24` and `9090`; opt into `127.0.0.0/8` only for local development)
 - Control agent temporary downloads stage in root-owned `AGENT_STAGING_DIR` (`/opt/mc-agent-staging` in provisioned containers)
 - Keep `/opt/mc-lxd-manager/.env`, `/opt/mc-lxd-manager/servers.json`, and `/opt/mc-lxd-manager/passkeys.json` owner-readable only (`0600`)
+- Keep `/opt/mc-lxd-manager/server-archives.json` owner-readable only (`0600`) because it stores archived server metadata and registry details
 - Keep `/opt/minecraft/server.properties` owner-readable only (`0600`) because it contains the RCON password
 - Bind Minecraft to `127.0.0.1` inside each server container and publish player traffic through the LXD proxy; this keeps RCON and direct container ports off the shared LXD subnet
 

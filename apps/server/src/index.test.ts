@@ -154,6 +154,10 @@ describe('management gateway routes', () => {
       rmSync(dir, { recursive: true, force: true });
     }
     delete process.env.REGISTRY_FILE;
+    delete process.env.SERVER_ARCHIVES_FILE;
+    delete process.env.SERVER_LIFECYCLE_COMMAND;
+    delete process.env.SERVER_LIFECYCLE_USE_SUDO;
+    delete process.env.MAX_ACTIVE_SERVERS;
     delete process.env.ADMIN_TOKEN;
     delete process.env.ADMIN_AUTH_METHODS;
     delete process.env.ADMIN_REQUIRE_CIDR;
@@ -678,6 +682,111 @@ describe('management gateway routes', () => {
 
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: 'agent_url host is outside allowed agent CIDRs' });
+  });
+
+  it('enforces the active server limit when registering servers', async () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'mc-gateway-test-'));
+    tempDirs.push(tempDir);
+    const registryFile = path.join(tempDir, 'servers.json');
+    writeFileSync(registryFile, JSON.stringify({
+      servers: [1, 2, 3].map((index) => ({
+        name: `mc-server-${index}`,
+        agent_url: `http://127.0.0.${index}:9090`,
+        public_port: 34566 + index,
+        memory_mb: 2048,
+        edition: 'paper',
+        mc_version: '1.21.1',
+      })),
+    }));
+
+    process.env.REGISTRY_FILE = registryFile;
+    process.env.ADMIN_TOKEN = 'test-token';
+    process.env.ALLOW_CIDRS = '127.0.0.0/8';
+    process.env.AGENT_ALLOWED_CIDRS = '127.0.0.0/8';
+    process.env.WEB_DIST_DIR = tempDir;
+
+    const { app } = await import('./index.js');
+    const gateway = createServer(app);
+    await listen(gateway);
+    servers.push(gateway);
+
+    const response = await fetch(`${baseUrl(gateway)}/api/servers/register`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer test-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        name: 'mc-server-4',
+        agent_url: 'http://127.0.0.4:9090',
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: 'Maximum active server limit reached (3)' });
+  });
+
+  it('reports lifecycle slots and archives without exposing lifecycle mutation access', async () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'mc-gateway-test-'));
+    tempDirs.push(tempDir);
+    const registryFile = path.join(tempDir, 'servers.json');
+    const archivesFile = path.join(tempDir, 'server-archives.json');
+    writeFileSync(registryFile, JSON.stringify({
+      servers: [
+        {
+          name: 'mc-server-1',
+          agent_url: 'http://127.0.0.1:9090',
+          public_port: 34567,
+          memory_mb: 4096,
+          edition: 'paper',
+          mc_version: '1.21.1',
+        },
+      ],
+    }));
+    writeFileSync(archivesFile, JSON.stringify({
+      archives: [
+        {
+          id: 'mc-server-2-archive',
+          sourceName: 'mc-server-2',
+          imageAlias: 'mc-archive-mc-server-2',
+          createdAt: '2026-05-17T00:00:00.000Z',
+          server: {
+            name: 'mc-server-2',
+            public_port: 34568,
+            memory_mb: 4096,
+            edition: 'paper',
+            mc_version: '1.21.1',
+          },
+        },
+      ],
+    }));
+
+    process.env.REGISTRY_FILE = registryFile;
+    process.env.SERVER_ARCHIVES_FILE = archivesFile;
+    process.env.SERVER_LIFECYCLE_COMMAND = 'echo';
+    process.env.ADMIN_TOKEN = 'test-token';
+    process.env.ALLOW_CIDRS = '127.0.0.0/8';
+    process.env.WEB_DIST_DIR = tempDir;
+
+    const { app } = await import('./index.js');
+    const gateway = createServer(app);
+    await listen(gateway);
+    servers.push(gateway);
+
+    const response = await fetch(`${baseUrl(gateway)}/api/server-lifecycle`, {
+      headers: { Authorization: 'Bearer test-token' },
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      configured: true,
+      maxActiveServers: 3,
+      activeServers: 1,
+      slotsAvailable: 2,
+    });
+    expect(body.archives).toHaveLength(1);
+    expect(body.archives[0].id).toBe('mc-server-2-archive');
   });
 
   it('does not expose agent tokens when saving server config', async () => {

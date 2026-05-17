@@ -13,11 +13,14 @@ import { fileURLToPath } from "url";
 import { createHmac, randomBytes, timingSafeEqual } from "crypto";
 import "dotenv/config";
 import { PasskeyService, type PasskeyRegistrationAuthorization, type PasskeyRegistrationCodeInput } from "./services/passkeys.js";
+import { getLifecycleState, runLifecycleAction } from "./services/lifecycle.js";
 import * as modpack from "./services/modpack.js";
 
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number(process.env.PORT || 8080);
 const REGISTRY_FILE = process.env.REGISTRY_FILE || "/opt/mc-lxd-manager/servers.json";
+const SERVER_ARCHIVES_FILE = process.env.SERVER_ARCHIVES_FILE || path.join(path.dirname(REGISTRY_FILE), "server-archives.json");
+const MAX_ACTIVE_SERVERS = Number(process.env.MAX_ACTIVE_SERVERS || 3);
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
 const ALLOW_CIDRS = (process.env.ALLOW_CIDRS ?? "127.0.0.0/8,192.168.0.0/24,10.70.48.0/24,10.172.19.0/24")
   .split(",")
@@ -548,6 +551,7 @@ function requireSameOriginUnsafeApi(req: Request, res: Response, next: () => voi
   if (req.path === "/api/auth/token/login") return next();
   const isAdminMutatingPath = (
     req.path.startsWith("/api/servers/") ||
+    req.path.startsWith("/api/server-lifecycle") ||
     req.path === "/api/auth/logout" ||
     req.path === "/api/auth/passkeys/register/options" ||
     req.path === "/api/auth/passkeys/register/verify" ||
@@ -996,6 +1000,86 @@ app.get("/api/servers", requireAdmin, async (_req, res) => {
   res.json(results);
 });
 
+function lifecycleOptions() {
+  return {
+    registryFile: REGISTRY_FILE,
+    archivesFile: SERVER_ARCHIVES_FILE,
+    maxActiveServers: MAX_ACTIVE_SERVERS,
+  };
+}
+
+// Server fleet lifecycle state and host-backed create/archive/restore actions
+app.get("/api/server-lifecycle", requireAdmin, (_req, res) => {
+  const registry = loadRegistry();
+  res.json(getLifecycleState(lifecycleOptions(), registry.servers.length));
+});
+
+app.post("/api/server-lifecycle/create", requireAdmin, async (req, res) => {
+  try {
+    const registry = loadRegistry();
+    if (registry.servers.length >= MAX_ACTIVE_SERVERS) {
+      return res.status(400).json({ error: `Maximum active server limit reached (${MAX_ACTIVE_SERVERS})` });
+    }
+
+    const result = await runLifecycleAction("create", {
+      name: req.body?.name,
+      edition: req.body?.edition,
+      mcVersion: req.body?.mc_version ?? req.body?.mcVersion,
+      memoryMb: req.body?.memory_mb ?? req.body?.memoryMb,
+      cpuLimit: req.body?.cpu_limit ?? req.body?.cpuLimit,
+      publicPort: req.body?.public_port ?? req.body?.publicPort,
+      managerContainer: req.body?.manager_container ?? req.body?.managerContainer,
+    }, lifecycleOptions());
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || "Failed to create server" });
+  }
+});
+
+app.post("/api/servers/:name/archive", requireAdmin, async (req, res) => {
+  try {
+    assertSafePathSegment(req.params.name, "server name");
+    const result = await runLifecycleAction("archive", {
+      name: req.params.name,
+      label: req.body?.label,
+    }, lifecycleOptions());
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || "Failed to archive server" });
+  }
+});
+
+app.post("/api/server-lifecycle/archives/:id/restore", requireAdmin, async (req, res) => {
+  try {
+    assertSafePathSegment(req.params.id, "archive id");
+    const registry = loadRegistry();
+    if (registry.servers.length >= MAX_ACTIVE_SERVERS) {
+      return res.status(400).json({ error: `Maximum active server limit reached (${MAX_ACTIVE_SERVERS})` });
+    }
+
+    const result = await runLifecycleAction("restore", {
+      archiveId: req.params.id,
+      name: req.body?.name,
+      publicPort: req.body?.public_port ?? req.body?.publicPort,
+    }, lifecycleOptions());
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || "Failed to restore archive" });
+  }
+});
+
+app.delete("/api/server-lifecycle/archives/:id", requireAdmin, async (req, res) => {
+  try {
+    assertSafePathSegment(req.params.id, "archive id");
+    const result = await runLifecycleAction("delete-archive", {
+      archiveId: req.params.id,
+    }, lifecycleOptions());
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || "Failed to delete archive" });
+  }
+});
+
 // Register server (called manually or by setup script)
 app.post("/api/servers/register", requireAdmin, (req, res) => {
   try {
@@ -1023,6 +1107,9 @@ app.post("/api/servers/register", requireAdmin, (req, res) => {
     const existing = registry.servers.find((s) => s.name === name);
     if (existing) {
       return res.status(400).json({ error: "Server already registered" });
+    }
+    if (registry.servers.length >= MAX_ACTIVE_SERVERS) {
+      return res.status(400).json({ error: `Maximum active server limit reached (${MAX_ACTIVE_SERVERS})` });
     }
     const normalizedAgentUrl = validateAgentUrl(agent_url);
 

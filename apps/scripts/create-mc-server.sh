@@ -257,8 +257,10 @@ lxc exec "$CONTAINER_NAME" -- systemctl start minecraft
 # Get container IP (for internal communication with agent)
 CONTAINER_IP=$(lxc list "$CONTAINER_NAME" -c4 --format=csv | cut -d' ' -f1)
 
-# Get host IP for local network connections
-HOST_IP=$(ip route get 1.1.1.1 | grep -oP 'src \K\S+')
+# Get host IP for local network connections. Lifecycle automation may run
+# this from the management container with the host LXD socket mounted, so allow
+# the real host address to be injected explicitly.
+HOST_IP=${LXD_HOST_IP:-$(ip route get 1.1.1.1 | grep -oP 'src \K\S+')}
 
 # Register with management backend
 echo "==> Registering server with management backend..."
@@ -301,18 +303,21 @@ AGENT_ALLOWED_CIDRS=$(sed -n "s/^AGENT_ALLOWED_CIDRS=//p" /opt/mc-lxd-manager/.e
 AGENT_ALLOWED_CIDRS="${AGENT_ALLOWED_CIDRS:-10.70.48.0/24}"
 AGENT_ALLOWED_PORTS=$(sed -n "s/^AGENT_ALLOWED_PORTS=//p" /opt/mc-lxd-manager/.env | head -n1)
 AGENT_ALLOWED_PORTS="${AGENT_ALLOWED_PORTS:-9090}"
+MAX_ACTIVE_SERVERS=$(sed -n "s/^MAX_ACTIVE_SERVERS=//p" /opt/mc-lxd-manager/.env | head -n1)
+MAX_ACTIVE_SERVERS="${MAX_ACTIVE_SERVERS:-3}"
 
-node - "$PAYLOAD_FILE" "$REGISTRY_FILE" "$AGENT_ALLOWED_CIDRS" "$AGENT_ALLOWED_PORTS" <<'"'"'NODE'"'"'
+node - "$PAYLOAD_FILE" "$REGISTRY_FILE" "$AGENT_ALLOWED_CIDRS" "$AGENT_ALLOWED_PORTS" "$MAX_ACTIVE_SERVERS" <<'"'"'NODE'"'"'
 const fs = require("fs");
 const path = require("path");
 
-const [, , payloadFile, registryFile, allowedCidrsValue, allowedPortsValue] = process.argv;
+const [, , payloadFile, registryFile, allowedCidrsValue, allowedPortsValue, maxActiveValue] = process.argv;
 const payload = JSON.parse(fs.readFileSync(payloadFile, "utf8"));
 const registry = fs.existsSync(registryFile)
   ? JSON.parse(fs.readFileSync(registryFile, "utf8"))
   : { servers: [] };
 const allowedCidrs = allowedCidrsValue.split(",").map((value) => value.trim()).filter(Boolean);
 const allowedPorts = new Set(allowedPortsValue.split(",").map((value) => value.trim()).filter(Boolean));
+const maxActive = Number(maxActiveValue || 3);
 
 function ipInCidr(ip, cidr) {
   const ipMatch = ip.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
@@ -333,6 +338,9 @@ if (!Array.isArray(registry.servers)) {
 
 if (registry.servers.some((server) => server.name === payload.name)) {
   throw new Error(`Server ${payload.name} is already registered`);
+}
+if (registry.servers.length >= maxActive) {
+  throw new Error(`Maximum active server limit reached (${maxActive})`);
 }
 
 const agentUrl = new URL(payload.agent_url);
