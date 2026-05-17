@@ -262,8 +262,8 @@ export function ModsManagementPanel({
         `Server: ${data.server.name}`,
         `Minecraft: ${data.server.edition} ${data.server.mc_version}`,
         data.server.public_address
-          ? `WAN address: ${data.server.public_address}`
-          : "WAN address: not configured yet",
+          ? `Public address: ${data.server.public_address}`
+          : "Public address: not configured yet",
         data.server.local_address ? `LAN address: ${data.server.local_address}` : "",
         "",
         "How to join:",
@@ -284,8 +284,8 @@ export function ModsManagementPanel({
       setFriendManifest(manifestText);
       const copied = await copyTextToClipboard(manifestText);
       setMessage(copied
-        ? "Friend setup guide copied to clipboard."
-        : "Friend setup guide generated. Select and copy it from the panel below."
+        ? "Client setup guide copied to clipboard."
+        : "Client setup guide generated. Select and copy it from the panel below."
       );
     } catch (err: any) {
       setMessage(`Error: ${err.message}`);
@@ -336,7 +336,7 @@ export function ModsManagementPanel({
           </label>
           <Button variant="outline" className="rounded-sm" onClick={copyFriendManifest}>
             <Copy className="h-4 w-4 mr-2" />
-            Friend Setup
+            Client Setup
           </Button>
           <Dialog>
             <DialogTrigger asChild>
@@ -345,13 +345,14 @@ export function ModsManagementPanel({
                 Browse Mods
               </Button>
             </DialogTrigger>
-            <DialogContent className="rounded-sm max-w-5xl max-h-[90vh]">
-              <DialogHeader>
+            <DialogContent className="w-[min(94vw,64rem)] max-w-none overflow-hidden rounded-sm p-0">
+              <DialogHeader className="border-b px-5 py-4 pr-12 text-left">
                 <DialogTitle>Mod Browser</DialogTitle>
                 <DialogDescription>
-                  Search and install mods from Modrinth
+                  Search Modrinth mods compatible with {loader} {mcVersion}.
                 </DialogDescription>
               </DialogHeader>
+              <div className="px-5 py-5">
               <ModBrowser
                 serverName={serverName}
                 mcVersion={mcVersion}
@@ -362,6 +363,7 @@ export function ModsManagementPanel({
                   loadMods();
                 }}
               />
+              </div>
             </DialogContent>
           </Dialog>
           <Button
@@ -380,7 +382,7 @@ export function ModsManagementPanel({
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
-            placeholder="Search mods..."
+            placeholder="Search installed mods..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="pl-9 rounded-sm"
@@ -425,7 +427,7 @@ export function ModsManagementPanel({
 
       {friendManifest && (
         <div className="rounded-sm border bg-muted/40 p-3">
-          <p className="text-sm font-medium mb-2">Friend setup guide</p>
+          <p className="text-sm font-medium mb-2">Client setup guide</p>
           <pre className="text-xs whitespace-pre-wrap break-words">{friendManifest}</pre>
         </div>
       )}

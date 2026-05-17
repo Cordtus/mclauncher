@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Search, Download, AlertTriangle, CheckCircle2, Info, X, ExternalLink, Package2 } from "lucide-react";
+import { Search, Download, AlertTriangle, CheckCircle2, Info, ExternalLink, Package2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -90,6 +90,42 @@ interface Dependencies {
   required: DependencyInfo[];
   optional: DependencyInfo[];
   incompatible: DependencyInfo[];
+}
+
+function ProjectIcon({
+  src,
+  title,
+  className = "h-12 w-12",
+}: {
+  src?: string;
+  title: string;
+  className?: string;
+}) {
+  const [failed, setFailed] = useState(!src);
+
+  useEffect(() => {
+    setFailed(!src);
+  }, [src]);
+
+  if (!src || failed) {
+    return (
+      <div
+        className={`${className} flex shrink-0 items-center justify-center rounded-sm border border-border/70 bg-muted/60 text-muted-foreground`}
+        aria-label={`${title} icon unavailable`}
+      >
+        <Package2 className="h-5 w-5" />
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={src}
+      alt=""
+      className={`${className} shrink-0 rounded-sm border border-border/70 bg-muted object-cover`}
+      onError={() => setFailed(true)}
+    />
+  );
 }
 
 export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type = 'mod', onInstall }: ModBrowserProps) {
@@ -449,27 +485,31 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
 
   const missingRequiredDependencies = dependencies?.required?.filter((dep) => !dep.downloadUrl || !dep.fileName) || [];
   const installBlockedByDependencies = missingRequiredDependencies.length > 0;
+  const itemLabel = type === 'plugin' ? 'plugin' : 'mod';
+  const itemLabelPlural = type === 'plugin' ? 'plugins' : 'mods';
+  const itemLabelTitle = type === 'plugin' ? 'Plugin' : 'Mod';
+  const itemLabelPluralTitle = type === 'plugin' ? 'Plugins' : 'Mods';
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 overflow-hidden">
       {message && (
         <div className="p-3 bg-primary/10 border border-primary/20 rounded-lg text-sm">
           {message}
         </div>
       )}
 
-      <div className="flex gap-2">
+      <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_10rem_10rem]">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
-            placeholder="Search mods..."
+            placeholder={`Search ${itemLabelPlural}...`}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="pl-9 rounded-sm"
           />
         </div>
         <Select value={category} onValueChange={setCategory}>
-          <SelectTrigger className="w-48 rounded-sm">
+          <SelectTrigger className="w-full rounded-sm">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -479,7 +519,7 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
           </SelectContent>
         </Select>
         <Select value={sortBy} onValueChange={setSortBy}>
-          <SelectTrigger className="w-48 rounded-sm">
+          <SelectTrigger className="w-full rounded-sm">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -491,31 +531,36 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
       </div>
 
       <div className="text-sm text-muted-foreground">
-        Showing mods compatible with {mcVersion} ({loader})
+        Showing {itemLabelPlural} compatible with {mcVersion} ({loader})
       </div>
 
       {showPopular ? (
         <div className="space-y-4">
           <div className="flex items-center justify-between">
-            <h3 className="text-lg font-semibold">Popular & Recommended Mods</h3>
+            <h3 className="text-lg font-semibold">Recommended {itemLabelPluralTitle}</h3>
             <Badge variant="outline">Quick Install</Badge>
           </div>
           <p className="text-sm text-muted-foreground">
-            These are the most popular and commonly used mods for {loader}. Click any mod to see details and install.
+            Common {itemLabelPlural} for {loader}. Open one to review compatibility and install.
           </p>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 max-h-[60vh] overflow-y-auto">
+          <div className="grid max-h-[27.75rem] grid-cols-1 gap-3 overflow-y-auto overflow-x-hidden pr-2 md:grid-cols-2 xl:grid-cols-3">
             {recommendedMods.map((mod) => (
               <Card
                 key={mod.slug}
-                className="rounded-sm cursor-pointer hover:border-primary transition-colors"
+                className="h-[8.5rem] cursor-pointer overflow-hidden rounded-sm border-border/70 transition-colors hover:border-primary/80 hover:bg-primary/5"
                 onClick={() => searchModBySlug(mod.slug)}
               >
                 <CardHeader className="pb-3">
-                  <CardTitle className="text-base">{mod.name}</CardTitle>
-                  <CardDescription className="text-xs">{mod.category}</CardDescription>
+                  <div className="flex gap-3">
+                    <ProjectIcon title={mod.name} className="h-10 w-10" />
+                    <div className="min-w-0 flex-1">
+                      <CardTitle className="truncate text-base">{mod.name}</CardTitle>
+                      <CardDescription className="text-xs">{mod.category}</CardDescription>
+                    </div>
+                  </div>
                 </CardHeader>
                 <CardContent className="pt-0">
-                  <p className="text-xs text-muted-foreground">
+                  <p className="line-clamp-2 text-xs text-muted-foreground">
                     {mod.description}
                   </p>
                 </CardContent>
@@ -524,7 +569,7 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
           </div>
           <Separator />
           <p className="text-xs text-center text-muted-foreground">
-            Use the search bar above to find thousands more mods from Modrinth
+            Use search to find more {itemLabelPlural} from Modrinth.
           </p>
         </div>
       ) : isSearching ? (
@@ -533,21 +578,19 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
         </div>
       ) : mods.length === 0 ? (
         <div className="py-12 text-center text-muted-foreground">
-          No mods found. Try different search terms.
+          No {itemLabelPlural} found. Try different search terms.
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[60vh] overflow-y-auto">
+        <div className="grid max-h-[23rem] grid-cols-1 gap-3 overflow-y-auto overflow-x-hidden pr-2 lg:grid-cols-2">
           {mods.map((mod) => (
             <Card
               key={mod.project_id}
-              className="rounded-sm cursor-pointer hover:border-primary transition-colors"
+              className="h-[10.75rem] cursor-pointer overflow-hidden rounded-sm border-border/70 transition-colors hover:border-primary/80 hover:bg-primary/5"
               onClick={() => selectMod(mod)}
             >
               <CardHeader className="pb-3">
                 <div className="flex gap-3">
-                  {mod.icon_url && (
-                    <img src={mod.icon_url} alt={mod.title} className="w-12 h-12 rounded object-cover" />
-                  )}
+                  <ProjectIcon src={mod.icon_url} title={mod.title} />
                   <div className="flex-1 min-w-0">
                     <CardTitle className="text-base truncate">{mod.title}</CardTitle>
                     <CardDescription className="text-xs truncate">by {mod.author}</CardDescription>
@@ -576,29 +619,28 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
       )}
 
       <Dialog open={!!selectedMod} onOpenChange={(open) => !open && setSelectedMod(null)}>
-        <DialogContent className="rounded-sm max-w-2xl max-h-[85vh] overflow-y-auto">
+        <DialogContent className="w-[min(94vw,48rem)] max-w-none overflow-hidden rounded-sm p-0">
           {selectedMod && (
             <>
-              <DialogHeader>
+              <DialogHeader className="border-b px-5 py-4 pr-12 text-left">
                 <div className="flex items-start gap-3">
-                  {selectedMod.icon_url && (
-                    <img src={selectedMod.icon_url} alt={selectedMod.title} className="w-16 h-16 rounded" />
-                  )}
-                  <div className="flex-1">
-                    <DialogTitle className="text-xl">{selectedMod.title}</DialogTitle>
+                  <ProjectIcon src={selectedMod.icon_url} title={selectedMod.title} className="h-14 w-14" />
+                  <div className="min-w-0 flex-1">
+                    <DialogTitle className="truncate text-xl">{selectedMod.title}</DialogTitle>
                     <DialogDescription>by {selectedMod.author}</DialogDescription>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <Badge variant="secondary" className="text-xs">
+                        {formatDownloads(selectedMod.downloads)} downloads
+                      </Badge>
+                      <Badge variant="outline" className="text-xs">
+                        {itemLabelTitle}
+                      </Badge>
+                    </div>
                   </div>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => setSelectedMod(null)}
-                  >
-                    <X className="h-4 w-4" />
-                  </Button>
                 </div>
               </DialogHeader>
 
-              <div className="space-y-4">
+              <div className="max-h-[calc(100vh-11rem)] space-y-4 overflow-y-auto px-5 py-5">
                 <div>
                   <p className="text-sm">{selectedMod.description}</p>
                 </div>
@@ -628,7 +670,7 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
                         <AlertTriangle className="h-4 w-4 text-destructive flex-shrink-0 mt-0.5" />
                         <div className="text-sm">
                           <p className="font-semibold">Incompatible</p>
-                          <p className="text-xs text-muted-foreground">This mod cannot be installed on the server</p>
+                          <p className="text-xs text-muted-foreground">This {itemLabel} cannot be installed on the server</p>
                         </div>
                       </div>
                     )}
@@ -670,7 +712,7 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
                         <CheckCircle2 className="h-4 w-4 text-green-500 flex-shrink-0 mt-0.5" />
                         <div className="text-sm">
                           <p className="font-semibold">Compatible</p>
-                          <p className="text-xs text-muted-foreground">This mod is safe to install</p>
+                          <p className="text-xs text-muted-foreground">This {itemLabel} is safe to install</p>
                         </div>
                       </div>
                     )}
@@ -723,7 +765,7 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
                         <div className="space-y-2">
                           <h3 className="text-sm font-semibold text-destructive flex items-center gap-2">
                             <AlertTriangle className="h-4 w-4" />
-                            Incompatible Mods ({dependencies.incompatible.length})
+                            Incompatible {itemLabelPluralTitle} ({dependencies.incompatible.length})
                           </h3>
                           <div className="space-y-1.5">
                             {dependencies.incompatible.map((dep) => (
@@ -785,7 +827,7 @@ export function ModBrowser({ serverName, mcVersion, loader, serverMemoryMB, type
 
                 <div className="flex gap-2 text-xs">
                   <a
-                    href={`https://modrinth.com/mod/${selectedMod.slug}`}
+                    href={`https://modrinth.com/${type}/${selectedMod.slug}`}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="flex items-center gap-1 text-primary hover:underline"

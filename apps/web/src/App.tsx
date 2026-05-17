@@ -165,6 +165,7 @@ export function App() {
   const [setupCodes, setSetupCodes] = useState<PasskeyRegistrationCode[]>([]);
   const [setupCodeDeleteId, setSetupCodeDeleteId] = useState<string | null>(null);
   const [isPasskeyBusy, setIsPasskeyBusy] = useState(false);
+  const [showPasskeyRegistration, setShowPasskeyRegistration] = useState(false);
   const hasAdminAccess = isAdminAuthenticated;
 
   // Version management state
@@ -257,12 +258,12 @@ export function App() {
     },
     {
       target: "[data-tour='connection-local']",
-      title: "Local Network Connection",
+      title: "LAN Address",
       content: "This shows the address players on your local WiFi network should use to connect. Configure the Host IP in Server Settings to enable local connections.",
     },
     {
       target: "[data-tour='connection-public']",
-      title: "Public Internet Connection",
+      title: "Public Address",
       content: "This shows the address for players connecting from the internet. Use port 25565 when possible so players can join with only the domain name.",
     },
     {
@@ -1022,6 +1023,7 @@ export function App() {
         await loginWithAdminToken(token);
         setIsAdminAuthenticated(true);
         setAdminToken("");
+        setAdminAccessDialog(false);
         toast.success("Admin session started");
         setTimeout(() => refresh(), 0);
       } catch (err: any) {
@@ -1041,6 +1043,8 @@ export function App() {
       await registerPasskey(passkeyName.trim() || "Admin passkey", passkeySetupCode);
       setIsAdminAuthenticated(true);
       setPasskeySetupCode("");
+      setShowPasskeyRegistration(false);
+      setAdminAccessDialog(false);
       toast.success("Passkey registered");
       await loadAuthConfig();
       await refresh();
@@ -1070,6 +1074,9 @@ export function App() {
     try {
       await loginWithPasskey();
       setIsAdminAuthenticated(true);
+      setPasskeySetupCode("");
+      setShowPasskeyRegistration(false);
+      setAdminAccessDialog(false);
       toast.success("Signed in with passkey");
       await loadAuthConfig();
       await refresh();
@@ -1109,6 +1116,9 @@ export function App() {
   const passkeyConfig = authConfig?.passkeys;
   const canUsePasskeys = passkeysAvailable();
   const canRegisterPasskey = isAdminAuthenticated || Boolean(passkeySetupCode.trim());
+  const tokenAuthEnabled = Array.isArray(authConfig?.authMethods) && authConfig.authMethods.includes("token");
+  const hasPasskeys = Boolean(passkeyConfig?.hasPasskeys);
+  const registrationOpen = showPasskeyRegistration || (Boolean(authConfig) && !hasPasskeys);
 
   return (
     <TooltipProvider>
@@ -1119,11 +1129,11 @@ export function App() {
           <div className="flex items-center gap-3 sm:gap-4">
             <img src="/mc-logo.svg" alt="Minecraft Server" className="h-8 sm:h-10 flex-shrink-0" />
             <div>
-              <h1 className="text-xl sm:text-2xl md:text-3xl font-bold tracking-tight bg-gradient-to-r from-green-400 to-emerald-600 bg-clip-text text-transparent">
-                Minecraft Server Control
+              <h1 className="text-xl sm:text-2xl md:text-3xl font-bold tracking-tight bg-gradient-to-r from-emerald-300 via-sky-300 to-blue-400 bg-clip-text text-transparent">
+                Minecraft Server Manager
               </h1>
               <p className="text-xs sm:text-sm text-muted-foreground mt-0.5 sm:mt-1">
-                Build, play, and manage your worlds
+                Run servers, share player addresses, and manage worlds.
               </p>
             </div>
           </div>
@@ -1132,8 +1142,13 @@ export function App() {
               setAdminAccessDialog(open);
               if (open) {
                 setAdminToken("");
+                setPasskeySetupCode("");
+                setShowPasskeyRegistration(false);
                 loadAuthConfig();
                 checkAdminSession();
+              } else {
+                setPasskeySetupCode("");
+                setShowPasskeyRegistration(false);
               }
             }}>
               <DialogTrigger asChild>
@@ -1146,165 +1161,226 @@ export function App() {
                   <span className="text-xs sm:text-sm">Admin Access</span>
                 </Button>
               </DialogTrigger>
-              <DialogContent className="rounded-sm max-w-[95vw] sm:max-w-md">
-                <DialogHeader>
-                  <DialogTitle>Admin Access</DialogTitle>
-                  <DialogDescription>
-                    Use a registered passkey for server changes, or use a one-time setup code to add one.
-                  </DialogDescription>
+              <DialogContent className="w-[min(92vw,34rem)] max-w-none gap-0 overflow-hidden rounded-sm border-border/70 p-0 sm:max-w-none">
+                <DialogHeader className="border-b px-5 py-4 pr-12 text-left">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <DialogTitle>Admin Access</DialogTitle>
+                      <DialogDescription className="mt-1">
+                        Sign in to view and manage servers.
+                      </DialogDescription>
+                    </div>
+                    <Badge variant={isAdminAuthenticated ? "default" : "outline"} className="shrink-0">
+                      {isAdminAuthenticated ? "Signed in" : "Locked"}
+                    </Badge>
+                  </div>
                 </DialogHeader>
-                <div className="space-y-4">
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="text-sm font-medium">Passkeys</p>
-                        <p className="text-xs text-muted-foreground">
-                          {passkeyConfig?.hasPasskeys ? "Registered passkeys can sign in from any synced device." : "No passkeys are registered yet. Use a one-time setup code to add the first one."}
+
+                <div className="max-h-[calc(100vh-10rem)] space-y-5 overflow-y-auto px-5 py-5">
+                  <section className="space-y-3">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="min-w-0">
+                        <h3 className="text-sm font-medium">Passkey Session</h3>
+                        <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                          {isAdminAuthenticated
+                            ? "This browser has an active admin session."
+                            : hasPasskeys
+                              ? "Use a registered passkey to unlock server controls."
+                              : "Register the first passkey with a one-time setup code."}
                         </p>
                       </div>
-                      <Badge variant={isAdminAuthenticated ? "default" : "outline"}>
-                        {isAdminAuthenticated ? "Signed in" : "Optional"}
-                      </Badge>
-                    </div>
-                    {!canUsePasskeys && (
-                      <p className="rounded-sm border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-300">
-                        Passkeys require HTTPS or localhost in this browser.
-                      </p>
-                    )}
-                    {!isAdminAuthenticated && (
-                      <Input
-                        type="password"
-                        value={passkeySetupCode}
-                        onChange={(event) => setPasskeySetupCode(event.target.value)}
-                        placeholder="One-time setup code"
-                        className="rounded-sm"
-                      />
-                    )}
-                    <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
-                      <Input
-                        value={passkeyName}
-                        onChange={(event) => setPasskeyName(event.target.value)}
-                        placeholder="Passkey name"
-                        className="rounded-sm"
-                      />
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="rounded-sm"
-                        onClick={handleRegisterPasskey}
-                        disabled={!canUsePasskeys || !canRegisterPasskey || isPasskeyBusy}
-                      >
-                        <Fingerprint className="mr-2 h-4 w-4" />
-                        Set Up
-                      </Button>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      <Button
-                        type="button"
-                        className="rounded-sm"
-                        onClick={handlePasskeyLogin}
-                        disabled={!canUsePasskeys || !passkeyConfig?.hasPasskeys || isPasskeyBusy}
-                      >
-                        <Fingerprint className="mr-2 h-4 w-4" />
-                        Sign In With Passkey
-                      </Button>
                       {isAdminAuthenticated && (
                         <Button
                           type="button"
                           variant="outline"
-                          className="rounded-sm"
-                          onClick={async () => {
-                            await logoutPasskeySession();
-                            setIsAdminAuthenticated(false);
-                            setServers([]);
-                            setLogs("");
-                            setSetupCodes([]);
-                            setServerInventoryBlocked(true);
-                            setMessage("Admin access is required to view and manage servers.");
-                            toast.success("Admin session cleared");
-                          }}
+                          size="sm"
+                          className="shrink-0 rounded-sm"
+                          onClick={clearAdminAccess}
                         >
                           <LogOut className="mr-2 h-4 w-4" />
                           Sign Out
                         </Button>
                       )}
                     </div>
-                    {isAdminAuthenticated && setupCodes.length > 0 && (
-                      <div className="rounded-sm border p-3">
-                        <div className="space-y-2">
-                          {setupCodes.map((code) => (
-                            <div key={code.id} className="flex items-center gap-2 rounded-sm border px-2 py-1.5">
-                              <div className="min-w-0 flex-1">
-                                <p className="truncate text-xs font-medium">{code.label || "Setup code"}</p>
-                                <p className="text-[11px] text-muted-foreground">
-                                  {code.usedAt
-                                    ? `Used ${new Date(code.usedAt).toLocaleString()}`
-                                    : "Unused"}
-                                </p>
-                                {code.usedByCredentialId && (
-                                  <p className="truncate text-[11px] text-muted-foreground">
-                                    Passkey {code.usedByCredentialId}
-                                  </p>
-                                )}
-                              </div>
-                              <Badge variant={code.usedAt ? "secondary" : "outline"}>
-                                {code.usedAt ? "Used" : "Open"}
-                              </Badge>
-                              {code.source === "env" && (
-                                <Badge variant="secondary">Config</Badge>
-                              )}
-                              {!code.usedAt && code.source === "generated" && (
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="ghost"
-                                  className="rounded-sm"
-                                  aria-label="Revoke setup code"
-                                  disabled={setupCodeDeleteId === code.id}
-                                  onClick={() => handleDeleteSetupCode(code.id)}
-                                >
-                                  <Trash2 className="h-4 w-4" />
-                                </Button>
-                              )}
-                            </div>
-                          ))}
-                        </div>
+
+                    {!canUsePasskeys && (
+                      <p className="rounded-sm border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-300">
+                        Passkeys require HTTPS or localhost in this browser.
+                      </p>
+                    )}
+
+                    {!isAdminAuthenticated && hasPasskeys && (
+                      <div className="space-y-2">
+                        <Button
+                          type="button"
+                          className="w-full rounded-sm"
+                          onClick={handlePasskeyLogin}
+                          disabled={!canUsePasskeys || !hasPasskeys || isPasskeyBusy}
+                        >
+                          {isPasskeyBusy ? (
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          ) : (
+                            <Fingerprint className="mr-2 h-4 w-4" />
+                          )}
+                          Sign In With Passkey
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          className="w-full rounded-sm text-muted-foreground"
+                          onClick={() => setShowPasskeyRegistration((current) => !current)}
+                        >
+                          {registrationOpen ? "Hide setup-code registration" : "Register a new passkey with a code"}
+                        </Button>
                       </div>
                     )}
-                  </div>
 
-                  <Separator />
+                    {isAdminAuthenticated && hasPasskeys && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full rounded-sm"
+                        onClick={() => setShowPasskeyRegistration((current) => !current)}
+                      >
+                        <Fingerprint className="mr-2 h-4 w-4" />
+                        {registrationOpen ? "Cancel Passkey Setup" : "Add This Device as a Passkey"}
+                      </Button>
+                    )}
+                  </section>
 
-                  <div>
-                    <Label htmlFor="adminToken">Admin Token</Label>
-                    <Input
-                      id="adminToken"
-                      type="password"
-                      value={adminToken}
-                      onChange={(event) => setAdminToken(event.target.value)}
-                      placeholder="Paste admin token"
-                      className="rounded-sm"
-                    />
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Token access is a fallback only when token auth is enabled on the server.
-                    </p>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    Server status, settings, mods, logs, and commands require admin access. Public player setup links remain separate.
-                  </p>
+                  {registrationOpen && (
+                    <section className="space-y-3 border-t pt-5">
+                      <div>
+                        <h3 className="text-sm font-medium">
+                          {isAdminAuthenticated ? "Add Passkey" : "Register With Setup Code"}
+                        </h3>
+                        <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                          {isAdminAuthenticated
+                            ? hasPasskeys
+                              ? "Add another synced passkey without entering a setup code."
+                              : "Add the first passkey for this deployment without entering a setup code."
+                            : "Paste a one-time code from the root-only host command, then name this passkey."}
+                        </p>
+                      </div>
+
+                      {!isAdminAuthenticated && (
+                        <div className="space-y-1.5">
+                          <Label htmlFor="passkeySetupCode">One-time setup code</Label>
+                          <Input
+                            id="passkeySetupCode"
+                            type="password"
+                            value={passkeySetupCode}
+                            onChange={(event) => setPasskeySetupCode(event.target.value)}
+                            placeholder="Paste setup code"
+                            className="rounded-sm"
+                          />
+                        </div>
+                      )}
+
+                      <div className="space-y-1.5">
+                        <Label htmlFor="passkeyName">Passkey name</Label>
+                        <Input
+                          id="passkeyName"
+                          value={passkeyName}
+                          onChange={(event) => setPasskeyName(event.target.value)}
+                          placeholder="Admin passkey"
+                          className="rounded-sm"
+                        />
+                      </div>
+
+                      <Button
+                        type="button"
+                        variant={isAdminAuthenticated ? "outline" : "default"}
+                        className="w-full rounded-sm"
+                        onClick={handleRegisterPasskey}
+                        disabled={!canUsePasskeys || !canRegisterPasskey || isPasskeyBusy}
+                      >
+                        {isPasskeyBusy ? (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        ) : (
+                          <Fingerprint className="mr-2 h-4 w-4" />
+                        )}
+                        {isAdminAuthenticated ? "Add Passkey" : "Register Passkey"}
+                      </Button>
+                    </section>
+                  )}
+
+                  {isAdminAuthenticated && setupCodes.length > 0 && (
+                    <section className="space-y-3 border-t pt-5">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <h3 className="text-sm font-medium">One-time Codes</h3>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            Generated on the host. Plaintext codes are not stored.
+                          </p>
+                        </div>
+                        <Badge variant="outline">{setupCodes.filter((code) => !code.usedAt).length} open</Badge>
+                      </div>
+                      <div className="space-y-2">
+                        {setupCodes.map((code) => (
+                          <div key={code.id} className="flex items-center gap-3 border-b py-2 last:border-b-0">
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-xs font-medium">{code.label || "Setup code"}</p>
+                              <p className="text-[11px] text-muted-foreground">
+                                {code.usedAt
+                                  ? `Used ${new Date(code.usedAt).toLocaleString()}`
+                                  : "Unused"}
+                              </p>
+                              {code.usedByCredentialId && (
+                                <p className="truncate text-[11px] text-muted-foreground">
+                                  Passkey {code.usedByCredentialId}
+                                </p>
+                              )}
+                            </div>
+                            <Badge variant={code.usedAt ? "secondary" : "outline"} className="shrink-0">
+                              {code.usedAt ? "Used" : "Open"}
+                            </Badge>
+                            {code.source === "env" && (
+                              <Badge variant="secondary" className="shrink-0">Config</Badge>
+                            )}
+                            {!code.usedAt && code.source === "generated" && (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                className="shrink-0 rounded-sm"
+                                aria-label="Revoke setup code"
+                                disabled={setupCodeDeleteId === code.id}
+                                onClick={() => handleDeleteSetupCode(code.id)}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  )}
+
+                  {tokenAuthEnabled && !isAdminAuthenticated && (
+                    <section className="space-y-3 border-t pt-5">
+                      <div>
+                        <h3 className="text-sm font-medium">Token Fallback</h3>
+                        <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                          Use only when token authentication is enabled for this deployment.
+                        </p>
+                      </div>
+                      <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
+                        <Input
+                          id="adminToken"
+                          type="password"
+                          value={adminToken}
+                          onChange={(event) => setAdminToken(event.target.value)}
+                          placeholder="Paste admin token"
+                          className="rounded-sm"
+                        />
+                        <Button className="rounded-sm" onClick={saveAdminToken}>
+                          Sign In
+                        </Button>
+                      </div>
+                    </section>
+                  )}
                 </div>
-                <DialogFooter>
-                  <Button
-                    variant="outline"
-                    className="rounded-sm"
-                    onClick={clearAdminAccess}
-                  >
-                    Clear
-                  </Button>
-                  <Button className="rounded-sm" onClick={saveAdminToken}>
-                    Save
-                  </Button>
-                </DialogFooter>
               </DialogContent>
             </Dialog>
             <Dialog open={helpDialog} onOpenChange={setHelpDialog}>
@@ -1362,7 +1438,7 @@ export function App() {
                         <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
                           <li><strong>Host IP:</strong> Set to your LXD host's local IP (e.g., 192.168.0.170) for local network access</li>
                           <li><strong>Public Domain:</strong> Set the player-facing DNS name, such as mc.basementnodes.ca</li>
-                          <li><strong>WAN Port:</strong> Use 25565 when possible so players do not need to type a port</li>
+                          <li><strong>Public Port:</strong> Use 25565 when possible so players do not need to type a port</li>
                           <li><strong>Host Proxy Port:</strong> The reachable nodev2 LXC proxy port your router forwards to</li>
                         </ul>
                       </div>
@@ -1467,11 +1543,11 @@ export function App() {
                         </ul>
                       </div>
                       <div>
-                        <h3 className="font-semibold mb-1">Local Network</h3>
+                        <h3 className="font-semibold mb-1">LAN Address</h3>
                         <p className="text-muted-foreground text-xs">Shows status for players on your local WiFi network. Set Host IP in Network settings first.</p>
                       </div>
                       <div>
-                        <h3 className="font-semibold mb-1">Public Internet</h3>
+                        <h3 className="font-semibold mb-1">Public Address</h3>
                         <p className="text-muted-foreground text-xs">Shows the player join address for friends outside your house. With port 25565, players enter only the domain name.</p>
                       </div>
                     </div>
@@ -1493,16 +1569,16 @@ export function App() {
                         <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
                           <li>Set Host IP in Server Settings → Network tab</li>
                           <li>Verify server status shows "Running"</li>
-                          <li>Check Local Network shows "ONLINE"</li>
+                          <li>Check that the LAN address is configured and the server is running</li>
                           <li>Make sure you're on the same WiFi network</li>
                         </ul>
                       </div>
                       <div>
                         <h3 className="font-semibold mb-1">Can't connect from internet</h3>
                         <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
-                          <li>Forward WAN TCP 25565 to the reachable nodev2 LXC proxy port shown in Server Settings → Network</li>
+                          <li>Forward TCP 25565 to the reachable nodev2 LXC proxy port shown in Server Settings → Network</li>
                           <li>Set the DNS A record for mc.basementnodes.ca to your public IP</li>
-                          <li>Set Public Domain to mc.basementnodes.ca, WAN Port to 25565, and Host Proxy Port to the nodev2 proxy port</li>
+                          <li>Set Public Domain to mc.basementnodes.ca, Public Port to 25565, and Host Proxy Port to the nodev2 proxy port</li>
                           <li>Share only the Minecraft join address with players, not the admin panel URL</li>
                           <li>Wait for DNS propagation (can take up to 24 hours)</li>
                         </ul>
@@ -1591,213 +1667,48 @@ export function App() {
         ) : (
           <div className="grid gap-6">
             {servers.map((server) => (
-              <Card key={server.name} className="rounded-sm">
+              <Card key={server.name} className="overflow-hidden rounded-sm border-border/70 bg-card/95 shadow-sm">
                 <CardHeader className="p-4 sm:p-6">
-                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-                    <div className="flex-1 w-full">
-                      <CardTitle className="flex items-center gap-2 flex-wrap text-base sm:text-lg">
-                        {server.name}
-                        <Badge
-                          variant={getStatusColor(server.status)}
-                          className="rounded-sm text-xs"
-                        >
-                          {server.status}
-                        </Badge>
-                        {server.status === 'Running' && serverTps.get(server.name) !== undefined && (
+                  <div className="flex flex-col gap-5">
+                    <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                      <div className="min-w-0 flex-1">
+                        <CardTitle className="flex items-center gap-2 flex-wrap text-base sm:text-lg">
+                          {server.name}
                           <Badge
-                            variant={serverTps.get(server.name) && serverTps.get(server.name)! >= 19.5 ? "default" : "destructive"}
+                            variant={getStatusColor(server.status)}
                             className="rounded-sm text-xs"
                           >
-                            TPS: {serverTps.get(server.name)?.toFixed(1) || 'N/A'}
+                            {server.status}
                           </Badge>
-                        )}
-                      </CardTitle>
-                      <CardDescription className="mt-1 text-xs sm:text-sm">
-                        {server.edition} {server.mc_version} · {server.memory_mb}MB · {server.cpu_limit} CPU
-                      </CardDescription>
-
-                      {/* Connection Info */}
-                      <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {/* Local Connection */}
-                        <div data-tour="connection-local" className="border-2 rounded-lg p-3 sm:p-4 bg-card">
-                          <div className="flex items-center justify-between mb-2 sm:mb-3">
-                            <div className="flex items-center gap-1.5 sm:gap-2">
-                              <Globe className="h-4 w-4 sm:h-5 sm:w-5 text-muted-foreground flex-shrink-0" />
-                              <span className="text-sm sm:text-base font-bold">Local Network</span>
-                            </div>
-                            {server.minecraft?.online ? (
-                              <Badge className="bg-green-500 hover:bg-green-600 text-xs sm:text-sm font-bold px-2 sm:px-3 py-0.5 sm:py-1">✓ RUNNING</Badge>
-                            ) : (
-                              <Badge variant="destructive" className="text-xs sm:text-sm font-bold px-2 sm:px-3 py-0.5 sm:py-1">✗ STOPPED</Badge>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-1 sm:gap-2 mb-2">
-                            <code className="bg-black/80 text-green-400 px-2 py-2 sm:px-4 sm:py-3 rounded text-sm sm:text-lg font-bold flex-1 text-center border-2 border-green-500/30 break-all">
-                              {getLocalJoinAddress(server) || "Not configured"}
-                            </code>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8 sm:h-10 sm:w-10 flex-shrink-0"
-                              onClick={() => copyToClipboard(getLocalJoinAddress(server))}
-                              title="Copy to clipboard"
+                          {server.status === 'Running' && serverTps.get(server.name) !== undefined && (
+                            <Badge
+                              variant={serverTps.get(server.name) && serverTps.get(server.name)! >= 19.5 ? "default" : "destructive"}
+                              className="rounded-sm text-xs"
                             >
-                             <Copy className="h-4 w-4 sm:h-5 sm:w-5" />
-                            </Button>
-                          </div>
-                          {server.host_ip ? (
-                            <p className="text-xs sm:text-sm text-center">
-                              <span className="font-semibold text-green-600">Ready on LAN</span>{" "}
-                            </p>
-                          ) : (
-                            <p className="text-xs sm:text-sm text-center text-amber-600 font-semibold">
-                              ⚠️ Configure Host IP in Server Settings → Network tab
-                            </p>
+                              TPS {serverTps.get(server.name)?.toFixed(1) || 'N/A'}
+                            </Badge>
                           )}
-                        </div>
-
-                        {/* Public Connection */}
-                        <div data-tour="connection-public" className="border-2 rounded-lg p-3 sm:p-4 bg-card">
-                          <div className="flex items-center justify-between mb-2 sm:mb-3">
-                            <div className="flex items-center gap-1.5 sm:gap-2">
-                              <Globe className="h-4 w-4 sm:h-5 sm:w-5 text-muted-foreground flex-shrink-0" />
-                              <span className="text-sm sm:text-base font-bold">Public Internet</span>
-                            </div>
-                            {server.public_domain ? (
-                              publicAccess.get(server.name)?.checking ? (
-                                <Badge variant="outline" className="text-xs sm:text-sm font-bold px-2 sm:px-3 py-0.5 sm:py-1">Checking WAN</Badge>
-                              ) : publicAccess.get(server.name)?.accessible ? (
-                                <Badge className="bg-green-500 hover:bg-green-600 text-xs sm:text-sm font-bold px-2 sm:px-3 py-0.5 sm:py-1">WAN verified</Badge>
-                              ) : (
-                                <Badge variant="destructive" className="text-xs sm:text-sm font-bold px-2 sm:px-3 py-0.5 sm:py-1">WAN blocked</Badge>
-                              )
-                            ) : (
-                              <Badge variant="outline" className="text-xs sm:text-sm font-bold px-2 sm:px-3 py-0.5 sm:py-1">Not configured</Badge>
+                        </CardTitle>
+                        <CardDescription className="mt-1 text-xs sm:text-sm">
+                          {server.edition} {server.mc_version} · {server.memory_mb}MB memory · {server.cpu_limit} CPU
+                        </CardDescription>
+                        {server.minecraft?.online && server.minecraft.players && (
+                          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs sm:text-sm">
+                            <Users className="h-4 w-4 text-muted-foreground" />
+                            <span className="font-medium text-muted-foreground">Players</span>
+                            <Badge variant="secondary" className="rounded-sm">
+                              {server.minecraft.players.online}/{server.minecraft.players.max}
+                            </Badge>
+                            {server.minecraft.description && (
+                              <span className="text-muted-foreground">
+                                {server.minecraft.description}
+                              </span>
                             )}
                           </div>
-                          {server.public_domain ? (
-                            <>
-                              <div className="flex items-center gap-1 sm:gap-2 mb-2">
-                                <code className="bg-black/80 text-cyan-400 px-2 py-2 sm:px-4 sm:py-3 rounded text-sm sm:text-lg font-bold flex-1 text-center border-2 border-cyan-500/30 break-all">
-                                  {getPublicJoinAddress(server)}
-                                </code>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-8 w-8 sm:h-10 sm:w-10 flex-shrink-0"
-                                  onClick={() => copyToClipboard(getPublicJoinAddress(server))}
-                                  title="Copy to clipboard"
-                                >
-                                  <Copy className="h-4 w-4 sm:h-5 sm:w-5" />
-                                </Button>
-                              </div>
-                              <p className="text-xs sm:text-sm text-center text-muted-foreground">
-                                {isDefaultMinecraftPort(server.public_port) ? (
-                                  <span>No port needed; Minecraft uses 25565 automatically.</span>
-                                ) : (
-                                  <span>Custom port required: include :{server.public_port} when sharing.</span>
-                                )}
-                              </p>
-                              <div className="mt-2 flex justify-center">
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  className="h-7 rounded-sm text-xs"
-                                  onClick={() => checkPublicAccess(server.name)}
-                                  disabled={publicAccess.get(server.name)?.checking}
-                                >
-                                  <RefreshCw className={`mr-1.5 h-3 w-3 ${publicAccess.get(server.name)?.checking ? "animate-spin" : ""}`} />
-                                  Check WAN
-                                </Button>
-                              </div>
-                              {publicAccess.get(server.name)?.accessible === false && (
-                                <p className="mt-2 text-xs text-center text-amber-600">
-                                  External check failed. Forward WAN TCP {server.public_port} to {server.host_ip || "nodev2"}:{getHostProxyPort(server)}.
-                                  {publicAccess.get(server.name)?.reason ? ` ${publicAccess.get(server.name)?.reason}` : ""}
-                                </p>
-                              )}
-                            </>
-                          ) : (
-                            <>
-                              <div className="flex items-center gap-1 sm:gap-2 mb-2">
-                                <code className="bg-muted px-2 py-2 sm:px-4 sm:py-3 rounded text-sm sm:text-base font-semibold flex-1 text-center opacity-50">
-                                  Not configured
-                                </code>
-                              </div>
-                              <p className="text-xs sm:text-sm text-center text-muted-foreground">
-                                Optional: Configure domain in Server Settings → Network tab
-                              </p>
-                            </>
-                          )}
-                        </div>
+                        )}
                       </div>
 
-                      {server.public_domain && (
-                        <div className="mt-4 rounded-sm border bg-muted/40 p-3 sm:p-4">
-                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                            <div className="space-y-1">
-                              <h3 className="text-sm sm:text-base font-semibold">Player join sheet</h3>
-                              <p className="text-xs sm:text-sm text-muted-foreground">
-                                Share this address with players. Do not share the admin panel URL.
-                              </p>
-                            </div>
-                            <Button
-                              variant="outline"
-                              className="rounded-sm sm:w-auto"
-                              onClick={() => {
-                                copyToClipboard(buildPlayerInviteText(server));
-                                toast.success("Player join instructions copied.");
-                              }}
-                            >
-                              <Copy className="mr-2 h-4 w-4" />
-                              Copy Instructions
-                            </Button>
-                          </div>
-                          <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
-                            <div>
-                              <p className="text-xs font-medium text-muted-foreground">Address players enter</p>
-                              <code className="mt-1 block rounded-sm border bg-background px-3 py-2 text-base font-semibold break-all">
-                                {getPublicJoinAddress(server)}
-                              </code>
-                            </div>
-                            <ol className="space-y-1 text-xs sm:text-sm text-muted-foreground list-decimal ml-4">
-                              <li>Open Minecraft: Java Edition.</li>
-                              <li>Choose Multiplayer, then Add Server.</li>
-                              <li>Paste the server address and join.</li>
-                              <li>
-                                {requiresClientMods(server.edition)
-                                  ? `Install ${server.edition} for Minecraft ${server.mc_version} and the matching mod list before joining.`
-                                  : `Use Minecraft ${server.mc_version}; server plugins do not require client setup.`}
-                              </li>
-                            </ol>
-                          </div>
-                          {publicAccess.get(server.name)?.accessible === false && (
-                            <div className="mt-3 rounded-sm border border-amber-500/30 bg-amber-500/10 p-3 text-xs sm:text-sm text-amber-700 dark:text-amber-300">
-                              WAN is not reachable yet. Finish the router/firewall forward before sending the invite:
-                              WAN TCP {server.public_port} to {server.host_ip || "nodev2"}:{getHostProxyPort(server)}.
-                              {publicAccess.get(server.name)?.reason ? ` ${publicAccess.get(server.name)?.reason}` : ""}
-                            </div>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Player Info */}
-                      {server.minecraft?.online && server.minecraft.players && (
-                        <div className="mt-3 flex flex-wrap items-center gap-2 sm:gap-3 text-sm sm:text-base">
-                          <Users className="h-4 w-4 sm:h-5 sm:w-5 text-muted-foreground" />
-                          <span className="font-semibold text-muted-foreground text-xs sm:text-sm">Players:</span>
-                          <Badge variant="secondary" className="rounded-sm text-xs sm:text-sm font-bold px-2 sm:px-3 py-0.5 sm:py-1">
-                            {server.minecraft.players.online}/{server.minecraft.players.max}
-                          </Badge>
-                          {server.minecraft.description && (
-                            <span className="text-xs sm:text-sm text-muted-foreground font-medium">
-                              · {server.minecraft.description}
-                            </span>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                    <div data-tour="server-controls" className="flex items-center gap-2 w-full sm:w-auto">
+                      <div data-tour="server-controls" className="flex items-center gap-2 w-full sm:w-auto">
                       <Button
                         variant="ghost"
                         size="icon"
@@ -1825,10 +1736,177 @@ export function App() {
                       >
                         <RotateCw className="h-5 w-5 sm:h-4 sm:w-4" />
                       </Button>
+                      </div>
+                    </div>
+
+                    <div className="rounded-sm border border-border/70 bg-muted/20 p-3 sm:p-4">
+                      <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                          <h3 className="text-sm font-semibold">Connection</h3>
+                          <p className="text-xs text-muted-foreground">
+                            Player-facing addresses and invite text for this server.
+                          </p>
+                        </div>
+                        {server.public_domain && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="rounded-sm"
+                            onClick={() => {
+                              copyToClipboard(buildPlayerInviteText(server));
+                              toast.success("Player invite copied.");
+                            }}
+                          >
+                            <Copy className="mr-2 h-4 w-4" />
+                            Copy Player Invite
+                          </Button>
+                        )}
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                        <div data-tour="connection-local" className="rounded-sm border border-emerald-500/20 bg-emerald-500/5 p-3">
+                          <div className="mb-2 flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-2">
+                              <Globe className="h-4 w-4 text-emerald-400" />
+                              <span className="text-sm font-semibold">LAN Address</span>
+                            </div>
+                            {server.minecraft?.online ? (
+                              <Badge className="bg-emerald-500 hover:bg-emerald-600 text-xs">Server running</Badge>
+                            ) : (
+                              <Badge variant="secondary" className="text-xs">Server stopped</Badge>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <code className="min-w-0 flex-1 rounded-sm border border-emerald-500/20 bg-background px-3 py-2 text-sm font-semibold text-emerald-300 break-all">
+                              {getLocalJoinAddress(server) || "Set host IP first"}
+                            </code>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-9 w-9 shrink-0 rounded-sm"
+                              onClick={() => copyToClipboard(getLocalJoinAddress(server))}
+                              title="Copy LAN address"
+                            >
+                              <Copy className="h-4 w-4" />
+                            </Button>
+                          </div>
+                          <p className="mt-2 text-xs text-muted-foreground">
+                            {server.host_ip
+                              ? "For players on the same network."
+                              : "Set Host IP in Server Settings > Network."}
+                          </p>
+                        </div>
+
+                        <div data-tour="connection-public" className="rounded-sm border border-sky-500/20 bg-sky-500/5 p-3">
+                          <div className="mb-2 flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-2">
+                              <Globe className="h-4 w-4 text-sky-400" />
+                              <span className="text-sm font-semibold">Public Address</span>
+                            </div>
+                            {server.public_domain ? (
+                              publicAccess.get(server.name)?.checking ? (
+                                <Badge variant="outline" className="text-xs">Checking reachability</Badge>
+                              ) : publicAccess.get(server.name)?.accessible ? (
+                                <Badge className="bg-emerald-500 hover:bg-emerald-600 text-xs">Reachable externally</Badge>
+                              ) : (
+                                <Badge variant="destructive" className="text-xs">Not reachable</Badge>
+                              )
+                            ) : (
+                              <Badge variant="outline" className="text-xs">Not configured</Badge>
+                            )}
+                          </div>
+                          {server.public_domain ? (
+                            <>
+                              <div className="flex items-center gap-2">
+                                <code className="min-w-0 flex-1 rounded-sm border border-sky-500/20 bg-background px-3 py-2 text-sm font-semibold text-sky-300 break-all">
+                                  {getPublicJoinAddress(server)}
+                                </code>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-9 w-9 shrink-0 rounded-sm"
+                                  onClick={() => copyToClipboard(getPublicJoinAddress(server))}
+                                  title="Copy public address"
+                                >
+                                  <Copy className="h-4 w-4" />
+                                </Button>
+                              </div>
+                              <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                <p className="text-xs text-muted-foreground">
+                                  {isDefaultMinecraftPort(server.public_port)
+                                    ? "Players can enter only the domain."
+                                    : `Players must include :${server.public_port}.`}
+                                </p>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-7 rounded-sm text-xs"
+                                  onClick={() => checkPublicAccess(server.name)}
+                                  disabled={publicAccess.get(server.name)?.checking}
+                                >
+                                  <RefreshCw className={`mr-1.5 h-3 w-3 ${publicAccess.get(server.name)?.checking ? "animate-spin" : ""}`} />
+                                  Test Public Route
+                                </Button>
+                              </div>
+                              {publicAccess.get(server.name)?.accessible === false && (
+                                <p className="mt-2 text-xs text-amber-600 dark:text-amber-300">
+                                  External check failed. Forward TCP {server.public_port} to {server.host_ip || "nodev2"}:{getHostProxyPort(server)}.
+                                  {publicAccess.get(server.name)?.reason ? ` ${publicAccess.get(server.name)?.reason}` : ""}
+                                </p>
+                              )}
+                            </>
+                          ) : (
+                            <>
+                              <code className="block rounded-sm border bg-background px-3 py-2 text-sm font-semibold text-muted-foreground">
+                                Set a public domain first
+                              </code>
+                              <p className="mt-2 text-xs text-muted-foreground">
+                                Configure the player-facing domain in the Network tab.
+                              </p>
+                            </>
+                          )}
+                        </div>
+                      </div>
+
+                      {server.public_domain && (
+                        <div className="mt-3 rounded-sm border border-border/70 bg-background/50 p-3">
+                          <div className="grid gap-3 md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+                            <div>
+                              <p className="text-xs font-medium text-muted-foreground">Player Invite</p>
+                              <code className="mt-1 block rounded-sm border bg-background px-3 py-2 text-sm font-semibold break-all">
+                                {getPublicJoinAddress(server)}
+                              </code>
+                            </div>
+                            <ol className="space-y-1 text-xs text-muted-foreground list-decimal ml-4">
+                              <li>Open Minecraft: Java Edition.</li>
+                              <li>Choose Multiplayer, then Add Server.</li>
+                              <li>Paste the server address and join.</li>
+                              <li>
+                                {requiresClientMods(server.edition)
+                                  ? `Install ${server.edition} for Minecraft ${server.mc_version} and the matching mod list before joining.`
+                                  : `Use Minecraft ${server.mc_version}; server plugins do not require client setup.`}
+                              </li>
+                            </ol>
+                          </div>
+                          {publicAccess.get(server.name)?.accessible === false && (
+                            <div className="mt-3 rounded-sm border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
+                              The public route is not reachable yet. Finish the router/firewall forward before sharing this invite:
+                              TCP {server.public_port} to {server.host_ip || "nodev2"}:{getHostProxyPort(server)}.
+                              {publicAccess.get(server.name)?.reason ? ` ${publicAccess.get(server.name)?.reason}` : ""}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </CardHeader>
-                <CardContent className="p-4 sm:p-6">
+                <CardContent className="border-t border-border/70 p-4 sm:p-6">
+                  <div className="mb-3">
+                    <h3 className="text-sm font-semibold">Manage Server</h3>
+                    <p className="text-xs text-muted-foreground">
+                      Change runtime, content, settings, and backups from one place.
+                    </p>
+                  </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 sm:gap-3">
                     {/* Version Management */}
                     <Dialog>
@@ -1895,13 +1973,14 @@ export function App() {
                               Browse Plugins
                             </Button>
                           </DialogTrigger>
-                          <DialogContent className="rounded-sm max-w-5xl max-h-[90vh]">
-                            <DialogHeader>
+                          <DialogContent className="w-[min(94vw,64rem)] max-w-none overflow-hidden rounded-sm p-0">
+                            <DialogHeader className="border-b px-5 py-4 pr-12 text-left">
                               <DialogTitle>Plugin Browser</DialogTitle>
                               <DialogDescription>
-                                Search and install plugins from Modrinth
+                                Search Modrinth plugins compatible with {server.edition} {server.mc_version}.
                               </DialogDescription>
                             </DialogHeader>
+                            <div className="px-5 py-5">
                             <ModBrowser
                               serverName={server.name}
                               mcVersion={server.mc_version}
@@ -1913,6 +1992,7 @@ export function App() {
                                 refresh();
                               }}
                             />
+                            </div>
                           </DialogContent>
                         </Dialog>
 
@@ -1963,13 +2043,14 @@ export function App() {
                               Browse Mods
                             </Button>
                           </DialogTrigger>
-                          <DialogContent className="rounded-sm max-w-5xl max-h-[90vh]">
-                            <DialogHeader>
+                          <DialogContent className="w-[min(94vw,64rem)] max-w-none overflow-hidden rounded-sm p-0">
+                            <DialogHeader className="border-b px-5 py-4 pr-12 text-left">
                               <DialogTitle>Mod Browser</DialogTitle>
                               <DialogDescription>
-                                Search and install mods from Modrinth
+                                Search Modrinth mods compatible with {server.edition} {server.mc_version}.
                               </DialogDescription>
                             </DialogHeader>
+                            <div className="px-5 py-5">
                             <ModBrowser
                               serverName={server.name}
                               mcVersion={server.mc_version}
@@ -1980,6 +2061,7 @@ export function App() {
                                 refresh();
                               }}
                             />
+                            </div>
                           </DialogContent>
                         </Dialog>
 
@@ -2095,7 +2177,7 @@ export function App() {
                           <TabsContent value="network" className="space-y-4">
                             <div className="space-y-4">
                               <div>
-                                <Label htmlFor="hostIp">Host IP Address (Local Network)</Label>
+                                <Label htmlFor="hostIp">Host IP Address (LAN)</Label>
                                 <Input
                                   id="hostIp"
                                   type="text"
@@ -2112,7 +2194,7 @@ export function App() {
 
                               <div className="grid gap-4 sm:grid-cols-[1fr_140px_160px]">
                                 <div>
-                                  <Label htmlFor="publicDomain">Public Domain (WAN)</Label>
+                                  <Label htmlFor="publicDomain">Player-facing Domain</Label>
                                   <Input
                                     id="publicDomain"
                                     type="text"
@@ -2127,7 +2209,7 @@ export function App() {
                                   </p>
                                 </div>
                                 <div>
-                                  <Label htmlFor="publicPort">WAN Port</Label>
+                                  <Label htmlFor="publicPort">Public Port</Label>
                                   <Input
                                     id="publicPort"
                                     type="number"
@@ -2174,7 +2256,7 @@ export function App() {
                               <div className="rounded-sm border bg-muted/40 p-3">
                                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                                   <div>
-                                    <p className="text-sm font-semibold">Player address to share</p>
+                                    <p className="text-sm font-semibold">Player invite address</p>
                                     <code className="mt-1 block rounded-sm border bg-background px-3 py-2 text-sm font-semibold break-all">
                                       {formatMinecraftAddress(
                                         serverSettings.publicDomain || server.public_domain,
@@ -2198,22 +2280,22 @@ export function App() {
                                         host_proxy_port: serverSettings.hostProxyPort || server.host_proxy_port,
                                         host_ip: serverSettings.hostIp || server.host_ip,
                                       }));
-                                      toast.success("Player join instructions copied.");
+                                      toast.success("Player invite copied.");
                                     }}
                                   >
                                     <Copy className="mr-2 h-4 w-4" />
-                                    Copy Player Instructions
+                                    Copy Player Invite
                                   </Button>
                                 </div>
 
                                 <ol className="mt-3 text-xs text-muted-foreground space-y-1 list-decimal ml-4">
-                                  <li>Forward WAN TCP {serverSettings.publicPort || server.public_port} to {serverSettings.hostIp || server.host_ip || 'the nodev2 host'}:{serverSettings.hostProxyPort || server.host_proxy_port || server.public_port}.</li>
+                                  <li>Forward TCP {serverSettings.publicPort || server.public_port} to {serverSettings.hostIp || server.host_ip || 'the nodev2 host'}:{serverSettings.hostProxyPort || server.host_proxy_port || server.public_port}.</li>
                                   <li>The LXC proxy forwards host port {serverSettings.hostProxyPort || server.host_proxy_port || server.public_port} to the Minecraft container on port {server.local_port || 25565}.</li>
                                   <li>Point DNS for {serverSettings.publicDomain || server.public_domain || 'your public domain'} to your public IP address.</li>
                                   <li>Share the Minecraft address above with players. Do not share the admin panel URL.</li>
                                   <li>
                                     {requiresClientMods(server.edition)
-                                      ? "Use the Mods tab Friend Setup button to copy the exact client mod list."
+                                      ? "Use the Mods tab Client Setup button to copy the exact client mod list."
                                       : "Paper plugins run on the server; players do not install them locally."}
                                   </li>
                                 </ol>
@@ -2453,7 +2535,7 @@ export function App() {
                                   <li>• Use whitelist for private servers with friends</li>
                                   <li>• Keep Online Mode ON to prevent fake accounts</li>
                                   <li>• Only give OP to people you trust completely</li>
-                                  <li>• Use the whitelist for private WAN servers</li>
+                                  <li>• Use the whitelist for private servers reachable from the internet</li>
                                 </ul>
                               </div>
                             </div>
@@ -2939,7 +3021,7 @@ export function App() {
                       onClick={() => handleServerAction(server.name, "backup")}
                     >
                       <Upload className="mr-2 h-4 w-4" />
-                      💾 Create Backup
+                      Create Backup
                     </Button>
                   </div>
                 </CardContent>

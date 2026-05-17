@@ -189,7 +189,7 @@ export function ModpackExport({
           <div className="space-y-2 p-4 bg-blue-500/10 border border-blue-500/20 rounded-lg">
             <h3 className="font-semibold text-sm flex items-center gap-2">
               <Globe className="h-4 w-4" />
-              Player Instructions
+              Player Setup
             </h3>
             <ol className="text-sm text-muted-foreground space-y-1 list-decimal list-inside">
               <li>Download and install <strong>Prism Launcher</strong> (free, open source)</li>
