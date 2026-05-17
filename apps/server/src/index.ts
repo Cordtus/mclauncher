@@ -20,7 +20,11 @@ const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number(process.env.PORT || 8080);
 const REGISTRY_FILE = process.env.REGISTRY_FILE || "/opt/mc-lxd-manager/servers.json";
 const SERVER_ARCHIVES_FILE = process.env.SERVER_ARCHIVES_FILE || path.join(path.dirname(REGISTRY_FILE), "server-archives.json");
-const MAX_ACTIVE_SERVERS = Number(process.env.MAX_ACTIVE_SERVERS || 3);
+const CONFIGURED_MAX_ACTIVE_SERVERS = Number(process.env.MAX_ACTIVE_SERVERS || 3);
+const MAX_ACTIVE_SERVERS = Math.min(
+  Number.isInteger(CONFIGURED_MAX_ACTIVE_SERVERS) && CONFIGURED_MAX_ACTIVE_SERVERS > 0 ? CONFIGURED_MAX_ACTIVE_SERVERS : 3,
+  3
+);
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
 const ALLOW_CIDRS = (process.env.ALLOW_CIDRS ?? "127.0.0.0/8,192.168.0.0/24,10.70.48.0/24,10.172.19.0/24")
   .split(",")
@@ -1028,7 +1032,6 @@ app.post("/api/server-lifecycle/create", requireAdmin, async (req, res) => {
       memoryMb: req.body?.memory_mb ?? req.body?.memoryMb,
       cpuLimit: req.body?.cpu_limit ?? req.body?.cpuLimit,
       publicPort: req.body?.public_port ?? req.body?.publicPort,
-      managerContainer: req.body?.manager_container ?? req.body?.managerContainer,
     }, lifecycleOptions());
     res.json(result);
   } catch (err: any) {

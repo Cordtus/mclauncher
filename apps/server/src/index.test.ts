@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { createServer, type Server } from 'http';
@@ -157,6 +157,7 @@ describe('management gateway routes', () => {
     delete process.env.SERVER_ARCHIVES_FILE;
     delete process.env.SERVER_LIFECYCLE_COMMAND;
     delete process.env.SERVER_LIFECYCLE_USE_SUDO;
+    delete process.env.TEST_CONTROLLER_REQUEST_FILE;
     delete process.env.MAX_ACTIVE_SERVERS;
     delete process.env.ADMIN_TOKEN;
     delete process.env.ADMIN_AUTH_METHODS;
@@ -787,6 +788,70 @@ describe('management gateway routes', () => {
     });
     expect(body.archives).toHaveLength(1);
     expect(body.archives[0].id).toBe('mc-server-2-archive');
+  });
+
+  it('routes lifecycle mutations through the controller entry point only', async () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'mc-gateway-test-'));
+    tempDirs.push(tempDir);
+    const registryFile = path.join(tempDir, 'servers.json');
+    const controllerFile = path.join(tempDir, 'controller.cjs');
+    const requestFile = path.join(tempDir, 'controller-request.json');
+    writeFileSync(registryFile, JSON.stringify({ servers: [] }));
+    writeFileSync(controllerFile, [
+      '#!/usr/bin/env node',
+      'const fs = require("fs");',
+      'const request = JSON.parse(fs.readFileSync(0, "utf8"));',
+      'fs.writeFileSync(process.env.TEST_CONTROLLER_REQUEST_FILE, JSON.stringify({ argv: process.argv.slice(2), request }, null, 2));',
+      'process.stdout.write(JSON.stringify({ ok: true, message: `controlled ${request.action}` }));',
+      '',
+    ].join('\n'));
+    chmodSync(controllerFile, 0o755);
+
+    process.env.REGISTRY_FILE = registryFile;
+    process.env.SERVER_LIFECYCLE_COMMAND = controllerFile;
+    process.env.TEST_CONTROLLER_REQUEST_FILE = requestFile;
+    process.env.ADMIN_TOKEN = 'test-token';
+    process.env.ALLOW_CIDRS = '127.0.0.0/8';
+    process.env.WEB_DIST_DIR = tempDir;
+
+    const { app } = await import('./index.js');
+    const gateway = createServer(app);
+    await listen(gateway);
+    servers.push(gateway);
+
+    const response = await fetch(`${baseUrl(gateway)}/api/server-lifecycle/create`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer test-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        name: 'mc-server-2',
+        edition: 'paper',
+        mc_version: '1.21.1',
+        memory_mb: 4096,
+        cpu_limit: '2',
+        public_port: 34568,
+        manager_container: 'not-forwarded',
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, message: 'controlled create' });
+
+    const recorded = JSON.parse(readFileSync(requestFile, 'utf8'));
+    expect(recorded.argv).toEqual(['controller', '--json']);
+    expect(recorded.request).toEqual({
+      action: 'create',
+      params: {
+        name: 'mc-server-2',
+        edition: 'paper',
+        mcVersion: '1.21.1',
+        memoryMb: 4096,
+        cpuLimit: '2',
+        publicPort: 34568,
+      },
+    });
   });
 
   it('does not expose agent tokens when saving server config', async () => {

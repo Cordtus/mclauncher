@@ -1,11 +1,11 @@
 import { constants, existsSync, readFileSync, accessSync } from "fs";
 import path from "path";
-import { execFile } from "child_process";
-import { promisify } from "util";
+import { spawn } from "child_process";
 import { fileURLToPath } from "url";
 
-const execFileAsync = promisify(execFile);
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const HARD_MAX_ACTIVE_SERVERS = 3;
+const LIFECYCLE_ACTIONS = new Set(["list", "create", "archive", "restore", "delete-archive"]);
 
 export interface ServerArchiveRecord {
   id: string;
@@ -74,10 +74,10 @@ function commandLooksExecutable(command: string) {
 
 function lifecycleUnavailableReason(command: string) {
   if (!commandLooksExecutable(command)) {
-    return `Lifecycle helper is not executable: ${command}`;
+    return `Lifecycle controller is not executable: ${command}`;
   }
   if (!process.env.SERVER_LIFECYCLE_COMMAND && typeof process.getuid === "function" && process.getuid() !== 0 && !lifecycleUsesSudo()) {
-    return "Lifecycle helper requires root. Set SERVER_LIFECYCLE_USE_SUDO=true after granting mcmanager sudo access to the helper.";
+    return "Lifecycle controller requires root. Set SERVER_LIFECYCLE_USE_SUDO=true after granting mcmanager sudo access to the controller entry point.";
   }
   return undefined;
 }
@@ -101,20 +101,74 @@ export function getLifecycleState(options: LifecycleOptions, activeServers: numb
   return {
     configured: !unavailableReason,
     unavailableReason,
-    maxActiveServers: options.maxActiveServers,
+    maxActiveServers: Math.min(options.maxActiveServers, HARD_MAX_ACTIVE_SERVERS),
     activeServers,
-    slotsAvailable: Math.max(0, options.maxActiveServers - activeServers),
+    slotsAvailable: Math.max(0, Math.min(options.maxActiveServers, HARD_MAX_ACTIVE_SERVERS) - activeServers),
     archives,
   };
 }
 
-function optionArgs(values: Record<string, unknown>) {
-  const args: string[] = [];
-  for (const [key, value] of Object.entries(values)) {
-    if (value === undefined || value === null || value === "") continue;
-    args.push(`--${key.replace(/[A-Z]/g, (match) => `-${match.toLowerCase()}`)}`, String(value));
-  }
-  return args;
+function runController(command: string, args: string[], request: unknown, options: LifecycleOptions): Promise<LifecycleActionResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      env: {
+        ...process.env,
+        REGISTRY_FILE: options.registryFile,
+        SERVER_ARCHIVES_FILE: options.archivesFile,
+        MAX_ACTIVE_SERVERS: String(Math.min(options.maxActiveServers, HARD_MAX_ACTIVE_SERVERS)),
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+    const timeout = setTimeout(() => {
+      child.kill("SIGTERM");
+      reject(new Error("Lifecycle controller timed out"));
+    }, Number(process.env.SERVER_LIFECYCLE_TIMEOUT_MS || 10 * 60 * 1000));
+
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+      if (stdout.length > 1024 * 1024 * 4) {
+        child.kill("SIGTERM");
+        reject(new Error("Lifecycle controller output exceeded 4MB"));
+      }
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", (err) => {
+      clearTimeout(timeout);
+      reject(err);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timeout);
+      if (code !== 0) {
+        try {
+          const parsed = JSON.parse(stdout.trim());
+          reject(new Error(parsed.error || stderr.trim() || `Lifecycle controller failed with exit code ${code}`));
+        } catch {
+          reject(new Error(stderr.trim() || stdout.trim() || `Lifecycle controller failed with exit code ${code}`));
+        }
+        return;
+      }
+
+      const output = stdout.trim();
+      if (!output) {
+        resolve({ ok: true });
+        return;
+      }
+      try {
+        resolve(JSON.parse(output) as LifecycleActionResult);
+      } catch {
+        resolve({ ok: true, rawOutput: output });
+      }
+    });
+
+    child.stdin.end(`${JSON.stringify(request)}\n`);
+  });
 }
 
 export async function runLifecycleAction(
@@ -122,42 +176,25 @@ export async function runLifecycleAction(
   values: Record<string, unknown>,
   options: LifecycleOptions
 ): Promise<LifecycleActionResult> {
+  if (!LIFECYCLE_ACTIONS.has(action)) {
+    throw new Error(`Lifecycle action is not allowed: ${action}`);
+  }
+
   const helper = lifecycleCommand();
   const unavailableReason = lifecycleUnavailableReason(helper);
   if (unavailableReason) {
     throw new Error(unavailableReason);
   }
 
-  const helperArgs = [
-    action,
+  const controllerArgs = [
+    "controller",
     "--json",
-    "--registry-file",
-    options.registryFile,
-    "--archives-file",
-    options.archivesFile,
-    "--max-active",
-    String(options.maxActiveServers),
-    ...optionArgs(values),
   ];
 
   const command = lifecycleUsesSudo() ? "sudo" : helper;
-  const args = lifecycleUsesSudo() ? ["-n", helper, ...helperArgs] : helperArgs;
-  const { stdout } = await execFileAsync(command, args, {
-    env: {
-      ...process.env,
-      REGISTRY_FILE: options.registryFile,
-      SERVER_ARCHIVES_FILE: options.archivesFile,
-      MAX_ACTIVE_SERVERS: String(options.maxActiveServers),
-    },
-    maxBuffer: 1024 * 1024 * 4,
-    timeout: Number(process.env.SERVER_LIFECYCLE_TIMEOUT_MS || 10 * 60 * 1000),
-  });
-
-  const output = stdout.trim();
-  if (!output) return { ok: true };
-  try {
-    return JSON.parse(output) as LifecycleActionResult;
-  } catch {
-    return { ok: true, rawOutput: output };
-  }
+  const args = lifecycleUsesSudo() ? ["-n", helper, ...controllerArgs] : controllerArgs;
+  return runController(command, args, {
+    action,
+    params: values,
+  }, options);
 }

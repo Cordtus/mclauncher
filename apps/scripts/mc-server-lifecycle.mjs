@@ -12,8 +12,12 @@ const REPO_ROOT = path.resolve(SCRIPT_DIR, "../..");
 const DEFAULT_REGISTRY_FILE = process.env.REGISTRY_FILE || "/opt/mc-lxd-manager/servers.json";
 const DEFAULT_ARCHIVES_FILE = process.env.SERVER_ARCHIVES_FILE || path.join(path.dirname(DEFAULT_REGISTRY_FILE), "server-archives.json");
 const DEFAULT_MANAGER_CONTAINER = process.env.MANAGER_CONTAINER || "mc-manager";
-const DEFAULT_MAX_ACTIVE = Number(process.env.MAX_ACTIVE_SERVERS || 3);
+const HARD_MAX_ACTIVE_SERVERS = 3;
+const configuredMaxActive = Number(process.env.MAX_ACTIVE_SERVERS || HARD_MAX_ACTIVE_SERVERS);
+const DEFAULT_MAX_ACTIVE = Math.min(Number.isInteger(configuredMaxActive) && configuredMaxActive > 0 ? configuredMaxActive : HARD_MAX_ACTIVE_SERVERS, HARD_MAX_ACTIVE_SERVERS);
 const ARCHIVE_IMAGE_PREFIX = process.env.SERVER_ARCHIVE_IMAGE_PREFIX || "mc-archive-";
+const DEFAULT_LOCK_FILE = process.env.SERVER_LIFECYCLE_LOCK_FILE || "/run/lock/mc-server-lifecycle.lock";
+const CONTROLLER_ACTIONS = new Set(["list", "create", "archive", "restore", "delete-archive"]);
 
 function usage() {
   return [
@@ -25,6 +29,7 @@ function usage() {
     "  archive --name NAME [--label LABEL]",
     "  restore --archive-id ID [--name NAME] [--public-port PORT]",
     "  delete-archive --archive-id ID",
+    "  controller",
     "",
     "Common options:",
     "  --json",
@@ -92,7 +97,43 @@ function fail(options, err) {
 function requireRoot(action) {
   if (action === "list") return;
   if (typeof process.getuid !== "function" || process.getuid() !== 0) {
-    throw new Error("mc-server-lifecycle must be run as root for create, archive, restore, and delete-archive");
+    throw new Error("mc-server-lifecycle must be run as root for controller, create, archive, restore, and delete-archive");
+  }
+}
+
+function sleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function withLifecycleLock(options, fn) {
+  const lockFile = options.lockFile || DEFAULT_LOCK_FILE;
+  fs.mkdirSync(path.dirname(lockFile), { recursive: true });
+
+  const startedAt = Date.now();
+  const timeoutMs = parsePositiveInt(options.lockTimeoutMs, 120000, "lock-timeout-ms");
+  let lockFd = -1;
+
+  while (lockFd === -1) {
+    try {
+      lockFd = fs.openSync(lockFile, "wx", 0o600);
+      fs.writeFileSync(lockFd, `${process.pid}\n${new Date().toISOString()}\n`);
+    } catch (err) {
+      if (err?.code !== "EEXIST") throw err;
+      if (Date.now() - startedAt > timeoutMs) {
+        throw new Error(`Timed out waiting for lifecycle lock ${lockFile}`);
+      }
+      sleep(250);
+    }
+  }
+
+  try {
+    return fn();
+  } finally {
+    try {
+      if (lockFd !== -1) fs.closeSync(lockFd);
+    } finally {
+      fs.rmSync(lockFile, { force: true });
+    }
   }
 }
 
@@ -146,6 +187,10 @@ function parsePositiveInt(value, fallback, label) {
   const number = value === undefined || value === null || value === "" ? fallback : Number(value);
   if (!Number.isInteger(number) || number < 1) throw new Error(`${label} must be a positive integer`);
   return number;
+}
+
+function parseMaxActive(value) {
+  return Math.min(parsePositiveInt(value, DEFAULT_MAX_ACTIVE, "max-active"), HARD_MAX_ACTIVE_SERVERS);
 }
 
 function registryMode(options) {
@@ -262,16 +307,48 @@ function serverExists(name) {
   return runLxc(["info", name], true).ok;
 }
 
-function createServer(options) {
-  const registry = loadRegistry(options);
-  const maxActive = parsePositiveInt(options.maxActive, DEFAULT_MAX_ACTIVE, "max-active");
-  if (registry.servers.length >= maxActive) {
+function listServerContainerNames() {
+  let result;
+  try {
+    result = runLxc(["list", "--format=json"], true);
+  } catch {
+    return [];
+  }
+  if (!result.ok || !result.stdout.trim()) return [];
+  try {
+    const containers = JSON.parse(result.stdout);
+    if (!Array.isArray(containers)) return [];
+    return containers
+      .map((container) => String(container?.name || ""))
+      .filter((name) => /^mc-server-[a-zA-Z0-9_.-]*$/.test(name));
+  } catch {
+    return [];
+  }
+}
+
+function activeServerNames(registry) {
+  return new Set([
+    ...registry.servers.map((server) => String(server.name || "")).filter(Boolean),
+    ...listServerContainerNames(),
+  ]);
+}
+
+function ensureActiveServerCapacity(registry, options) {
+  const maxActive = parseMaxActive(options.maxActive);
+  const activeNames = activeServerNames(registry);
+  if (activeNames.size >= maxActive) {
     throw new Error(`Maximum active server limit reached (${maxActive})`);
   }
+  return { maxActive, activeNames };
+}
+
+function createServer(options) {
+  const registry = loadRegistry(options);
+  const { activeNames } = ensureActiveServerCapacity(registry, options);
 
   const name = safeName(options.name || nextServerName(registry), "server name");
   if (registry.servers.some((server) => server.name === name)) throw new Error(`Server ${name} is already registered`);
-  if (serverExists(name)) throw new Error(`LXD container ${name} already exists`);
+  if (activeNames.has(name) || serverExists(name)) throw new Error(`LXD container ${name} already exists`);
 
   const edition = String(options.edition || "paper").toLowerCase();
   if (!["paper", "vanilla"].includes(edition)) {
@@ -357,14 +434,11 @@ function restoreArchive(options) {
   if (!archive) throw new Error(`Archive ${archiveId} not found`);
 
   const registry = loadRegistry(options);
-  const maxActive = parsePositiveInt(options.maxActive, DEFAULT_MAX_ACTIVE, "max-active");
-  if (registry.servers.length >= maxActive) {
-    throw new Error(`Maximum active server limit reached (${maxActive})`);
-  }
+  const { activeNames } = ensureActiveServerCapacity(registry, options);
 
   const name = safeName(options.name || archive.server.name || archive.sourceName, "server name");
   if (registry.servers.some((server) => server.name === name)) throw new Error(`Server ${name} is already registered`);
-  if (serverExists(name)) throw new Error(`LXD container ${name} already exists`);
+  if (activeNames.has(name) || serverExists(name)) throw new Error(`LXD container ${name} already exists`);
   const publicPort = parsePort(options.publicPort, archive.server.public_port || 34567, "public-port");
 
   runLxc(["launch", archive.imageAlias, name]);
@@ -419,14 +493,107 @@ function deleteArchive(options) {
 function listState(options) {
   const registry = loadRegistry(options);
   const archives = loadArchives(options);
-  const maxActive = parsePositiveInt(options.maxActive, DEFAULT_MAX_ACTIVE, "max-active");
+  const maxActive = parseMaxActive(options.maxActive);
+  const activeNames = activeServerNames(registry);
   return {
     ok: true,
     maxActiveServers: maxActive,
-    activeServers: registry.servers.length,
-    slotsAvailable: Math.max(0, maxActive - registry.servers.length),
+    activeServers: activeNames.size,
+    slotsAvailable: Math.max(0, maxActive - activeNames.size),
     archives,
   };
+}
+
+function readStdin() {
+  return fs.readFileSync(0, "utf8");
+}
+
+function sanitizeControllerRequest(request, baseOptions) {
+  const action = String(request?.action || "").trim();
+  if (!CONTROLLER_ACTIONS.has(action)) {
+    throw new Error(`Lifecycle controller action is not allowed: ${action || "(empty)"}`);
+  }
+
+  const params = request?.params && typeof request.params === "object" ? request.params : {};
+  const options = {
+    ...baseOptions,
+    maxActive: HARD_MAX_ACTIVE_SERVERS,
+  };
+
+  if (action === "create") {
+    return {
+      action,
+      options: {
+        ...options,
+        name: params.name,
+        edition: params.edition,
+        mcVersion: params.mcVersion,
+        memoryMb: params.memoryMb,
+        cpuLimit: params.cpuLimit,
+        publicPort: params.publicPort,
+      },
+    };
+  }
+
+  if (action === "archive") {
+    return {
+      action,
+      options: {
+        ...options,
+        name: params.name,
+        label: params.label,
+      },
+    };
+  }
+
+  if (action === "restore") {
+    return {
+      action,
+      options: {
+        ...options,
+        archiveId: params.archiveId,
+        name: params.name,
+        publicPort: params.publicPort,
+      },
+    };
+  }
+
+  if (action === "delete-archive") {
+    return {
+      action,
+      options: {
+        ...options,
+        archiveId: params.archiveId,
+      },
+    };
+  }
+
+  return { action, options };
+}
+
+function dispatchLifecycleAction(action, options) {
+  switch (action) {
+    case "list":
+      return listState(options);
+    case "create":
+      return createServer(options);
+    case "archive":
+      return archiveServer(options);
+    case "restore":
+      return restoreArchive(options);
+    case "delete-archive":
+      return deleteArchive(options);
+    default:
+      throw new Error(`Unknown action: ${action}`);
+  }
+}
+
+function runController(options) {
+  let request = {};
+  const body = readStdin().trim();
+  if (body) request = JSON.parse(body);
+  const sanitized = sanitizeControllerRequest(request, options);
+  return withLifecycleLock(sanitized.options, () => dispatchLifecycleAction(sanitized.action, sanitized.options));
 }
 
 function main() {
@@ -441,6 +608,9 @@ function main() {
   requireRoot(action);
 
   switch (action) {
+    case "controller":
+      printResult(options, runController(options));
+      return;
     case "list":
       printResult(options, listState(options));
       return;

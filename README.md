@@ -61,7 +61,7 @@ Parameters:
 
 Active server registration is capped at 3 slots. After the first server is
 online, use the **Server Fleet** panel in the UI or the root-only lifecycle
-helper to create additional servers, archive a server into an LXD image, or
+controller to create additional servers, archive a server into an LXD image, or
 restore an archived server.
 
 ### 3. Access Web UI
@@ -104,10 +104,12 @@ passkey; it does not authorize server management by itself. Set
 
 ### Create, Archive, and Restore Servers
 
-The lifecycle helper is intentionally root-only because it creates and deletes
-LXD containers and published images. It stores active servers in
+The lifecycle controller is intentionally root-only because it creates and
+deletes LXD containers and published images. It stores active servers in
 `/opt/mc-lxd-manager/servers.json` and archived image metadata in
-`/opt/mc-lxd-manager/server-archives.json`.
+`/opt/mc-lxd-manager/server-archives.json`. The controller entry point accepts
+only `create`, `archive`, `restore`, `delete-archive`, and `list` requests,
+serializes them with a lock, and caps the live-server count at 3 containers.
 
 ```bash
 # Create a second active server slot
@@ -132,9 +134,14 @@ sudo ./apps/scripts/mc-server-lifecycle.mjs restore \
 ```
 
 The web UI exposes these actions from **Server Fleet**. If the panel says the
-host lifecycle helper needs setup, either run the helper from the LXD host as
-root or configure `SERVER_LIFECYCLE_COMMAND` plus a narrow sudo rule for the
-management service.
+host lifecycle controller needs setup, either run the helper from the LXD host
+as root or configure `SERVER_LIFECYCLE_COMMAND` plus a narrow sudo rule for the
+management service. Do not grant the gateway broad `lxc` or shell sudo access;
+the sudo target should be limited to the controller entry point:
+
+```sudoers
+mcmanager ALL=(root) NOPASSWD: /opt/mc-lxd-manager/apps/scripts/mc-server-lifecycle.mjs controller --json
+```
 
 ### Stop/Start Containers
 
