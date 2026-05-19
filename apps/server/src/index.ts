@@ -26,6 +26,8 @@ const MAX_ACTIVE_SERVERS = Math.min(
   3
 );
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
+const DEV_ADMIN_LOGIN = (process.env.DEV_ADMIN_LOGIN ?? "false").toLowerCase() === "true";
+const DEV_ADMIN_SECRET = DEV_ADMIN_LOGIN ? randomBytes(32).toString("hex") : "";
 const ALLOW_CIDRS = (process.env.ALLOW_CIDRS ?? "127.0.0.0/8,192.168.0.0/24,10.70.48.0/24,10.172.19.0/24")
   .split(",")
   .map((s) => s.trim())
@@ -62,6 +64,13 @@ const PUBLIC_RATE_LIMIT_WINDOW_MS = Number(process.env.PUBLIC_RATE_LIMIT_WINDOW_
 const PUBLIC_RATE_LIMIT_MAX = Number(process.env.PUBLIC_RATE_LIMIT_MAX || 60);
 const AUTH_RATE_LIMIT_WINDOW_MS = Number(process.env.AUTH_RATE_LIMIT_WINDOW_MS || 60 * 1000);
 const AUTH_RATE_LIMIT_MAX = Number(process.env.AUTH_RATE_LIMIT_MAX || 20);
+const SERVER_EVENTS_INTERVAL_MS = Number(process.env.SERVER_EVENTS_INTERVAL_MS || 5000);
+const SERVER_LOG_EVENTS_INTERVAL_MS = Number(process.env.SERVER_LOG_EVENTS_INTERVAL_MS || 2000);
+const SERVER_LOG_EVENT_MAX_LINES = Number(process.env.SERVER_LOG_EVENT_MAX_LINES || 200);
+const PUBLIC_SERVER_STATE_CACHE_TTL_MS = Math.max(
+  1000,
+  Number(process.env.PUBLIC_SERVER_STATE_CACHE_TTL_MS || SERVER_EVENTS_INTERVAL_MS)
+);
 const AGENT_ALLOWED_CIDRS = (process.env.AGENT_ALLOWED_CIDRS ?? "10.70.48.0/24")
   .split(",")
   .map((s) => s.trim())
@@ -83,9 +92,9 @@ interface ServerEntry {
   agent_url: string; // http://container-ip:9090
   local_ip?: string; // Container IP (e.g., 10.70.48.204)
   local_port?: number; // Minecraft port (usually 25565)
-  host_ip?: string; // LXD host IP for local network connections (e.g., 192.168.0.170)
-  host_proxy_port?: number; // LXD host proxy port that receives router-forwarded traffic
-  public_port: number; // LXD proxy port on host
+  host_ip?: string; // LAN IP used for same-network Minecraft connections (e.g., 192.168.0.170)
+  host_proxy_port?: number; // Port that receives router-forwarded Minecraft traffic
+  public_port: number; // Public Minecraft port
   public_domain?: string; // Optional public domain (e.g., mc.yourdomain.com)
   agent_token?: string; // Shared token for manager-to-agent requests
   memory_mb: number;
@@ -98,6 +107,48 @@ interface ServerEntry {
 interface ServerRegistry {
   servers: ServerEntry[];
 }
+
+type ServerRow = {
+  name: string;
+  status: "Running" | "Stopped" | "Unreachable";
+  local_ip: string;
+  local_port: number;
+  host_ip: string | null;
+  host_proxy_port: number | null;
+  public_port: number;
+  public_domain: string | null;
+  memory_mb: number;
+  cpu_limit: string;
+  edition: string;
+  mc_version: string;
+  loader_version: string | null;
+  agent_url: string;
+  minecraft: unknown;
+};
+
+type PublicServerRow = {
+  name: string;
+  status: "Running";
+  edition: string;
+  mc_version: string;
+  public_address: string;
+  players: {
+    online: number;
+    max: number;
+  };
+  description: string | null;
+  version: string | null;
+  latency: number | null;
+  requires_client_mods: boolean;
+  modpack_url: string | null;
+  mrpack_url: string | null;
+  modlist_url: string | null;
+};
+
+type PublicServerStateSnapshot = {
+  generatedAt: string;
+  servers: PublicServerRow[];
+};
 
 type ModpackLoader = modpack.ModpackMetadata["loader"];
 type PublicModpackCacheEntry = {
@@ -119,6 +170,11 @@ type PublicMrpackCacheEntry = {
 const MODPACK_LOADERS = new Set<ModpackLoader>(["fabric", "forge", "neoforge", "quilt"]);
 const publicModpackCache = new Map<string, PublicModpackCacheEntry>();
 const publicMrpackCache = new Map<string, PublicMrpackCacheEntry>();
+let publicServerStateCache: {
+  expiresAt: number;
+  value?: PublicServerStateSnapshot;
+  promise?: Promise<PublicServerStateSnapshot>;
+} | null = null;
 
 function parsePasskeyRegistrationCodes(value: string): PasskeyRegistrationCodeInput[] {
   return value
@@ -261,7 +317,7 @@ if (TRUST_PROXY) {
 
 const passkeys = new PasskeyService({
   enabled: PASSKEYS_ENABLED && ADMIN_AUTH_METHODS.has("passkey"),
-  rpName: process.env.PASSKEY_RP_NAME || "MC LXD Manager",
+  rpName: process.env.PASSKEY_RP_NAME || "Server Portal",
   rpId: process.env.PASSKEY_RP_ID || undefined,
   origin: process.env.PASSKEY_ORIGIN || undefined,
   storeFile: PASSKEY_STORE_FILE,
@@ -273,6 +329,7 @@ const passkeys = new PasskeyService({
 
 function adminAuthConfigured() {
   return (
+    DEV_ADMIN_LOGIN ||
     (ADMIN_AUTH_METHODS.has("token") && Boolean(ADMIN_TOKEN)) ||
     (ADMIN_AUTH_METHODS.has("passkey") && passkeys.hasCredentials())
   );
@@ -284,7 +341,7 @@ function adminBootstrapConfigured() {
 
 if (!isCreatePasskeySetupCodeCommand && !adminBootstrapConfigured()) {
   console.warn(
-    "Warning: no admin authentication credential is configured. Set PASSKEY_REGISTRATION_CODES or ADMIN_TOKEN to bootstrap gateway admin access."
+    "Warning: no admin authentication credential is configured. Set PASSKEY_REGISTRATION_CODES or ADMIN_TOKEN to bootstrap server portal admin access."
   );
 }
 
@@ -355,7 +412,7 @@ function formatCreatedPasskeySetupCode(
     `Code ID: ${code.id}`,
     `Label: ${code.label || "(none)"}`,
     `Created At: ${code.createdAt}`,
-    "Use this code once in Admin Access to register a passkey.",
+    "Use this code once in Admin Login to register a passkey.",
   ].join("\n");
 }
 
@@ -418,6 +475,46 @@ function publicMinecraftAddress(server: ServerEntry) {
 
 function hasPublicMinecraftAddress(server: ServerEntry) {
   return Boolean(formatMinecraftAddress(server.public_domain, server.public_port));
+}
+
+function serverRequiresClientMods(server: Pick<ServerEntry, "edition">) {
+  return MODPACK_LOADERS.has(String(server.edition || "").toLowerCase() as ModpackLoader);
+}
+
+function publicServerRow(server: ServerEntry, row: ServerRow): PublicServerRow | null {
+  const publicAddress = formatMinecraftAddress(server.public_domain, server.public_port);
+  if (row.status !== "Running" || !publicAddress) return null;
+
+  const minecraft = row.minecraft && typeof row.minecraft === "object"
+    ? row.minecraft as {
+      players?: { online?: unknown; max?: unknown };
+      description?: unknown;
+      version?: unknown;
+      latency?: unknown;
+    }
+    : {};
+  const players = minecraft.players && typeof minecraft.players === "object" ? minecraft.players : {};
+  const requiresClientMods = serverRequiresClientMods(server);
+  const encodedName = encodeURIComponent(server.name);
+
+  return {
+    name: server.name,
+    status: "Running",
+    edition: server.edition,
+    mc_version: server.mc_version,
+    public_address: publicAddress,
+    players: {
+      online: Number(players.online || 0),
+      max: Number(players.max || 0),
+    },
+    description: typeof minecraft.description === "string" ? minecraft.description : null,
+    version: typeof minecraft.version === "string" ? minecraft.version : null,
+    latency: Number.isFinite(Number(minecraft.latency)) ? Number(minecraft.latency) : null,
+    requires_client_mods: requiresClientMods,
+    modpack_url: requiresClientMods ? `/public/${encodedName}/modpack` : null,
+    mrpack_url: requiresClientMods ? `/public/${encodedName}/modpack.mrpack` : null,
+    modlist_url: requiresClientMods ? `/public/${encodedName}/modlist.txt` : null,
+  };
 }
 
 function publicModpackCacheKey(server: ServerEntry) {
@@ -527,6 +624,15 @@ function requestAllowedByCidr(req: Request): boolean {
   return ALLOW_CIDRS.some((c) => ipInCidr(ip, c));
 }
 
+function requestFromLoopback(req: Request): boolean {
+  const ip = clientIp(req);
+  return ip === "127.0.0.1" || ip === "::1";
+}
+
+function devAdminAllowed(req: Request): boolean {
+  return DEV_ADMIN_LOGIN && requestFromLoopback(req);
+}
+
 function requestOrigin(req: Request) {
   const proto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim() || req.protocol;
   const host = String(req.headers.host || "");
@@ -556,6 +662,7 @@ function requireSameOriginUnsafeApi(req: Request, res: Response, next: () => voi
   const isAdminMutatingPath = (
     req.path.startsWith("/api/servers/") ||
     req.path.startsWith("/api/server-lifecycle") ||
+    req.path === "/api/auth/dev/login" ||
     req.path === "/api/auth/logout" ||
     req.path === "/api/auth/passkeys/register/options" ||
     req.path === "/api/auth/passkeys/register/verify" ||
@@ -707,6 +814,34 @@ function signedTokenCookieMatches(cookieValue: string) {
   }
 }
 
+function signedDevSession() {
+  const expiresAt = Date.now() + ADMIN_COOKIE_TTL_MS;
+  const payload = base64url(JSON.stringify({
+    type: "dev",
+    nonce: base64url(randomBytes(16)),
+    expiresAt,
+  }));
+  const signature = base64url(createHmac("sha256", DEV_ADMIN_SECRET).update(payload).digest());
+  return { cookieValue: `dev.${payload}.${signature}`, expiresAt };
+}
+
+function signedDevCookieMatches(cookieValue: string) {
+  if (!DEV_ADMIN_LOGIN || !DEV_ADMIN_SECRET || !cookieValue.startsWith("dev.")) return false;
+  const [, payload, signature] = cookieValue.split(".");
+  if (!payload || !signature) return false;
+  const expected = base64url(createHmac("sha256", DEV_ADMIN_SECRET).update(payload).digest());
+  const left = Buffer.from(signature);
+  const right = Buffer.from(expected);
+  if (left.length !== right.length || !timingSafeEqual(left, right)) return false;
+
+  try {
+    const data = JSON.parse(fromBase64url(payload).toString("utf8"));
+    return data?.type === "dev" && Number(data.expiresAt) > Date.now();
+  } catch {
+    return false;
+  }
+}
+
 function sessionTokenFromRequest(req: Request): string {
   const cookie = adminCookie(req);
   if (cookie.startsWith("passkey.")) return cookie.slice("passkey.".length);
@@ -715,6 +850,7 @@ function sessionTokenFromRequest(req: Request): string {
 
 function requestHasAdminAuth(req: Request): boolean {
   const auth = String(req.headers["authorization"] || "");
+  if (devAdminAllowed(req) && signedDevCookieMatches(adminCookie(req))) return true;
   if (ADMIN_AUTH_METHODS.has("token") && auth.startsWith("Bearer ")) {
     if (bearerTokenMatches(auth.slice("Bearer ".length).trim())) return true;
   }
@@ -805,6 +941,108 @@ function assertSafePathSegment(value: string, label: string) {
   }
 }
 
+async function listServerRows(registry: ServerRegistry): Promise<ServerRow[]> {
+  const results: ServerRow[] = [];
+
+  for (const server of registry.servers) {
+    const localIp = server.local_ip || server.agent_url.match(/https?:\/\/([^:]+)/)?.[1] || "";
+    const localPort = server.local_port || 25565;
+    const baseRow = {
+      name: server.name,
+      local_ip: localIp,
+      local_port: localPort,
+      host_ip: server.host_ip || null,
+      host_proxy_port: server.host_proxy_port || null,
+      public_port: server.public_port,
+      public_domain: server.public_domain || null,
+      memory_mb: server.memory_mb,
+      cpu_limit: server.cpu_limit || "",
+      edition: server.edition,
+      mc_version: server.mc_version,
+      loader_version: server.loader_version || null,
+      agent_url: server.agent_url,
+    };
+
+    try {
+      const statusRes = await proxyToAgent(server, "/status");
+      const status = await statusRes.json();
+
+      results.push({
+        ...baseRow,
+        status: status.active ? "Running" : "Stopped",
+        minecraft: status.minecraft || null,
+      });
+    } catch {
+      results.push({
+        ...baseRow,
+        status: "Unreachable",
+        minecraft: null,
+      });
+    }
+  }
+
+  return results;
+}
+
+async function listPublicServerRows(registry: ServerRegistry): Promise<PublicServerRow[]> {
+  const publicServers = registry.servers.filter(hasPublicMinecraftAddress);
+  const rows = await listServerRows({ servers: publicServers });
+  return rows
+    .map((row) => {
+      const server = publicServers.find((candidate) => candidate.name === row.name);
+      return server ? publicServerRow(server, row) : null;
+    })
+    .filter((row): row is PublicServerRow => Boolean(row));
+}
+
+async function serverStateSnapshot() {
+  const registry = loadRegistry();
+  const [servers, lifecycle] = await Promise.all([
+    listServerRows(registry),
+    getLifecycleState(lifecycleOptions(), registryServerNames(registry)),
+  ]);
+  return { generatedAt: new Date().toISOString(), servers, lifecycle };
+}
+
+async function readPublicServerStateSnapshot(): Promise<PublicServerStateSnapshot> {
+  return {
+    generatedAt: new Date().toISOString(),
+    servers: await listPublicServerRows(loadRegistry()),
+  };
+}
+
+async function publicServerStateSnapshot(): Promise<PublicServerStateSnapshot> {
+  const now = Date.now();
+  if (publicServerStateCache?.value && publicServerStateCache.expiresAt > now) {
+    return publicServerStateCache.value;
+  }
+  if (publicServerStateCache?.promise) return publicServerStateCache.promise;
+
+  const promise = readPublicServerStateSnapshot()
+    .then((value) => {
+      publicServerStateCache = {
+        value,
+        expiresAt: Date.now() + PUBLIC_SERVER_STATE_CACHE_TTL_MS,
+      };
+      return value;
+    })
+    .catch((err) => {
+      if (publicServerStateCache?.promise === promise) publicServerStateCache = null;
+      throw err;
+    });
+
+  publicServerStateCache = {
+    promise,
+    expiresAt: now + PUBLIC_SERVER_STATE_CACHE_TTL_MS,
+  };
+  return promise;
+}
+
+function writeSseEvent(res: Response, event: string, data: unknown) {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
 // Serve static frontend
 app.use(express.static(WEB_DIST_DIR));
 
@@ -816,6 +1054,7 @@ app.get("/api/auth/config", (req, res) => {
   res.json({
     authMethods: Array.from(ADMIN_AUTH_METHODS),
     cidrRequired: ADMIN_REQUIRE_CIDR,
+    devLogin: { enabled: devAdminAllowed(req) },
     passkeys: passkeys.publicConfig(authContext(req)),
   });
 });
@@ -825,10 +1064,10 @@ app.get("/api/auth/session", (req, res) => {
     return res.status(403).json({ authenticated: false, error: `Forbidden from ${clientIp(req)}` });
   }
   if (!adminAuthConfigured()) {
-    return res.status(503).json({ authenticated: false });
+    return res.json({ authenticated: false });
   }
   if (!requestHasAdminAuth(req)) {
-    return res.status(401).json({ authenticated: false });
+    return res.json({ authenticated: false });
   }
   res.json({ authenticated: true });
 });
@@ -846,6 +1085,26 @@ app.post("/api/auth/token/login", authRateLimit, (req, res) => {
     }
 
     const session = signedTokenSession();
+    setAdminCookie(req, res, session.cookieValue, session.expiresAt);
+    res.json({ ok: true, expiresAt: new Date(session.expiresAt).toISOString() });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post("/api/auth/dev/login", authRateLimit, (req, res) => {
+  try {
+    if (!DEV_ADMIN_LOGIN) {
+      return res.status(404).json({ error: "Dev admin login is not enabled" });
+    }
+    if (!devAdminAllowed(req)) {
+      return res.status(403).json({ error: "Dev admin login is only available from localhost" });
+    }
+    if (!requestAllowedByCidr(req)) {
+      return res.status(403).json({ error: `Forbidden from ${clientIp(req)}` });
+    }
+
+    const session = signedDevSession();
     setAdminCookie(req, res, session.cookieValue, session.expiresAt);
     res.json({ ok: true, expiresAt: new Date(session.expiresAt).toISOString() });
   } catch (err: any) {
@@ -940,68 +1199,123 @@ app.post("/api/auth/logout", (req, res) => {
 
 // List servers
 app.get("/api/servers", requireAdmin, async (_req, res) => {
-  const registry = loadRegistry();
-  const results = [];
+  res.json(await listServerRows(loadRegistry()));
+});
 
-  for (const server of registry.servers) {
-    // Extract local IP from agent URL
-    const localIp = server.local_ip || server.agent_url.match(/https?:\/\/([^:]+)/)?.[1] || "";
-    const localPort = server.local_port || 25565;
+app.get("/api/servers/events", requireAdmin, async (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders?.();
 
-    try {
-      const statusRes = await proxyToAgent(server, "/status");
-      const status = await statusRes.json();
+  let previousPayload = "";
+  let closed = false;
+  let sending = false;
+  let interval: ReturnType<typeof setInterval> | null = null;
 
-      results.push({
-        name: server.name,
-        status: status.active ? "Running" : "Stopped",
-
-        // Connection info
-        local_ip: localIp,
-        local_port: localPort,
-        host_ip: server.host_ip || null,
-        host_proxy_port: server.host_proxy_port || null,
-        public_port: server.public_port,
-        public_domain: server.public_domain || null,
-
-        // Server info
-        memory_mb: server.memory_mb,
-        cpu_limit: server.cpu_limit || "",
-        edition: server.edition,
-        mc_version: server.mc_version,
-        loader_version: server.loader_version || null,
-        agent_url: server.agent_url,
-
-        // Minecraft status (players, MOTD, etc.)
-        minecraft: status.minecraft || null,
-      });
-    } catch {
-      results.push({
-        name: server.name,
-        status: "Unreachable",
-
-        // Connection info
-        local_ip: localIp,
-        local_port: localPort,
-        host_ip: server.host_ip || null,
-        host_proxy_port: server.host_proxy_port || null,
-        public_port: server.public_port,
-        public_domain: server.public_domain || null,
-
-        // Server info
-        memory_mb: server.memory_mb,
-        cpu_limit: server.cpu_limit || "",
-        edition: server.edition,
-        mc_version: server.mc_version,
-        loader_version: server.loader_version || null,
-        agent_url: server.agent_url,
-
-        minecraft: null,
-      });
+  const closeStream = () => {
+    closed = true;
+    if (interval) {
+      clearInterval(interval);
+      interval = null;
     }
-  }
+  };
 
-  res.json(results);
+  req.on("close", closeStream);
+
+  const sendSnapshot = async () => {
+    if (closed || sending) return;
+    if (!requestAllowedByCidr(req) || !requestHasAdminAuth(req)) {
+      writeSseEvent(res, "server-state-error", {
+        generatedAt: new Date().toISOString(),
+        error: "Unauthorized",
+      });
+      closeStream();
+      res.end();
+      return;
+    }
+    sending = true;
+    try {
+      const snapshot = await serverStateSnapshot();
+      const payload = JSON.stringify({ servers: snapshot.servers, lifecycle: snapshot.lifecycle });
+      if (payload !== previousPayload) {
+        writeSseEvent(res, "server-state", snapshot);
+        previousPayload = payload;
+      } else {
+        writeSseEvent(res, "heartbeat", { generatedAt: snapshot.generatedAt });
+      }
+    } catch (err: any) {
+      writeSseEvent(res, "server-state-error", {
+        generatedAt: new Date().toISOString(),
+        error: err.message || "Failed to read server state",
+      });
+    } finally {
+      sending = false;
+    }
+  };
+
+  void sendSnapshot();
+  interval = setInterval(() => {
+    void sendSnapshot();
+  }, Math.max(1000, SERVER_EVENTS_INTERVAL_MS));
+  if (closed && interval) closeStream();
+});
+
+app.get("/api/public/servers", publicRateLimit, async (_req, res) => {
+  const snapshot = await publicServerStateSnapshot();
+  res.json(snapshot.servers);
+});
+
+app.get("/api/public/servers/events", publicRateLimit, async (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders?.();
+
+  let previousPayload = "";
+  let closed = false;
+  let sending = false;
+  let interval: ReturnType<typeof setInterval> | null = null;
+
+  const closeStream = () => {
+    closed = true;
+    if (interval) {
+      clearInterval(interval);
+      interval = null;
+    }
+  };
+
+  req.on("close", closeStream);
+
+  const sendSnapshot = async () => {
+    if (closed || sending) return;
+    sending = true;
+    try {
+      const snapshot = await publicServerStateSnapshot();
+      const payload = JSON.stringify(snapshot.servers);
+      if (payload !== previousPayload) {
+        writeSseEvent(res, "public-server-state", snapshot);
+        previousPayload = payload;
+      } else {
+        writeSseEvent(res, "heartbeat", { generatedAt: snapshot.generatedAt });
+      }
+    } catch (err: any) {
+      writeSseEvent(res, "public-server-state-error", {
+        generatedAt: new Date().toISOString(),
+        error: err.message || "Failed to read public server state",
+      });
+    } finally {
+      sending = false;
+    }
+  };
+
+  void sendSnapshot();
+  interval = setInterval(() => {
+    void sendSnapshot();
+  }, Math.max(1000, SERVER_EVENTS_INTERVAL_MS));
+  if (closed && interval) closeStream();
 });
 
 function lifecycleOptions() {
@@ -1024,7 +1338,7 @@ function lifecycleCountIsAuthoritative() {
   );
 }
 
-// Server fleet lifecycle state and host-backed create/archive/restore actions
+// Managed server slot state and create/save/restore actions
 app.get("/api/server-lifecycle", requireAdmin, async (_req, res) => {
   const registry = loadRegistry();
   res.json(await getLifecycleState(lifecycleOptions(), registryServerNames(registry)));
@@ -1055,7 +1369,7 @@ app.post("/api/servers/:name/archive", requireAdmin, async (req, res) => {
     }, lifecycleOptions());
     res.json(result);
   } catch (err: any) {
-    res.status(400).json({ error: err.message || "Failed to archive server" });
+    res.status(400).json({ error: err.message || "Failed to save server" });
   }
 });
 
@@ -1069,7 +1383,7 @@ app.post("/api/server-lifecycle/archives/:id/restore", requireAdmin, async (req,
     }, lifecycleOptions());
     res.json(result);
   } catch (err: any) {
-    res.status(400).json({ error: err.message || "Failed to restore archive" });
+    res.status(400).json({ error: err.message || "Failed to restore saved server" });
   }
 });
 
@@ -1081,7 +1395,7 @@ app.delete("/api/server-lifecycle/archives/:id", requireAdmin, async (req, res) 
     }, lifecycleOptions());
     res.json(result);
   } catch (err: any) {
-    res.status(400).json({ error: err.message || "Failed to delete archive" });
+    res.status(400).json({ error: err.message || "Failed to delete saved server" });
   }
 });
 
@@ -1264,6 +1578,75 @@ app.get("/api/servers/:name/logs", requireAdmin, async (req, res) => {
   } catch (err: any) {
     res.status(500).send(err.message);
   }
+});
+
+app.get("/api/servers/:name/logs/events", requireAdmin, async (req, res) => {
+  const { name } = req.params;
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).send("Server not found");
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders?.();
+
+  let previousLogs = "";
+  let closed = false;
+  let sending = false;
+  let interval: ReturnType<typeof setInterval> | null = null;
+
+  const closeStream = () => {
+    closed = true;
+    if (interval) {
+      clearInterval(interval);
+      interval = null;
+    }
+  };
+
+  req.on("close", closeStream);
+
+  const sendLogs = async () => {
+    if (closed || sending) return;
+    if (!requestAllowedByCidr(req) || !requestHasAdminAuth(req)) {
+      writeSseEvent(res, "server-logs-error", {
+        generatedAt: new Date().toISOString(),
+        name,
+        error: "Unauthorized",
+      });
+      closeStream();
+      res.end();
+      return;
+    }
+    sending = true;
+    try {
+      const response = await proxyToAgent(server, "/logs");
+      const text = await response.text();
+      const logs = text.trim().split("\n").filter(Boolean).slice(-SERVER_LOG_EVENT_MAX_LINES).join("\n");
+      const generatedAt = new Date().toISOString();
+      if (logs !== previousLogs) {
+        writeSseEvent(res, "server-logs", { generatedAt, name, logs });
+        previousLogs = logs;
+      } else {
+        writeSseEvent(res, "heartbeat", { generatedAt });
+      }
+    } catch (err: any) {
+      writeSseEvent(res, "server-logs-error", {
+        generatedAt: new Date().toISOString(),
+        name,
+        error: err.message || "Failed to read server logs",
+      });
+    } finally {
+      sending = false;
+    }
+  };
+
+  void sendLogs();
+  interval = setInterval(() => {
+    void sendLogs();
+  }, Math.max(1000, SERVER_LOG_EVENTS_INTERVAL_MS));
+  if (closed && interval) closeStream();
 });
 
 // Get TPS
@@ -1696,6 +2079,59 @@ app.post("/api/servers/:name/plugins", requireAdmin, uploadSingleFile, (req, res
   proxyFileUpload(req, res, "/plugins")
 );
 
+app.get("/api/servers/:name/plugins/installed", requireAdmin, async (req, res) => {
+  try {
+    const { name } = req.params;
+    const registry = loadRegistry();
+    const server = registry.servers.find((s) => s.name === name);
+    if (!server) return res.status(404).json({ error: "Server not found" });
+
+    const response = await proxyToAgent(server, "/plugins/list");
+    const data = await readAgentResponse(response);
+    res.status(response.status).json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch("/api/servers/:name/plugins/:fileName/toggle", requireAdmin, async (req, res) => {
+  try {
+    const { name, fileName } = req.params;
+    assertSafePathSegment(fileName, "fileName");
+    const registry = loadRegistry();
+    const server = registry.servers.find((s) => s.name === name);
+    if (!server) return res.status(404).json({ error: "Server not found" });
+
+    const response = await proxyToAgent(server, `/plugins/${encodeURIComponent(fileName)}/toggle`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
+    const data = await readAgentResponse(response);
+    res.status(response.status).json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/servers/:name/plugins/:fileName", requireAdmin, async (req, res) => {
+  try {
+    const { name, fileName } = req.params;
+    assertSafePathSegment(fileName, "fileName");
+    const registry = loadRegistry();
+    const server = registry.servers.find((s) => s.name === name);
+    if (!server) return res.status(404).json({ error: "Server not found" });
+
+    const response = await proxyToAgent(server, `/plugins/${encodeURIComponent(fileName)}`, {
+      method: "DELETE",
+    });
+    const data = await readAgentResponse(response);
+    res.status(response.status).json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post("/api/servers/:name/mods", requireAdmin, uploadSingleFile, (req, res) =>
   proxyFileUpload(req, res, "/mods")
 );
@@ -1773,6 +2209,106 @@ app.post("/api/servers/:name/worlds/switch", requireAdmin, async (req, res) => {
     res.type("text/plain").send(text);
   } catch (err: any) {
     res.status(500).send(err.message);
+  }
+});
+
+// List worlds with metadata
+app.get("/api/servers/:name/worlds/details", requireAdmin, async (req, res) => {
+  const { name } = req.params;
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).json({ error: "Server not found" });
+
+  try {
+    const response = await proxyToAgent(server, "/worlds/list");
+    const data = await readAgentResponse(response);
+    res.status(response.status).json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Generate a new world
+app.post("/api/servers/:name/worlds/generate", requireAdmin, async (req, res) => {
+  const { name } = req.params;
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).json({ error: "Server not found" });
+
+  try {
+    const response = await proxyToAgent(server, "/worlds/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
+    const data = await readAgentResponse(response);
+    res.status(response.status).json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete a world
+app.delete("/api/servers/:name/worlds/:worldName", requireAdmin, async (req, res) => {
+  const { name, worldName } = req.params;
+  assertSafePathSegment(worldName, "worldName");
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).json({ error: "Server not found" });
+
+  try {
+    const response = await proxyToAgent(server, `/worlds/${encodeURIComponent(worldName)}`, {
+      method: "DELETE",
+    });
+    const data = await readAgentResponse(response);
+    res.status(response.status).json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Backup a world
+app.post("/api/servers/:name/worlds/:worldName/backup", requireAdmin, async (req, res) => {
+  const { name, worldName } = req.params;
+  assertSafePathSegment(worldName, "worldName");
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).json({ error: "Server not found" });
+
+  try {
+    const response = await proxyToAgent(server, `/worlds/${encodeURIComponent(worldName)}/backup`, {
+      method: "POST",
+    });
+    const data = await readAgentResponse(response);
+    res.status(response.status).json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Download/export a world zip
+app.get("/api/servers/:name/worlds/:worldName/download", requireAdmin, async (req, res) => {
+  const { name, worldName } = req.params;
+  assertSafePathSegment(worldName, "worldName");
+  const registry = loadRegistry();
+  const server = registry.servers.find((s) => s.name === name);
+  if (!server) return res.status(404).json({ error: "Server not found" });
+
+  try {
+    const response = await proxyToAgent(server, `/worlds/${encodeURIComponent(worldName)}/export`);
+    if (!response.ok) {
+      const data = await readAgentResponse(response);
+      return res.status(response.status).json(data);
+    }
+
+    const disposition = response.headers.get("content-disposition") || `attachment; filename="${worldName}.zip"`;
+    const contentType = response.headers.get("content-type") || "application/zip";
+    const bytes = Buffer.from(await response.arrayBuffer());
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Content-Disposition", disposition);
+    res.send(bytes);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 

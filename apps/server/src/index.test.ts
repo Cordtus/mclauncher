@@ -159,10 +159,13 @@ describe('management gateway routes', () => {
     delete process.env.SERVER_LIFECYCLE_USE_SUDO;
     delete process.env.SERVER_LIFECYCLE_CONTROLLER_URL;
     delete process.env.SERVER_LIFECYCLE_CONTROLLER_TOKEN;
+    delete process.env.SERVER_LIFECYCLE_CONTROLLER_TIMEOUT_MS;
+    delete process.env.SERVER_LIFECYCLE_CONTROLLER_MUTATION_TIMEOUT_MS;
     delete process.env.TEST_CONTROLLER_REQUEST_FILE;
     delete process.env.MAX_ACTIVE_SERVERS;
     delete process.env.ADMIN_TOKEN;
     delete process.env.ADMIN_AUTH_METHODS;
+    delete process.env.DEV_ADMIN_LOGIN;
     delete process.env.ADMIN_REQUIRE_CIDR;
     delete process.env.ALLOW_CIDRS;
     delete process.env.AGENT_ALLOWED_CIDRS;
@@ -277,6 +280,9 @@ describe('management gateway routes', () => {
     const noAuthResponse = await fetch(`${baseUrl(gateway)}/api/servers`);
     expect(noAuthResponse.status).toBe(401);
 
+    const noAuthEventsResponse = await fetch(`${baseUrl(gateway)}/api/servers/events`);
+    expect(noAuthEventsResponse.status).toBe(401);
+
     const noIconAuthResponse = await fetch(`${baseUrl(gateway)}/api/servers/test-server/mods/example.jar/icon`);
     expect(noIconAuthResponse.status).toBe(401);
 
@@ -290,6 +296,357 @@ describe('management gateway routes', () => {
     });
     expect(adminResponse.status).toBe(200);
     expect(await adminResponse.json()).toEqual([]);
+
+    const streamResponse = await fetch(`${baseUrl(gateway)}/api/servers/events`, {
+      headers: { Authorization: 'Bearer test-token' },
+    });
+    expect(streamResponse.status).toBe(200);
+    expect(streamResponse.headers.get('content-type')).toContain('text/event-stream');
+    const reader = streamResponse.body!.getReader();
+    let streamText = '';
+    for (let index = 0; index < 5 && !streamText.includes('"servers":[]'); index += 1) {
+      const chunk = await reader.read();
+      streamText += Buffer.from(chunk.value || new Uint8Array()).toString('utf8');
+    }
+    await reader.cancel();
+    expect(streamText).toContain('event: server-state');
+    expect(streamText).toContain('"servers":[]');
+  });
+
+  it('serves only sanitized running servers on public read-only routes', async () => {
+    let runningStatusRequests = 0;
+    let privateStatusRequests = 0;
+    let stoppedStatusRequests = 0;
+    const runningAgent = createServer((req, res) => {
+      res.setHeader('Content-Type', 'application/json');
+      if (req.url === '/status') {
+        runningStatusRequests += 1;
+        res.end(JSON.stringify({
+          active: true,
+          minecraft: {
+            online: true,
+            players: { online: 2, max: 20 },
+            description: 'Public survival',
+            version: '1.21.1',
+            latency: 18,
+          },
+        }));
+        return;
+      }
+      res.statusCode = 404;
+      res.end(JSON.stringify({ error: 'not found' }));
+    });
+    const privateAgent = createServer((req, res) => {
+      res.setHeader('Content-Type', 'application/json');
+      if (req.url === '/status') {
+        privateStatusRequests += 1;
+        res.end(JSON.stringify({
+          active: true,
+          minecraft: {
+            online: true,
+            players: { online: 5, max: 20 },
+          },
+        }));
+        return;
+      }
+      res.statusCode = 404;
+      res.end(JSON.stringify({ error: 'not found' }));
+    });
+    const stoppedAgent = createServer((req, res) => {
+      res.setHeader('Content-Type', 'application/json');
+      if (req.url === '/status') {
+        stoppedStatusRequests += 1;
+        res.end(JSON.stringify({ active: false, minecraft: null }));
+        return;
+      }
+      res.statusCode = 404;
+      res.end(JSON.stringify({ error: 'not found' }));
+    });
+    await listen(runningAgent);
+    await listen(privateAgent);
+    await listen(stoppedAgent);
+    servers.push(runningAgent, privateAgent, stoppedAgent);
+
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'mc-gateway-test-'));
+    tempDirs.push(tempDir);
+    const registryFile = path.join(tempDir, 'servers.json');
+    writeFileSync(registryFile, JSON.stringify({
+      servers: [
+        {
+          name: 'public-running',
+          agent_url: baseUrl(runningAgent),
+          local_ip: '10.70.48.21',
+          host_ip: '192.168.0.170',
+          public_port: 25565,
+          public_domain: 'play.example.test',
+          memory_mb: 4096,
+          cpu_limit: '2',
+          edition: 'fabric',
+          mc_version: '1.21.1',
+        },
+        {
+          name: 'private-running',
+          agent_url: baseUrl(privateAgent),
+          public_port: 25565,
+          memory_mb: 4096,
+          edition: 'paper',
+          mc_version: '1.21.1',
+        },
+        {
+          name: 'public-stopped',
+          agent_url: baseUrl(stoppedAgent),
+          public_port: 25565,
+          public_domain: 'stopped.example.test',
+          memory_mb: 4096,
+          edition: 'paper',
+          mc_version: '1.21.1',
+        },
+      ],
+    }));
+
+    process.env.REGISTRY_FILE = registryFile;
+    process.env.ADMIN_TOKEN = 'test-token';
+    process.env.ALLOW_CIDRS = '127.0.0.0/8';
+    process.env.AGENT_ALLOWED_CIDRS = '127.0.0.0/8';
+    process.env.AGENT_ALLOWED_PORTS = [
+      new URL(baseUrl(runningAgent)).port,
+      new URL(baseUrl(privateAgent)).port,
+      new URL(baseUrl(stoppedAgent)).port,
+    ].join(',');
+    process.env.WEB_DIST_DIR = tempDir;
+
+    const { app } = await import('./index.js');
+    const gateway = createServer(app);
+    await listen(gateway);
+    servers.push(gateway);
+
+    const response = await fetch(`${baseUrl(gateway)}/api/public/servers`);
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toEqual([
+      {
+        name: 'public-running',
+        status: 'Running',
+        edition: 'fabric',
+        mc_version: '1.21.1',
+        public_address: 'play.example.test',
+        players: { online: 2, max: 20 },
+        description: 'Public survival',
+        version: '1.21.1',
+        latency: 18,
+        requires_client_mods: true,
+        modpack_url: '/public/public-running/modpack',
+        mrpack_url: '/public/public-running/modpack.mrpack',
+        modlist_url: '/public/public-running/modlist.txt',
+      },
+    ]);
+    expect(JSON.stringify(body)).not.toContain('agent_url');
+    expect(JSON.stringify(body)).not.toContain('local_ip');
+    expect(JSON.stringify(body)).not.toContain('memory_mb');
+    expect(runningStatusRequests).toBe(1);
+    expect(stoppedStatusRequests).toBe(1);
+    expect(privateStatusRequests).toBe(0);
+
+    const streamResponse = await fetch(`${baseUrl(gateway)}/api/public/servers/events`);
+    expect(streamResponse.status).toBe(200);
+    expect(streamResponse.headers.get('content-type')).toContain('text/event-stream');
+    const reader = streamResponse.body!.getReader();
+    let streamText = '';
+    for (let index = 0; index < 5 && !streamText.includes('public-running'); index += 1) {
+      const chunk = await reader.read();
+      streamText += Buffer.from(chunk.value || new Uint8Array()).toString('utf8');
+    }
+    await reader.cancel();
+    expect(streamText).toContain('event: public-server-state');
+    expect(streamText).toContain('public-running');
+    expect(streamText).not.toContain('private-running');
+    expect(streamText).not.toContain('public-stopped');
+    expect(streamText).not.toContain('agent_url');
+    expect(streamText).not.toContain('local_ip');
+    expect(streamText).not.toContain('memory_mb');
+    expect(privateStatusRequests).toBe(0);
+  });
+
+  it('proxies enhanced world management and plugin inventory routes to the agent', async () => {
+    const agentRequests: Array<{ method: string; url: string; body: string }> = [];
+    const agent = createServer((req, res) => {
+      let body = '';
+      req.on('data', (chunk) => {
+        body += chunk;
+      });
+      req.on('end', () => {
+        agentRequests.push({ method: req.method || 'GET', url: req.url || '', body });
+
+        if (req.headers['x-agent-token'] !== 'agent-secret') {
+          res.statusCode = 401;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ error: 'unauthorized agent request' }));
+          return;
+        }
+
+        res.setHeader('Content-Type', 'application/json');
+
+        if (req.method === 'GET' && req.url === '/worlds/list') {
+          res.end(JSON.stringify([{ name: 'world', size: 123, lastPlayed: '2026-05-18T00:00:00.000Z', isActive: true }]));
+          return;
+        }
+
+        if (req.method === 'POST' && req.url === '/worlds/generate') {
+          res.end(JSON.stringify({ ok: true, message: 'generated' }));
+          return;
+        }
+
+        if (req.method === 'POST' && req.url === '/worlds/world/backup') {
+          res.end(JSON.stringify({ ok: true, backupPath: '/var/backups/minecraft/worlds/world.tar.gz' }));
+          return;
+        }
+
+        if (req.method === 'GET' && req.url === '/worlds/world/export') {
+          res.setHeader('Content-Type', 'application/zip');
+          res.setHeader('Content-Disposition', 'attachment; filename="world.zip"');
+          res.end('zip-data');
+          return;
+        }
+
+        if (req.method === 'DELETE' && req.url === '/worlds/old-world') {
+          res.end(JSON.stringify({ ok: true, message: 'deleted' }));
+          return;
+        }
+
+        if (req.method === 'GET' && req.url === '/plugins/list') {
+          res.end(JSON.stringify({
+            plugins: [
+              {
+                fileName: 'luckperms.jar',
+                pluginId: 'luckperms',
+                name: 'LuckPerms',
+                version: '5.4.0',
+                enabled: true,
+              },
+            ],
+          }));
+          return;
+        }
+
+        if (req.method === 'PATCH' && req.url === '/plugins/luckperms.jar/toggle') {
+          res.end(JSON.stringify({ ok: true, message: 'Plugin disabled', newFileName: 'luckperms.jar.disabled' }));
+          return;
+        }
+
+        if (req.method === 'DELETE' && req.url === '/plugins/luckperms.jar.disabled') {
+          res.end(JSON.stringify({ ok: true, message: 'Plugin removed' }));
+          return;
+        }
+
+        res.statusCode = 404;
+        res.end(JSON.stringify({ error: 'not found' }));
+      });
+    });
+    await listen(agent);
+    servers.push(agent);
+
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'mc-gateway-test-'));
+    tempDirs.push(tempDir);
+    const registryFile = path.join(tempDir, 'servers.json');
+    writeFileSync(registryFile, JSON.stringify({
+      servers: [
+        {
+          name: 'test-server',
+          agent_url: baseUrl(agent),
+          agent_token: 'agent-secret',
+          public_port: 25565,
+          memory_mb: 4096,
+          edition: 'paper',
+          mc_version: '1.21.1',
+        },
+      ],
+    }));
+
+    process.env.REGISTRY_FILE = registryFile;
+    process.env.ADMIN_TOKEN = 'test-token';
+    process.env.ALLOW_CIDRS = '127.0.0.0/8';
+    process.env.AGENT_ALLOWED_CIDRS = '127.0.0.0/8';
+    process.env.AGENT_ALLOWED_PORTS = String(new URL(baseUrl(agent)).port);
+    process.env.WEB_DIST_DIR = tempDir;
+
+    const { app } = await import('./index.js');
+    const gateway = createServer(app);
+    await listen(gateway);
+    servers.push(gateway);
+    const headers = { Authorization: 'Bearer test-token' };
+
+    const worldsResponse = await fetch(`${baseUrl(gateway)}/api/servers/test-server/worlds/details`, { headers });
+    expect(worldsResponse.status).toBe(200);
+    expect(await worldsResponse.json()).toEqual([
+      { name: 'world', size: 123, lastPlayed: '2026-05-18T00:00:00.000Z', isActive: true },
+    ]);
+
+    const generateResponse = await fetch(`${baseUrl(gateway)}/api/servers/test-server/worlds/generate`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'new-world', seed: 'abc', levelType: 'flat' }),
+    });
+    expect(generateResponse.status).toBe(200);
+    expect(await generateResponse.json()).toEqual({ ok: true, message: 'generated' });
+
+    const backupResponse = await fetch(`${baseUrl(gateway)}/api/servers/test-server/worlds/world/backup`, {
+      method: 'POST',
+      headers,
+    });
+    expect(backupResponse.status).toBe(200);
+    expect(await backupResponse.json()).toEqual({ ok: true, backupPath: '/var/backups/minecraft/worlds/world.tar.gz' });
+
+    const downloadResponse = await fetch(`${baseUrl(gateway)}/api/servers/test-server/worlds/world/download`, { headers });
+    expect(downloadResponse.status).toBe(200);
+    expect(downloadResponse.headers.get('content-disposition')).toBe('attachment; filename="world.zip"');
+    expect(await downloadResponse.text()).toBe('zip-data');
+
+    const deleteWorldResponse = await fetch(`${baseUrl(gateway)}/api/servers/test-server/worlds/old-world`, {
+      method: 'DELETE',
+      headers,
+    });
+    expect(deleteWorldResponse.status).toBe(200);
+    expect(await deleteWorldResponse.json()).toEqual({ ok: true, message: 'deleted' });
+
+    const pluginsResponse = await fetch(`${baseUrl(gateway)}/api/servers/test-server/plugins/installed`, { headers });
+    expect(pluginsResponse.status).toBe(200);
+    expect(await pluginsResponse.json()).toEqual({
+      plugins: [
+        {
+          fileName: 'luckperms.jar',
+          pluginId: 'luckperms',
+          name: 'LuckPerms',
+          version: '5.4.0',
+          enabled: true,
+        },
+      ],
+    });
+
+    const toggleResponse = await fetch(`${baseUrl(gateway)}/api/servers/test-server/plugins/luckperms.jar/toggle`, {
+      method: 'PATCH',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    });
+    expect(toggleResponse.status).toBe(200);
+    expect(await toggleResponse.json()).toEqual({
+      ok: true,
+      message: 'Plugin disabled',
+      newFileName: 'luckperms.jar.disabled',
+    });
+
+    const deletePluginResponse = await fetch(`${baseUrl(gateway)}/api/servers/test-server/plugins/luckperms.jar.disabled`, {
+      method: 'DELETE',
+      headers,
+    });
+    expect(deletePluginResponse.status).toBe(200);
+    expect(await deletePluginResponse.json()).toEqual({ ok: true, message: 'Plugin removed' });
+
+    expect(agentRequests).toEqual(expect.arrayContaining([
+      expect.objectContaining({ method: 'GET', url: '/worlds/list' }),
+      expect.objectContaining({ method: 'POST', url: '/worlds/generate', body: JSON.stringify({ name: 'new-world', seed: 'abc', levelType: 'flat' }) }),
+      expect.objectContaining({ method: 'GET', url: '/plugins/list' }),
+      expect.objectContaining({ method: 'PATCH', url: '/plugins/luckperms.jar/toggle', body: JSON.stringify({ enabled: false }) }),
+    ]));
   });
 
   it('allows admin auth attempts from the default WireGuard VPN CIDR', async () => {
@@ -352,6 +709,99 @@ describe('management gateway routes', () => {
     expect(await sessionResponse.json()).toEqual({ authenticated: true });
   });
 
+  it('enables explicit dev admin login only when configured', async () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'mc-gateway-test-'));
+    tempDirs.push(tempDir);
+    const registryFile = path.join(tempDir, 'servers.json');
+    writeFileSync(registryFile, JSON.stringify({ servers: [] }));
+
+    process.env.REGISTRY_FILE = registryFile;
+    process.env.DEV_ADMIN_LOGIN = 'true';
+    process.env.WEB_DIST_DIR = tempDir;
+
+    const { app } = await import('./index.js');
+    const gateway = createServer(app);
+    await listen(gateway);
+    servers.push(gateway);
+
+    const configResponse = await fetch(`${baseUrl(gateway)}/api/auth/config`);
+    expect(configResponse.status).toBe(200);
+    expect((await configResponse.json()).devLogin).toEqual({ enabled: true });
+
+    const loginResponse = await fetch(`${baseUrl(gateway)}/api/auth/dev/login`, {
+      method: 'POST',
+      headers: { Origin: baseUrl(gateway) },
+    });
+    expect(loginResponse.status).toBe(200);
+
+    const setCookie = loginResponse.headers.get('set-cookie') || '';
+    expect(setCookie).toContain('mclx_admin=');
+    expect(setCookie).toContain('HttpOnly');
+
+    const sessionResponse = await fetch(`${baseUrl(gateway)}/api/auth/session`, {
+      headers: { Cookie: setCookie.split(';')[0] },
+    });
+    expect(sessionResponse.status).toBe(200);
+    expect(await sessionResponse.json()).toEqual({ authenticated: true });
+  });
+
+  it('keeps dev admin login disabled by default', async () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'mc-gateway-test-'));
+    tempDirs.push(tempDir);
+    const registryFile = path.join(tempDir, 'servers.json');
+    writeFileSync(registryFile, JSON.stringify({ servers: [] }));
+
+    process.env.REGISTRY_FILE = registryFile;
+    process.env.WEB_DIST_DIR = tempDir;
+
+    const { app } = await import('./index.js');
+    const gateway = createServer(app);
+    await listen(gateway);
+    servers.push(gateway);
+
+    const configResponse = await fetch(`${baseUrl(gateway)}/api/auth/config`);
+    expect(configResponse.status).toBe(200);
+    expect((await configResponse.json()).devLogin).toEqual({ enabled: false });
+
+    const loginResponse = await fetch(`${baseUrl(gateway)}/api/auth/dev/login`, {
+      method: 'POST',
+      headers: { Origin: baseUrl(gateway) },
+    });
+    expect(loginResponse.status).toBe(404);
+  });
+
+  it('rejects dev admin login away from localhost', async () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'mc-gateway-test-'));
+    tempDirs.push(tempDir);
+    const registryFile = path.join(tempDir, 'servers.json');
+    writeFileSync(registryFile, JSON.stringify({ servers: [] }));
+
+    process.env.REGISTRY_FILE = registryFile;
+    process.env.DEV_ADMIN_LOGIN = 'true';
+    process.env.TRUST_PROXY = 'true';
+    process.env.WEB_DIST_DIR = tempDir;
+
+    const { app } = await import('./index.js');
+    const gateway = createServer(app);
+    await listen(gateway);
+    servers.push(gateway);
+
+    const configResponse = await fetch(`${baseUrl(gateway)}/api/auth/config`, {
+      headers: { 'X-Forwarded-For': '192.168.0.25' },
+    });
+    expect(configResponse.status).toBe(200);
+    expect((await configResponse.json()).devLogin).toEqual({ enabled: false });
+
+    const loginResponse = await fetch(`${baseUrl(gateway)}/api/auth/dev/login`, {
+      method: 'POST',
+      headers: {
+        Origin: baseUrl(gateway),
+        'X-Forwarded-For': '192.168.0.25',
+      },
+    });
+    expect(loginResponse.status).toBe(403);
+  });
+
   it('offers passkey login without an admin token when a passkey is already registered', async () => {
     const tempDir = mkdtempSync(path.join(tmpdir(), 'mc-gateway-test-'));
     tempDirs.push(tempDir);
@@ -387,7 +837,8 @@ describe('management gateway routes', () => {
     servers.push(gateway);
 
     const sessionResponse = await fetch(`${baseUrl(gateway)}/api/auth/session`);
-    expect(sessionResponse.status).toBe(401);
+    expect(sessionResponse.status).toBe(200);
+    expect(await sessionResponse.json()).toEqual({ authenticated: false });
 
     const optionsResponse = await fetch(`${baseUrl(gateway)}/api/auth/passkeys/login/options`, {
       method: 'POST',

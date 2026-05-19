@@ -38,6 +38,7 @@ coverage/
 .nyc_output/
 test-results/
 playwright-report/
+.playwright-mcp/
 
 # Temp
 tmp/
@@ -45,11 +46,17 @@ temp/
 *.tmp
 
 # AI/Tool Documentation (private)
+.codex/
 .claude/
 CLAUDE.md
 **/CLAUDE.md
 .cursor/
 .aider*
+
+# Local agent snapshots
+apps/agent/src/index.txt
+apps/server/src/index.txt
+apps/scripts/mc-server-lifecycle.txt
 
 # Internal planning and architecture docs (private)
 *PLAN_*.md

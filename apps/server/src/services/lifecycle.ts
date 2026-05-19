@@ -6,6 +6,10 @@ import { fileURLToPath } from "url";
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const HARD_MAX_ACTIVE_SERVERS = 3;
 const LIFECYCLE_ACTIONS = new Set(["list", "create", "archive", "restore", "delete-archive"]);
+const CONTROLLER_REQUEST_TIMEOUT_MS = Number(process.env.SERVER_LIFECYCLE_CONTROLLER_TIMEOUT_MS || 15_000);
+const CONTROLLER_MUTATION_REQUEST_TIMEOUT_MS = Number(
+  process.env.SERVER_LIFECYCLE_CONTROLLER_MUTATION_TIMEOUT_MS || 10 * 60_000
+);
 
 export interface ServerArchiveRecord {
   id: string;
@@ -229,20 +233,36 @@ async function postControllerRequest(request: unknown): Promise<LifecycleActionR
   const controllerUrl = lifecycleControllerUrl();
   const token = lifecycleControllerToken();
   if (!controllerUrl || !token) throw new Error("Lifecycle controller URL/token is not configured");
+  const action = typeof (request as { action?: unknown })?.action === "string"
+    ? (request as { action: string }).action
+    : "";
+  const timeoutMs = action === "list" ? CONTROLLER_REQUEST_TIMEOUT_MS : CONTROLLER_MUTATION_REQUEST_TIMEOUT_MS;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
-  const response = await fetch(new URL("/lifecycle", controllerUrl), {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(request),
-  });
-  const body = await response.json().catch(() => ({})) as LifecycleActionResult & { error?: string };
-  if (!response.ok) {
-    throw new Error(body.error || `Lifecycle controller failed with HTTP ${response.status}`);
+  try {
+    const response = await fetch(new URL("/lifecycle", controllerUrl), {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(request),
+      signal: controller.signal,
+    });
+    const body = await response.json().catch(() => ({})) as LifecycleActionResult & { error?: string };
+    if (!response.ok) {
+      throw new Error(body.error || `Lifecycle controller failed with HTTP ${response.status}`);
+    }
+    return body;
+  } catch (err: any) {
+    if (err?.name === "AbortError") {
+      throw new Error("Lifecycle controller request timed out");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
   }
-  return body;
 }
 
 export async function runLifecycleAction(

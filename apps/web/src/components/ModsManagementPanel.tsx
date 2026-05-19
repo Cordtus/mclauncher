@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Copy, Package2, RefreshCw, Search, Upload } from "lucide-react";
+import { Copy, Package2, Search, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { InstalledModCard } from "./InstalledModCard";
@@ -60,7 +60,9 @@ export function ModsManagementPanel({
   const [friendManifest, setFriendManifest] = useState("");
 
   useEffect(() => {
-    loadMods();
+    loadMods(true);
+    const interval = window.setInterval(() => void loadMods(), 15000);
+    return () => window.clearInterval(interval);
   }, [serverName]);
 
   useEffect(() => {
@@ -92,9 +94,9 @@ export function ModsManagementPanel({
     }
   }
 
-  async function loadMods() {
-    setIsLoading(true);
-    setMessage("");
+  async function loadMods(showLoading = false) {
+    if (showLoading) setIsLoading(true);
+    if (showLoading) setMessage("");
     try {
       const response = await fetch(`/api/servers/${serverName}/mods/installed`, {
         headers: authHeaders(),
@@ -284,8 +286,8 @@ export function ModsManagementPanel({
       setFriendManifest(manifestText);
       const copied = await copyTextToClipboard(manifestText);
       setMessage(copied
-        ? "Client setup guide copied to clipboard."
-        : "Client setup guide generated. Select and copy it from the panel below."
+        ? "Friend setup guide copied to clipboard."
+        : "Friend setup guide generated. Select and copy it from the panel below."
       );
     } catch (err: any) {
       setMessage(`Error: ${err.message}`);
@@ -336,7 +338,7 @@ export function ModsManagementPanel({
           </label>
           <Button variant="outline" className="rounded-sm" onClick={copyFriendManifest}>
             <Copy className="h-4 w-4 mr-2" />
-            Client Setup
+            Friend Setup
           </Button>
           <Dialog>
             <DialogTrigger asChild>
@@ -366,15 +368,6 @@ export function ModsManagementPanel({
               </div>
             </DialogContent>
           </Dialog>
-          <Button
-            variant="outline"
-            size="icon"
-            onClick={loadMods}
-            disabled={isLoading}
-            className="rounded-sm"
-          >
-            <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
-          </Button>
         </div>
       </div>
 
@@ -427,7 +420,7 @@ export function ModsManagementPanel({
 
       {friendManifest && (
         <div className="rounded-sm border bg-muted/40 p-3">
-          <p className="text-sm font-medium mb-2">Client setup guide</p>
+          <p className="text-sm font-medium mb-2">Friend setup guide</p>
           <pre className="text-xs whitespace-pre-wrap break-words">{friendManifest}</pre>
         </div>
       )}

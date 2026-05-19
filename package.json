@@ -9,6 +9,7 @@
   ],
   "scripts": {
     "dev": "npm -C apps/server run dev",
+    "dev:admin": "npm -C apps/server run dev:admin",
     "build": "npm -C apps/web run build && npm -C apps/server run build && npm -C apps/agent run build",
     "start": "npm -C apps/server run start",
     "lint": "eslint . --ext .ts,.tsx",

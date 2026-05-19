@@ -1,40 +1,45 @@
-import { useEffect, useState, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  Play,
-  Square,
-  RotateCw,
-  Upload,
-  Settings,
-  Globe,
-  RefreshCw,
-  Package,
-  Copy,
-  Users,
-  HelpCircle,
-  Info,
-  ChevronDown,
-  ChevronUp,
-  Terminal,
-  Package2,
-  Loader2,
-  KeyRound,
-  Fingerprint,
-  LogOut,
-  Trash2,
+  Activity,
   Archive,
-  Plus,
-  Server,
+  ArrowLeft,
+  Check,
+  ChevronRight,
+  Copy,
   DatabaseBackup,
+  Download,
+  ExternalLink,
+  FilePlus,
+  Fingerprint,
+  Globe,
   HardDrive,
+  HelpCircle,
+  KeyRound,
+  LayoutDashboard,
+  Loader2,
+  LogOut,
+  Map as MapIcon,
+  Package,
+  Package2,
+  Play,
+  Plus,
+  RotateCw,
+  Server,
+  Settings,
+  Shield,
+  Square,
+  Terminal,
+  Trash2,
+  Upload,
+  Users,
 } from "lucide-react";
 import { toast } from "sonner";
 import { ModBrowser } from "@/components/ModBrowser";
 import { ModsManagementPanel } from "@/components/ModsManagementPanel";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
-import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -42,22 +47,9 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "@/components/ui/tabs";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select,
   SelectContent,
@@ -65,8 +57,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { authHeaders, jsonAuthHeaders, loginWithAdminToken, readAdminSession } from "@/lib/auth";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { api, ApiError } from "@/lib/api-client";
+import { loginWithAdminToken, loginWithDevAdmin, readAdminSession } from "@/lib/auth";
 import {
   buildPlayerInviteText,
   formatMinecraftAddress,
@@ -85,368 +81,686 @@ import {
   registerPasskey,
   type PasskeyRegistrationCode,
 } from "@/lib/passkeys";
+import type {
+  AuthConfig,
+  BansResponse,
+  CreateServerInput,
+  InstalledPlugin,
+  LifecycleState,
+  PublicServerRow,
+  PublicAccessState,
+  ServerArchive,
+  ServerRow,
+  ServerSettingsDraft,
+  ServerSettingsResponse,
+  WorldInfo,
+} from "@/types";
 
-type ServerRow = {
-  name: string;
-  status: string;
-  local_ip: string;
-  local_port: number;
-  host_ip?: string; // LXD host IP for local network connections
-  host_proxy_port?: number; // LXD host proxy port router forwards to
-  public_port: number;
-  public_domain: string | null;
-  memory_mb: number;
-  cpu_limit: string;
-  edition: string;
-  mc_version: string;
-  minecraft: {
-    online: boolean;
-    players?: {
-      online: number;
-      max: number;
-      sample?: Array<{ name: string; id: string }>;
+type Route =
+  | { page: "fleet" }
+  | { page: "archives" }
+  | { page: "admin" }
+  | { page: "server"; name: string; tab: WorkspaceTab }
+  | { page: "public"; name?: string };
+
+type WorkspaceTab = "overview" | "players" | "content" | "worlds" | "settings";
+
+const workspaceTabs: Array<{ value: WorkspaceTab; label: string; icon: typeof Activity }> = [
+  { value: "overview", label: "Overview", icon: Activity },
+  { value: "players", label: "Players", icon: Users },
+  { value: "content", label: "Content", icon: Package },
+  { value: "worlds", label: "Worlds", icon: MapIcon },
+  { value: "settings", label: "Settings", icon: Settings },
+];
+
+const MAX_LOG_LINES = 120;
+
+const defaultSettings: ServerSettingsDraft = {
+  hostIp: "",
+  publicDomain: "",
+  publicPort: 25565,
+  hostProxyPort: 25565,
+  motd: "A Minecraft Server",
+  maxPlayers: 20,
+  gamemode: "survival",
+  difficulty: "normal",
+  pvp: true,
+  spawnProtection: 16,
+  viewDistance: 10,
+  onlineMode: true,
+  allowFlight: false,
+  enforceWhitelist: false,
+  whitelist: [],
+  operators: [],
+  bannedPlayers: [],
+  bannedIps: [],
+  jvmXms: 512,
+  jvmXmsUnit: "M",
+  jvmXmx: 2048,
+  jvmXmxUnit: "M",
+  jvmGc: "default",
+  jvmCustomFlags: "",
+};
+
+function parseRoute(pathname = window.location.pathname): Route {
+  const parts = pathname.split("/").filter(Boolean);
+  if (parts[0] === "archives") return { page: "archives" };
+  if (parts[0] === "admin") return { page: "admin" };
+  if (parts[0] === "public") return { page: "public", name: parts[1] ? decodeURIComponent(parts[1]) : undefined };
+  if (parts[0] === "server" && parts[1]) {
+    const tab = (parts[2] || "overview") as WorkspaceTab;
+    return {
+      page: "server",
+      name: decodeURIComponent(parts[1]),
+      tab: workspaceTabs.some((entry) => entry.value === tab) ? tab : "overview",
     };
-    description?: string;
-    version?: string;
-    latency?: number;
-  } | null;
-};
+  }
+  return { page: "fleet" };
+}
 
-type PublicAccessState = {
-  accessible: boolean | null;
-  checking: boolean;
-  reason?: string | null;
-  checkedAt?: string;
-};
+function pathFor(route: Route) {
+  if (route.page === "archives") return "/archives";
+  if (route.page === "admin") return "/admin";
+  if (route.page === "public") return route.name ? `/public/${encodeURIComponent(route.name)}` : "/public";
+  if (route.page === "server") {
+    const base = `/server/${encodeURIComponent(route.name)}`;
+    return route.tab === "overview" ? base : `${base}/${route.tab}`;
+  }
+  return "/";
+}
 
-type ServerArchive = {
-  id: string;
-  label?: string;
-  sourceName: string;
-  imageAlias: string;
-  createdAt: string;
-  server: {
-    name: string;
-    public_port: number;
-    memory_mb: number;
-    cpu_limit?: string;
-    edition: string;
-    mc_version: string;
-    public_domain?: string;
-  };
-};
+function useRoute() {
+  const [route, setRoute] = useState<Route>(() => parseRoute());
 
-type LifecycleState = {
-  configured: boolean;
-  unavailableReason?: string;
-  maxActiveServers: number;
-  activeServers: number;
-  slotsAvailable: number;
-  archives: ServerArchive[];
-};
+  useEffect(() => {
+    const onPopState = () => setRoute(parseRoute());
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  const navigate = useCallback((next: Route) => {
+    const path = pathFor(next);
+    window.history.pushState(null, "", path);
+    setRoute(next);
+  }, []);
+
+  return { route, navigate };
+}
+
+function isAuthBlocked(error: unknown) {
+  return error instanceof ApiError && [401, 403, 503].includes(error.status);
+}
 
 async function copyToClipboard(text: string) {
+  if (!text) return false;
   try {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
+    if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(text);
       return true;
     }
-
-    const textarea = document.createElement('textarea');
+    const textarea = document.createElement("textarea");
     textarea.value = text;
-    textarea.style.position = 'fixed';
-    textarea.style.opacity = '0';
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
     document.body.appendChild(textarea);
     textarea.select();
     try {
-      return document.execCommand('copy');
+      return document.execCommand("copy");
     } finally {
       document.body.removeChild(textarea);
     }
-  } catch (err) {
-    console.error('Copy failed:', err);
+  } catch {
     return false;
   }
 }
 
+function toBool(value: unknown, fallback: boolean) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") return value.toLowerCase() === "true";
+  return fallback;
+}
+
+function toNumber(value: unknown, fallback: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function toNullableNumber(value: unknown) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string" && value.trim() === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatBytes(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let size = value;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  return `${size.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+function readTpsValue(data: { raw?: unknown; tps?: unknown } | null | undefined) {
+  const direct = toNullableNumber(data?.tps);
+  if (direct !== null) return direct;
+
+  const raw = typeof data?.raw === "string" ? data.raw : "";
+  const paperMatch = raw.match(/TPS from last[^:]*:\s*(\d+(?:\.\d+)?)/i);
+  const forgeMatch = raw.match(/Mean TPS:\s*(\d+(?:\.\d+)?)/i);
+  return toNullableNumber((paperMatch || forgeMatch)?.[1]);
+}
+
+function formatTps(value: number | null) {
+  return value === null ? "N/A" : value.toFixed(1);
+}
+
+function statusVariant(status: string) {
+  const lower = status.toLowerCase();
+  if (lower.includes("running")) return "default";
+  if (lower.includes("stopped")) return "secondary";
+  return "destructive";
+}
+
+function serverSupportsPlugins(server: ServerRow) {
+  return ["paper", "purpur", "spigot"].includes(server.edition.toLowerCase());
+}
+
+function serverSupportsMods(server: ServerRow) {
+  return ["forge", "neoforge", "fabric"].includes(server.edition.toLowerCase());
+}
+
 export function App() {
-  const [servers, setServers] = useState<ServerRow[]>([]);
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [logs, setLogs] = useState<string>("");
-  const [showLogs, setShowLogs] = useState(true);
-  const [isLoadingLogs, setIsLoadingLogs] = useState(false);
-  const [selectedServer, setSelectedServer] = useState<string | null>(null);
-  const [message, setMessage] = useState<string>("");
-  const [serverTps, setServerTps] = useState<Map<string, number | null>>(new Map());
-  const [publicAccess, setPublicAccess] = useState<Map<string, PublicAccessState>>(new Map());
-  const [helpDialog, setHelpDialog] = useState(false);
-  const [lifecycle, setLifecycle] = useState<LifecycleState | null>(null);
-  const [createServerDialog, setCreateServerDialog] = useState(false);
-  const [archivesDialog, setArchivesDialog] = useState(false);
-  const [archiveTarget, setArchiveTarget] = useState<ServerRow | null>(null);
-  const [archiveLabel, setArchiveLabel] = useState("");
-  const [restoreTarget, setRestoreTarget] = useState<ServerArchive | null>(null);
-  const [isLifecycleBusy, setIsLifecycleBusy] = useState(false);
-  const [newServerForm, setNewServerForm] = useState({
-    name: "",
-    edition: "paper",
-    mcVersion: "1.21.1",
-    memoryMb: 4096,
-    cpuLimit: "2",
-    publicPort: 34567,
-  });
-  const [restoreForm, setRestoreForm] = useState({
-    name: "",
-    publicPort: 34567,
-  });
-
-  // Tour state
-  const [tourActive, setTourActive] = useState(false);
-  const [tourStep, setTourStep] = useState(0);
-  const [tourElementRect, setTourElementRect] = useState<DOMRect | null>(null);
-  const hasAutoStartedTour = useRef(false);
-  const [adminAccessDialog, setAdminAccessDialog] = useState(false);
-  const [adminToken, setAdminToken] = useState("");
+  const { route, navigate } = useRoute();
+  const [authConfig, setAuthConfig] = useState<AuthConfig | null>(null);
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
+  const [authReady, setAuthReady] = useState(false);
+  const [servers, setServers] = useState<ServerRow[]>([]);
+  const [lifecycle, setLifecycle] = useState<LifecycleState | null>(null);
   const [serverInventoryBlocked, setServerInventoryBlocked] = useState(false);
-  const [authConfig, setAuthConfig] = useState<any | null>(null);
-  const [passkeyName, setPasskeyName] = useState("Admin passkey");
-  const [passkeySetupCode, setPasskeySetupCode] = useState("");
-  const [setupCodes, setSetupCodes] = useState<PasskeyRegistrationCode[]>([]);
-  const [setupCodeDeleteId, setSetupCodeDeleteId] = useState<string | null>(null);
-  const [isPasskeyBusy, setIsPasskeyBusy] = useState(false);
-  const [showPasskeyRegistration, setShowPasskeyRegistration] = useState(false);
-  const hasAdminAccess = isAdminAuthenticated;
+  const [liveStatus, setLiveStatus] = useState<"checking" | "live" | "syncing" | "locked">("checking");
+  const [globalMessage, setGlobalMessage] = useState("");
+  const [helpOpen, setHelpOpen] = useState(false);
 
-  // Version management state
-  const [versionType, setVersionType] = useState<"paper" | "vanilla" | "fabric" | "forge">("paper");
-  const [newVersion, setNewVersion] = useState("");
-  const [isChangingVersion, setIsChangingVersion] = useState(false);
+  const loadAuthConfig = useCallback(async () => {
+    try {
+      setAuthConfig(await api.getAuthConfig());
+    } catch {
+      setAuthConfig(null);
+    }
+  }, []);
 
-  // Settings management state
-  const [isSavingSettings, setIsSavingSettings] = useState(false);
-  const [serverSettingsDialog, setServerSettingsDialog] = useState<string | null>(null);
-  const [adminCommand, setAdminCommand] = useState("");
-  const [adminCommandOutput, setAdminCommandOutput] = useState("");
-  const [isRunningCommand, setIsRunningCommand] = useState(false);
+  const checkSession = useCallback(async () => {
+    const authenticated = await readAdminSession();
+    setIsAdminAuthenticated(authenticated);
+    if (authenticated) {
+      setServerInventoryBlocked(false);
+      setGlobalMessage("");
+      setLiveStatus("checking");
+    } else {
+      setServers([]);
+      setLifecycle(null);
+      setServerInventoryBlocked(true);
+      setGlobalMessage("Sign in to manage servers.");
+      setLiveStatus("locked");
+    }
+    setAuthReady(true);
+  }, []);
 
-  // Server configuration state (persisted in localStorage)
-  const [serverSettings, setServerSettings] = useState(() => {
-    const saved = localStorage.getItem('mc-server-settings');
-    if (saved) {
+  const refresh = useCallback(async () => {
+    if (route.page === "public") return;
+    try {
+      const serverData = await api.getServers();
+      setServers(Array.isArray(serverData) ? serverData : []);
+      setIsAdminAuthenticated(true);
+      setServerInventoryBlocked(false);
+      setGlobalMessage("");
       try {
-        return JSON.parse(saved);
-      } catch (e) {
-        console.error('Failed to parse saved settings', e);
+        setLifecycle(await api.getLifecycle());
+      } catch {
+        setLifecycle(null);
+      }
+    } catch (error) {
+      if (isAuthBlocked(error)) {
+        setServers([]);
+        setLifecycle(null);
+        setIsAdminAuthenticated(false);
+        setServerInventoryBlocked(true);
+        setLiveStatus("locked");
+        setGlobalMessage("Sign in to manage servers.");
+      } else {
+        setGlobalMessage(error instanceof Error ? error.message : "Failed to fetch servers");
       }
     }
-    return {
-      // Network
-      hostIp: "",
-      publicDomain: "",
-      publicPort: 25565,
-      hostProxyPort: 25565,
-
-      // Server Properties
-      motd: "A Minecraft Server",
-      maxPlayers: 20,
-      gamemode: "survival",
-      difficulty: "normal",
-      pvp: true,
-      spawnProtection: 16,
-      viewDistance: 10,
-      onlineMode: true,
-      allowFlight: false,
-
-      // Security
-      enforceWhitelist: false,
-      whitelist: [] as string[],
-      newWhitelistPlayer: "",
-
-      // Plugins to install
-      plugins: {
-        luckperms: false,
-        essentialsx: false,
-        vault: false,
-        worldedit: false,
-      },
-
-      // Operators
-      operators: [] as string[],
-      newOperator: "",
-
-      // Bans
-      bannedPlayers: [] as Array<{uuid: string; name: string; reason: string; created: string}>,
-      bannedIps: [] as Array<{ip: string; reason: string; created: string}>,
-      newBanPlayer: "",
-      newBanPlayerReason: "",
-      newBanIp: "",
-      newBanIpReason: "",
-
-      // JVM settings
-      jvmXms: 512,
-      jvmXmsUnit: 'M',
-      jvmXmx: 2048,
-      jvmXmxUnit: 'M',
-      jvmGc: 'default',
-      jvmCustomFlags: '',
-    };
-  });
-
-
-  // Tour steps definition
-  const tourSteps = [
-    {
-      target: null,
-      title: "Welcome to MC Manager!",
-      content: "Let's take a quick tour of all the features to help you get your Minecraft server up and running. You can skip this tour at any time or restart it from the Help menu.",
-    },
-    {
-      target: "[data-tour='server-fleet']",
-      title: "Server Fleet",
-      content: "Create up to three active servers, archive a server to free a slot, and restore archived server images when you want that world back.",
-    },
-    {
-      target: "[data-tour='server-controls']",
-      title: "Server Controls",
-      content: "Use these buttons to start, stop, or restart your Minecraft server. The status badge shows whether your server is currently running.",
-    },
-    {
-      target: "[data-tour='connection-local']",
-      title: "LAN Address",
-      content: "This shows the address players on your local WiFi network should use to connect. Configure the Host IP in Server Settings to enable local connections.",
-    },
-    {
-      target: "[data-tour='connection-public']",
-      title: "Public Address",
-      content: "This shows the address for players connecting from the internet. Use port 25565 when possible so players can join with only the domain name.",
-    },
-    {
-      target: "[data-tour='settings-button']",
-      title: "Server Settings",
-      content: "Click here to configure all server properties including network settings, game rules, whitelist, operators, bans, and JVM performance tuning.",
-    },
-    {
-      target: "[data-tour='version-button']",
-      title: "Change Server Version",
-      content: "Switch between Minecraft versions or server types (Paper/Vanilla). Your worlds and settings will be preserved.",
-    },
-    {
-      target: "[data-tour='upload-world']",
-      title: "Upload Custom Worlds",
-      content: "Upload your own world files as .zip archives. The server will stop, replace the world, and restart automatically.",
-    },
-    {
-      target: "[data-tour='console']",
-      title: "Server Console",
-      content: "Monitor your server's real-time logs here. The console shows the last 100 lines and auto-refreshes every 5 seconds. Use this to debug issues or monitor player activity.",
-    },
-    {
-      target: "[data-tour='help-button']",
-      title: "Help & Documentation",
-      content: "Access complete documentation, troubleshooting guides, and restart this tour anytime from the Help menu.",
-    },
-  ];
-
-  // Start the guided tour
-  const startTour = () => {
-    setTourStep(0);
-    setTourActive(true);
-  };
-
-  // Tour navigation
-  const nextTourStep = () => {
-    if (tourStep < tourSteps.length - 1) {
-      setTourStep(tourStep + 1);
-    } else {
-      completeTour();
-    }
-  };
-
-  const prevTourStep = () => {
-    if (tourStep > 0) {
-      setTourStep(tourStep - 1);
-    }
-  };
-
-  const skipTour = () => {
-    setTourActive(false);
-    setTourStep(0);
-  };
-
-  const completeTour = () => {
-    setTourActive(false);
-    setTourStep(0);
-    localStorage.setItem('mc-tour-completed', 'true');
-    toast.success('Tour completed! You can restart it anytime from the Help menu.');
-  };
-
-  // Check for first visit and auto-start tour (only once)
-  useEffect(() => {
-    const hasSeenTour = localStorage.getItem('mc-tour-completed');
-    if (!hasSeenTour && servers.length > 0 && !hasAutoStartedTour.current) {
-      hasAutoStartedTour.current = true;
-      setTimeout(() => startTour(), 1000);
-    }
-  }, [servers.length]); // Only depends on servers.length changing
-
-  // Update tour element position when tour step changes
-  useEffect(() => {
-    if (!tourActive) {
-      setTourElementRect(null);
-      return;
-    }
-
-    const currentStep = tourSteps[tourStep];
-    if (!currentStep.target) {
-      setTourElementRect(null);
-      return;
-    }
-
-    // Find the target element
-    const element = document.querySelector(currentStep.target);
-    if (element) {
-      // Scroll element into view smoothly
-      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
-      // Wait a bit for scroll animation, then get position
-      setTimeout(() => {
-        const rect = element.getBoundingClientRect();
-        setTourElementRect(rect);
-      }, 300);
-    } else {
-      setTourElementRect(null);
-    }
-  }, [tourActive, tourStep]);
-
-  // Save settings to localStorage whenever they change
-  useEffect(() => {
-    localStorage.setItem('mc-server-settings', JSON.stringify(serverSettings));
-  }, [serverSettings]);
+  }, [route.page]);
 
   useEffect(() => {
     localStorage.removeItem("ADMIN_TOKEN");
     localStorage.removeItem("ADMIN_SESSION");
-    loadAuthConfig();
-    checkAdminSession();
-  }, []);
+    void loadAuthConfig();
+    void checkSession();
+  }, [checkSession, loadAuthConfig]);
 
-  async function loadAuthConfig() {
-    try {
-      const response = await fetch("/api/auth/config");
-      if (!response.ok) return;
-      setAuthConfig(await response.json());
-    } catch {
-      // Auth config is convenience-only; write endpoints still return concrete errors.
+  useEffect(() => {
+    if (route.page === "public") return;
+    if (!authReady || !isAdminAuthenticated) return;
+    void refresh();
+  }, [authReady, isAdminAuthenticated, refresh, route.page]);
+
+  useEffect(() => {
+    if (route.page === "public") return;
+    if (!authReady || !isAdminAuthenticated) {
+      setLiveStatus("locked");
+      return;
     }
+
+    let fallbackInterval: number | undefined;
+    let fallbackTimer: number | undefined;
+    let source: EventSource | null = null;
+
+    const stopFallback = () => {
+      if (fallbackInterval) {
+        window.clearInterval(fallbackInterval);
+        fallbackInterval = undefined;
+      }
+      if (fallbackTimer) {
+        window.clearTimeout(fallbackTimer);
+        fallbackTimer = undefined;
+      }
+    };
+
+    const startFallback = () => {
+      if (fallbackInterval) return;
+      setLiveStatus("syncing");
+      void refresh();
+      fallbackInterval = window.setInterval(() => void refresh(), 10000);
+    };
+
+    if ("EventSource" in window) {
+      setLiveStatus("checking");
+      fallbackTimer = window.setTimeout(startFallback, 12000);
+      source = api.subscribeServerEvents(
+        (state) => {
+          stopFallback();
+          setServers(Array.isArray(state.servers) ? state.servers : []);
+          setLifecycle(state.lifecycle || null);
+          setIsAdminAuthenticated(true);
+          setServerInventoryBlocked(false);
+          setGlobalMessage("");
+          setLiveStatus("live");
+        },
+        () => startFallback()
+      );
+    } else {
+      startFallback();
+    }
+
+    return () => {
+      source?.close();
+      stopFallback();
+    };
+  }, [authReady, isAdminAuthenticated, refresh, route.page]);
+
+  const handleSignedIn = useCallback(async () => {
+    await loadAuthConfig();
+    await checkSession();
+    await refresh();
+  }, [checkSession, loadAuthConfig, refresh]);
+
+  const handleSignOut = useCallback(async () => {
+    try {
+      await logoutPasskeySession();
+    } catch {
+      // UI state is still cleared below.
+    }
+    localStorage.removeItem("ADMIN_TOKEN");
+    localStorage.removeItem("ADMIN_SESSION");
+    setIsAdminAuthenticated(false);
+    setServers([]);
+    setLifecycle(null);
+    setServerInventoryBlocked(true);
+    setLiveStatus("locked");
+    setGlobalMessage("Sign in to manage servers.");
+    toast.success("Signed out");
+    navigate({ page: "admin" });
+  }, [navigate]);
+
+  if (route.page === "public") {
+    return (
+      <PublicServersPage
+        serverName={route.name}
+        onPublicHome={() => navigate({ page: "public" })}
+        onAdminAccess={() => navigate({ page: "admin" })}
+      />
+    );
   }
 
-  async function checkAdminSession() {
-    setIsAdminAuthenticated(await readAdminSession());
+  if (authReady && !isAdminAuthenticated && route.page === "fleet") {
+    return (
+      <PublicServersPage
+        onPublicHome={() => navigate({ page: "public" })}
+        onAdminAccess={() => navigate({ page: "admin" })}
+      />
+    );
   }
 
-  async function loadSetupCodes() {
-    if (!isAdminAuthenticated) {
+  return (
+    <TooltipProvider>
+      <div className="h-screen overflow-hidden bg-black text-slate-100 antialiased">
+        <div className="flex h-full">
+          <AppSidebar
+            route={route}
+            isAuthenticated={isAdminAuthenticated}
+            liveStatus={liveStatus}
+            onNavigate={navigate}
+            onSignOut={handleSignOut}
+            onHelp={() => setHelpOpen(true)}
+          />
+          <main className="min-w-0 flex-1 overflow-auto bg-[#050505]">
+            <AdminMobileBar
+              route={route}
+              isAuthenticated={isAdminAuthenticated}
+              onNavigate={navigate}
+              onSignOut={handleSignOut}
+              onHelp={() => setHelpOpen(true)}
+            />
+            {globalMessage && route.page !== "admin" && (
+              <div className="border-b border-[#1a1a1a] bg-black px-4 py-3 text-xs font-bold uppercase tracking-[0.16em] text-neutral-500 lg:px-8">
+                {globalMessage}
+              </div>
+            )}
+            <div className="mx-auto max-w-7xl px-4 py-8 lg:px-10">
+              {route.page === "admin" ? (
+                <AdminAccessPage
+                  authConfig={authConfig}
+                  isAuthenticated={isAdminAuthenticated}
+                  onSignedIn={handleSignedIn}
+                  onSignOut={handleSignOut}
+                />
+              ) : !authReady ? (
+                <LoadingState label="Checking admin session..." />
+              ) : serverInventoryBlocked ? (
+                <LockedState onUnlock={() => navigate({ page: "admin" })} />
+              ) : route.page === "archives" ? (
+                <ArchivePage lifecycle={lifecycle} onRefresh={refresh} />
+              ) : route.page === "server" ? (
+                <ServerWorkspacePage
+                  route={route}
+                  servers={servers}
+                  lifecycle={lifecycle}
+                  onNavigate={navigate}
+                  onRefresh={refresh}
+                />
+              ) : (
+                <FleetPage
+                  servers={servers}
+                  lifecycle={lifecycle}
+                  onNavigate={navigate}
+                  onRefresh={refresh}
+                />
+              )}
+            </div>
+          </main>
+        </div>
+
+        <HelpDialog open={helpOpen} onOpenChange={setHelpOpen} />
+      </div>
+    </TooltipProvider>
+  );
+}
+
+function AppSidebar({
+  route,
+  isAuthenticated,
+  liveStatus,
+  onNavigate,
+  onSignOut,
+  onHelp,
+}: {
+  route: Route;
+  isAuthenticated: boolean;
+  liveStatus: "checking" | "live" | "syncing" | "locked";
+  onNavigate: (route: Route) => void;
+  onSignOut: () => void;
+  onHelp: () => void;
+}) {
+  const liveLabel = liveStatus === "live"
+    ? "Live server updates"
+    : liveStatus === "syncing"
+      ? "Syncing server state"
+      : liveStatus === "locked"
+        ? "Sign in required"
+        : "Checking server state";
+
+  return (
+    <aside className="hidden w-64 shrink-0 flex-col border-r border-[#1a1a1a] bg-black lg:flex">
+      <div className="flex h-24 items-center border-b border-[#1a1a1a] px-8">
+        <button type="button" onClick={() => onNavigate({ page: "fleet" })} className="flex items-center gap-3 text-left">
+          <div className="h-3 w-3 bg-brand-primary shadow-[0_0_12px_rgba(190,242,100,0.45)]" />
+          <div>
+            <p className="font-display text-xl font-extrabold uppercase tracking-tight text-white">Server</p>
+            <p className="font-mono text-[9px] font-bold uppercase tracking-[0.25em] text-neutral-700">Portal</p>
+          </div>
+        </button>
+      </div>
+
+      <nav className="no-scrollbar flex-1 space-y-8 overflow-y-auto p-6">
+        <div>
+          <h4 className="mb-4 px-4 text-[10px] font-bold uppercase tracking-[0.22em] text-neutral-700">
+            Servers
+          </h4>
+          <div className="space-y-1">
+            <SidebarButton
+              active={route.page === "fleet"}
+              icon={LayoutDashboard}
+              label="Servers"
+              onClick={() => onNavigate({ page: "fleet" })}
+            />
+            <SidebarButton
+              active={route.page === "archives"}
+              icon={Archive}
+              label="Saved Servers"
+              onClick={() => onNavigate({ page: "archives" })}
+            />
+          </div>
+        </div>
+
+        <div>
+          <h4 className="mb-4 px-4 text-[10px] font-bold uppercase tracking-[0.22em] text-neutral-700">
+            Account
+          </h4>
+          <div className="space-y-1">
+            <SidebarButton
+              active={route.page === "admin"}
+              icon={KeyRound}
+              label={isAuthenticated ? "Signed In" : "Admin Login"}
+              onClick={() => onNavigate({ page: "admin" })}
+            />
+            <SidebarButton active={false} icon={HelpCircle} label="Help" onClick={onHelp} />
+          </div>
+        </div>
+      </nav>
+
+      <div className="space-y-3 border-t border-[#1a1a1a] p-6">
+        <div className="flex items-center gap-3 border border-[#1f1f1f] bg-[#0a0a0a] px-4 py-3 text-neutral-500">
+          <div className={`status-square ${liveStatus === "live" ? "bg-brand-primary shadow-[0_0_10px_rgba(190,242,100,0.85)]" : ""}`} />
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-neutral-600">Server State</p>
+            <p className="mt-1 text-xs font-bold uppercase tracking-[0.12em] text-neutral-400">{liveLabel}</p>
+          </div>
+        </div>
+        {isAuthenticated && (
+          <Button
+            variant="ghost"
+            className="control-button w-full justify-start text-rose-500 hover:bg-rose-500/10 hover:text-rose-400"
+            onClick={onSignOut}
+          >
+            <LogOut className="mr-2 h-4 w-4" />
+            Sign Out
+          </Button>
+        )}
+      </div>
+    </aside>
+  );
+}
+
+function AdminMobileBar({
+  route,
+  isAuthenticated,
+  onNavigate,
+  onSignOut,
+  onHelp,
+}: {
+  route: Route;
+  isAuthenticated: boolean;
+  onNavigate: (route: Route) => void;
+  onSignOut: () => void;
+  onHelp: () => void;
+}) {
+  return (
+    <div className="sticky top-0 z-20 flex items-center gap-2 border-b border-[#1a1a1a] bg-black/95 px-3 py-3 backdrop-blur lg:hidden">
+      <button
+        type="button"
+        onClick={() => onNavigate({ page: "fleet" })}
+        className="mr-auto flex items-center gap-2 text-left"
+      >
+        <div className="h-3 w-3 bg-brand-primary" />
+        <span className="text-xs font-black uppercase tracking-[0.16em] text-white">Server Portal</span>
+      </button>
+      <Button
+        variant={route.page === "fleet" || route.page === "server" ? "default" : "ghost"}
+        size="icon"
+        className="h-9 w-9 rounded-sm"
+        onClick={() => onNavigate({ page: "fleet" })}
+        title="Servers"
+      >
+        <Server className="h-4 w-4" />
+      </Button>
+      <Button
+        variant={route.page === "archives" ? "default" : "ghost"}
+        size="icon"
+        className="h-9 w-9 rounded-sm"
+        onClick={() => onNavigate({ page: "archives" })}
+        title="Saved Servers"
+      >
+        <Archive className="h-4 w-4" />
+      </Button>
+      <Button variant="ghost" size="icon" className="h-9 w-9 rounded-sm" onClick={onHelp} title="Help">
+        <HelpCircle className="h-4 w-4" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-9 w-9 rounded-sm"
+        onClick={isAuthenticated ? onSignOut : () => onNavigate({ page: "admin" })}
+        title={isAuthenticated ? "Sign Out" : "Sign In"}
+      >
+        {isAuthenticated ? <LogOut className="h-4 w-4" /> : <KeyRound className="h-4 w-4" />}
+      </Button>
+    </div>
+  );
+}
+
+function SidebarButton({
+  active,
+  icon: Icon,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  icon: typeof Server;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex w-full items-center gap-4 px-4 py-3 text-xs font-bold uppercase tracking-[0.15em] transition ${
+        active ? "bg-brand-primary text-black" : "text-neutral-500 hover:bg-white/5 hover:text-white"
+      }`}
+    >
+      <Icon className="h-4 w-4" />
+      {label}
+    </button>
+  );
+}
+
+function LoadingState({ label }: { label: string }) {
+  return (
+    <div className="grid min-h-[50vh] place-items-center text-xs font-bold uppercase tracking-[0.2em] text-neutral-600">
+      <div className="flex items-center gap-3">
+        <Loader2 className="h-4 w-4 animate-spin text-brand-primary" />
+        {label}
+      </div>
+    </div>
+  );
+}
+
+function LockedState({ onUnlock }: { onUnlock: () => void }) {
+  return (
+    <div className="grid min-h-[55vh] place-items-center">
+      <div className="control-surface relative max-w-md p-10 text-center">
+        <div className="absolute left-0 top-0 h-3 w-3 border-l border-t border-brand-primary" />
+        <div className="absolute right-0 top-0 h-3 w-3 border-r border-t border-brand-primary" />
+        <div className="absolute bottom-0 left-0 h-3 w-3 border-b border-l border-brand-primary" />
+        <div className="absolute bottom-0 right-0 h-3 w-3 border-b border-r border-brand-primary" />
+        <KeyRound className="mx-auto mb-5 h-10 w-10 text-brand-primary" />
+        <p className="control-label text-brand-primary">Admin Login</p>
+        <h1 className="mt-3 text-3xl font-black uppercase tracking-tight text-white">Admin Login Required</h1>
+        <p className="mt-4 text-sm text-neutral-500">
+          Sign in to manage servers, worlds, players, mods, and settings.
+        </p>
+        <Button className="control-button mt-8 bg-brand-primary text-black hover:bg-white" onClick={onUnlock}>
+          Sign In
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function AdminAccessPage({
+  authConfig,
+  isAuthenticated,
+  onSignedIn,
+  onSignOut,
+}: {
+  authConfig: AuthConfig | null;
+  isAuthenticated: boolean;
+  onSignedIn: () => Promise<void>;
+  onSignOut: () => void;
+}) {
+  const [adminToken, setAdminToken] = useState("");
+  const [setupCode, setSetupCode] = useState("");
+  const [passkeyName, setPasskeyName] = useState("Admin passkey");
+  const [setupCodes, setSetupCodes] = useState<PasskeyRegistrationCode[]>([]);
+  const [busy, setBusy] = useState(false);
+  const passkeysEnabled = Boolean(authConfig?.passkeys?.enabled);
+  const browserSupportsPasskeys = passkeysAvailable();
+  const canUsePasskeys = passkeysEnabled && browserSupportsPasskeys;
+  const hasPasskeys = Boolean(authConfig?.passkeys?.hasPasskeys);
+  const tokenAuthEnabled = Boolean(authConfig?.authMethods?.includes("token"));
+  const devLoginEnabled = Boolean(authConfig?.devLogin?.enabled);
+  const registrationOpen = Boolean(
+    passkeysEnabled && authConfig && (!hasPasskeys || authConfig.passkeys?.registrationCodesAvailable || isAuthenticated)
+  );
+  const showPasskeyActions = passkeysEnabled && ((!isAuthenticated && hasPasskeys) || isAuthenticated);
+  const currentOrigin = window.location.origin;
+  const configuredPasskeyOrigin = authConfig?.passkeys?.origin;
+  const passkeyOriginMismatch = Boolean(configuredPasskeyOrigin && configuredPasskeyOrigin !== currentOrigin);
+  const passkeyHelp = !passkeysEnabled
+    ? "Passkeys are not enabled for this portal."
+    : !browserSupportsPasskeys
+    ? `Passkeys only work from HTTPS or localhost. This page is ${currentOrigin}.`
+    : passkeyOriginMismatch
+      ? `Passkeys are configured for ${configuredPasskeyOrigin}, but this page is ${currentOrigin}. Open the matching origin before signing in.`
+      : null;
+
+  const loadSetupCodes = useCallback(async () => {
+    if (!isAuthenticated) {
       setSetupCodes([]);
       return;
     }
@@ -455,3235 +769,2591 @@ export function App() {
     } catch {
       setSetupCodes([]);
     }
-  }
+  }, [isAuthenticated]);
 
   useEffect(() => {
-    if (!adminAccessDialog || !isAdminAuthenticated) {
-      setSetupCodes([]);
-      return;
-    }
     void loadSetupCodes();
-  }, [adminAccessDialog, isAdminAuthenticated]);
+  }, [loadSetupCodes]);
 
-  // Fetch TPS for running servers periodically
-  useEffect(() => {
-    if (servers.length > 0) {
-      fetchAllTps();
-      const interval = setInterval(fetchAllTps, 10000); // Update every 10 seconds
-      return () => clearInterval(interval);
+  const signInWithToken = async () => {
+    const token = adminToken.trim();
+    if (!token) {
+      toast.error("Enter an admin token");
+      return;
     }
-  }, [servers]);
-
-  useEffect(() => {
-    servers
-      .filter((server) => server.public_domain)
-      .forEach((server) => checkPublicAccess(server.name));
-  }, [servers.map((server) => `${server.name}:${server.public_domain || ""}:${server.public_port}`).join("|")]);
-
-  // Save network settings to backend when they change
-  async function saveNetworkConfig(serverName: string, field: string, value: string) {
-    let payloadValue: string | number | null = value.trim();
-
-    if (field === "public_port" || field === "local_port" || field === "host_proxy_port") {
-      const port = Number(payloadValue);
-      if (!Number.isInteger(port) || port < 1 || port > 65535) {
-        toast.error("Port must be an integer from 1 to 65535");
-        return false;
-      }
-      payloadValue = port;
-    } else {
-      payloadValue = payloadValue || null;
-    }
-
+    setBusy(true);
     try {
-      const response = await fetch(`/api/servers/${serverName}/config`, {
-        method: 'PATCH',
-        headers: jsonAuthHeaders(),
-        body: JSON.stringify({ [field]: payloadValue })
-      });
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({ error: response.statusText }));
-        throw new Error(error.error || `Failed to save ${field}`);
-      }
-      await refresh(); // Refresh to get updated server data
-      return true;
-    } catch (err: any) {
-      toast.error(err.message || `Failed to save ${field}`);
-      return false;
+      await loginWithAdminToken(token);
+      setAdminToken("");
+      toast.success("Signed in");
+      await onSignedIn();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Admin token sign-in failed");
+    } finally {
+      setBusy(false);
     }
+  };
+
+  const signInWithPasskey = async () => {
+    setBusy(true);
+    try {
+      await loginWithPasskey();
+      toast.success("Signed in with passkey");
+      await onSignedIn();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Passkey sign-in failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const signInWithDev = async () => {
+    setBusy(true);
+    try {
+      await loginWithDevAdmin();
+      toast.success("Signed in");
+      await onSignedIn();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Dev sign-in failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const addPasskey = async () => {
+    setBusy(true);
+    try {
+      await registerPasskey(passkeyName.trim() || "Admin passkey", setupCode);
+      setSetupCode("");
+      toast.success("Passkey registered");
+      await onSignedIn();
+      await loadSetupCodes();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to register passkey");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revokeSetupCode = async (id: string) => {
+    try {
+      await deletePasskeyRegistrationCode(id);
+      toast.success("Setup code revoked");
+      await loadSetupCodes();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to revoke setup code");
+    }
+  };
+
+  return (
+    <div className="mx-auto max-w-3xl space-y-6">
+      <div>
+        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#F27D26]">Admin</p>
+        <h1 className="mt-2 text-3xl font-semibold text-white">Sign In</h1>
+      </div>
+
+      {devLoginEnabled && !isAuthenticated && (
+        <section className="border border-brand-primary/30 bg-brand-primary/10 p-5">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-white">Dev Login</h2>
+              <p className="mt-1 text-sm text-[#8E9299]">Enabled by the local dev server.</p>
+            </div>
+            <Button onClick={signInWithDev} disabled={busy} className="rounded-sm bg-brand-primary text-black hover:bg-white">
+              {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <KeyRound className="mr-2 h-4 w-4" />}
+              Sign In
+            </Button>
+          </div>
+        </section>
+      )}
+
+      {passkeysEnabled && (
+      <section className="border border-[#2C2E33] bg-[#1C1D21] p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold text-white">Passkey</h2>
+            <p className="mt-1 text-sm text-[#8E9299]">
+              {isAuthenticated
+                ? "Signed in on this browser."
+                : hasPasskeys
+                  ? "Use your saved passkey."
+                  : "Register the first admin passkey."}
+            </p>
+          </div>
+          <Badge variant={isAuthenticated ? "default" : "outline"} className="rounded-sm">
+            {isAuthenticated ? "Signed in" : "Locked"}
+          </Badge>
+        </div>
+
+        {!canUsePasskeys && (
+          <div className="mt-4 border border-amber-400/30 bg-amber-400/10 p-3 text-sm text-amber-200">
+            {passkeyHelp}
+            {!tokenAuthEnabled && !devLoginEnabled && (
+              <span className="mt-2 block text-amber-100/70">
+                Token sign-in is not enabled, so this origin cannot be used for admin access.
+              </span>
+            )}
+          </div>
+        )}
+
+        {canUsePasskeys && passkeyOriginMismatch && (
+          <div className="mt-4 border border-amber-400/30 bg-amber-400/10 p-3 text-sm text-amber-200">
+            {passkeyHelp}
+          </div>
+        )}
+
+        {showPasskeyActions && (
+          <div className="mt-5 grid gap-3 sm:grid-cols-2">
+            {!isAuthenticated && hasPasskeys && (
+              <Button onClick={signInWithPasskey} disabled={!canUsePasskeys || busy} className="rounded-sm">
+                {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Fingerprint className="mr-2 h-4 w-4" />}
+                Sign In
+              </Button>
+            )}
+            {isAuthenticated && (
+              <Button variant="outline" onClick={onSignOut} className="rounded-sm">
+                <LogOut className="mr-2 h-4 w-4" />
+                Sign Out
+              </Button>
+            )}
+          </div>
+        )}
+
+        {registrationOpen && (
+          <div className="mt-5 space-y-4 border-t border-[#2C2E33] pt-5">
+            {!isAuthenticated && (
+              <div className="space-y-2">
+                <Label htmlFor="setup-code">One-time setup code</Label>
+                <Input
+                  id="setup-code"
+                  type="password"
+                  value={setupCode}
+                  onChange={(event) => setSetupCode(event.target.value)}
+                  placeholder="Paste setup code"
+                  className="rounded-sm"
+                />
+              </div>
+            )}
+            <div className="space-y-2">
+              <Label htmlFor="passkey-name">Passkey name</Label>
+              <Input
+                id="passkey-name"
+                value={passkeyName}
+                onChange={(event) => setPasskeyName(event.target.value)}
+                className="rounded-sm"
+              />
+            </div>
+            <Button
+              onClick={addPasskey}
+              disabled={!canUsePasskeys || busy || (!isAuthenticated && !setupCode.trim())}
+              className="w-full rounded-sm"
+            >
+              {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Fingerprint className="mr-2 h-4 w-4" />}
+              Register Passkey
+            </Button>
+          </div>
+        )}
+      </section>
+      )}
+
+      {tokenAuthEnabled && !isAuthenticated && (
+        <section className="border border-[#2C2E33] bg-[#1C1D21] p-5">
+          <h2 className="text-lg font-semibold text-white">Admin Token Sign In</h2>
+          <p className="mt-1 text-sm text-[#8E9299]">
+            Use this only if token sign-in is enabled for this portal.
+          </p>
+          <div className="mt-4 grid gap-2 sm:grid-cols-[1fr_auto]">
+            <Input
+              type="password"
+              value={adminToken}
+              onChange={(event) => setAdminToken(event.target.value)}
+              placeholder="Paste admin token"
+              className="rounded-sm"
+            />
+            <Button onClick={signInWithToken} disabled={busy} className="rounded-sm">
+              Sign In
+            </Button>
+          </div>
+        </section>
+      )}
+
+      {isAuthenticated && setupCodes.length > 0 && (
+        <section className="border border-[#2C2E33] bg-[#1C1D21] p-5">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-white">One-time Codes</h2>
+              <p className="mt-1 text-sm text-[#8E9299]">Created from the server tools. Plaintext codes are shown once and are not stored.</p>
+            </div>
+            <Badge variant="outline" className="rounded-sm">
+              {setupCodes.filter((code) => !code.usedAt).length} open
+            </Badge>
+          </div>
+          <div className="mt-4 divide-y divide-[#2C2E33]">
+            {setupCodes.map((code) => (
+              <div key={code.id} className="flex items-center gap-3 py-3">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium text-white">{code.label || "Setup code"}</p>
+                  <p className="text-xs text-[#8E9299]">
+                    {code.usedAt ? `Used ${new Date(code.usedAt).toLocaleString()}` : "Unused"}
+                  </p>
+                </div>
+                <Badge variant={code.usedAt ? "secondary" : "outline"} className="rounded-sm">
+                  {code.usedAt ? "Used" : "Open"}
+                </Badge>
+                {!code.usedAt && code.source === "generated" && (
+                  <Button variant="ghost" size="sm" className="rounded-sm" onClick={() => revokeSetupCode(code.id)}>
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function FleetPage({
+  servers,
+  lifecycle,
+  onNavigate,
+  onRefresh,
+}: {
+  servers: ServerRow[];
+  lifecycle: LifecycleState | null;
+  onNavigate: (route: Route) => void;
+  onRefresh: () => Promise<void> | void;
+}) {
+  const [creating, setCreating] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [form, setForm] = useState<CreateServerInput>({
+    name: "",
+    edition: "paper",
+    mc_version: "1.21.1",
+    memory_mb: 4096,
+    cpu_limit: "2",
+    public_port: 34567,
+  });
+  const maxActive = lifecycle?.maxActiveServers ?? 3;
+  const slotsAvailable = lifecycle?.slotsAvailable ?? Math.max(0, maxActive - servers.length);
+  const archives = lifecycle?.archives ?? [];
+
+  const createServer = async () => {
+    setBusy(true);
+    try {
+      const input = { ...form, name: form.name.trim() || undefined };
+      await api.createServer(input);
+      toast.success("Server created");
+      setCreating(false);
+      await onRefresh();
+      if (input.name) onNavigate({ page: "server", name: input.name, tab: "overview" });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to create server");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-14">
+      <div className="flex flex-col gap-10 border-b-2 border-white/5 pb-10 md:flex-row md:items-end md:justify-between">
+        <div className="space-y-4">
+          <p className="control-label text-brand-primary">Server slots</p>
+          <h1 className="font-display text-6xl font-black uppercase leading-[0.85] tracking-tight text-white md:text-7xl">
+            <span className="mt-2 inline-block border-[5px] border-double border-brand-primary bg-black px-4 py-1 text-brand-primary">
+              Servers
+            </span>
+          </h1>
+          <p className="text-xs font-bold uppercase tracking-[0.22em] text-neutral-600">
+            {servers.length} / {maxActive} active servers // {archives.length} saved // {slotsAvailable} open
+          </p>
+        </div>
+        <Button
+          className="control-button bg-brand-primary px-8 py-4 text-black hover:bg-white"
+          onClick={() => setCreating(true)}
+          disabled={slotsAvailable <= 0 || lifecycle?.configured === false}
+        >
+          <Plus className="mr-2 h-4 w-4" />
+          Create Server
+        </Button>
+      </div>
+
+      {lifecycle?.configured === false && (
+        <div className="border border-amber-400/25 bg-amber-400/5 p-4 text-xs font-bold uppercase tracking-[0.16em] text-amber-200">
+          Server creation and restore are not set up yet: {lifecycle.unavailableReason}
+        </div>
+      )}
+
+      {creating && (
+        <div className="control-surface relative overflow-hidden p-10">
+          <div className="pointer-events-none absolute right-4 top-4 opacity-[0.03]">
+            <Plus className="h-32 w-32" />
+          </div>
+          <div className="relative z-10">
+            <div className="mb-10">
+              <p className="control-label">New Server</p>
+              <h2 className="mt-2 text-2xl font-black uppercase tracking-tight text-white">Create Server</h2>
+              <p className="mt-2 text-sm text-neutral-500">
+                Creates one of the three managed server slots. New servers currently support Paper or Vanilla.
+              </p>
+            </div>
+            <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+              <Field label="Server name">
+                <Input
+                  value={form.name || ""}
+                  onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
+                  placeholder="mc-server-2"
+                  className="control-input"
+                />
+              </Field>
+              <Field label="Edition">
+                <Select value={form.edition} onValueChange={(edition) => setForm((current) => ({ ...current, edition }))}>
+                  <SelectTrigger className="control-input"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="paper">Paper</SelectItem>
+                    <SelectItem value="vanilla">Vanilla</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label="Minecraft version">
+                <Input
+                  value={form.mc_version}
+                  onChange={(event) => setForm((current) => ({ ...current, mc_version: event.target.value }))}
+                  className="control-input font-mono"
+                />
+              </Field>
+              <Field label="Public port">
+                <Input
+                  type="number"
+                  value={form.public_port}
+                  onChange={(event) => setForm((current) => ({ ...current, public_port: Number(event.target.value) }))}
+                  className="control-input font-mono"
+                />
+              </Field>
+              <Field label="Memory MB">
+                <Input
+                  type="number"
+                  min={1024}
+                  value={form.memory_mb}
+                  onChange={(event) => setForm((current) => ({ ...current, memory_mb: Number(event.target.value) }))}
+                  className="control-input font-mono"
+                />
+              </Field>
+              <Field label="CPU limit">
+                <Input
+                  value={form.cpu_limit}
+                  onChange={(event) => setForm((current) => ({ ...current, cpu_limit: event.target.value }))}
+                  className="control-input font-mono"
+                />
+              </Field>
+            </div>
+            <div className="mt-10 flex justify-end gap-4 border-t border-white/5 pt-8">
+              <Button variant="ghost" className="control-button text-neutral-600 hover:text-white" onClick={() => setCreating(false)}>Cancel</Button>
+              <Button className="control-button bg-white px-8 text-black hover:bg-brand-primary" onClick={createServer} disabled={busy || slotsAvailable <= 0}>
+                {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
+                Create
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="grid gap-8 md:grid-cols-2 xl:grid-cols-3">
+        {servers.map((server) => (
+          <button
+            key={server.name}
+            type="button"
+            onClick={() => onNavigate({ page: "server", name: server.name, tab: "overview" })}
+            className="group flex min-h-[17rem] flex-col border border-[#1a1a1a] bg-[#0a0a0a] p-8 text-left transition hover:border-brand-primary/60"
+          >
+            <div className="mb-10 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className={`status-square ${server.status === "Running" ? "bg-brand-primary shadow-[0_0_10px_rgba(190,242,100,0.85)]" : ""}`} />
+                <span className="text-[10px] font-bold uppercase tracking-[0.22em] text-neutral-500">{server.status}</span>
+              </div>
+              <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-neutral-700">Port {server.public_port}</div>
+            </div>
+
+            <div className="flex-1">
+              <h2 className="font-display text-3xl font-black uppercase leading-none tracking-tight text-white transition group-hover:text-brand-primary">
+                {server.name}
+              </h2>
+              <div className="mt-4 flex items-center gap-3 text-[10px] font-bold uppercase tracking-widest text-neutral-600">
+                <span>{server.edition}</span>
+                <span className="opacity-25">/</span>
+                <span>v{server.mc_version}</span>
+              </div>
+            </div>
+
+            <div className="mt-8 grid grid-cols-[1fr_auto] items-end gap-6 border-t border-white/5 pt-6">
+              <div className="grid grid-cols-2 gap-5 text-sm">
+                <Metric label="Players" value={`${server.minecraft?.players?.online ?? 0}/${server.minecraft?.players?.max ?? 0}`} />
+                <Metric label="Memory" value={`${server.memory_mb} MB`} />
+                <Metric label="Public" value={getPublicJoinAddress(server) || `:${server.public_port}`} />
+                <Metric label="CPU" value={server.cpu_limit || "Unlimited"} />
+              </div>
+              <div className="grid h-10 w-10 place-items-center border border-white/5 text-neutral-500 transition group-hover:bg-brand-primary group-hover:text-black">
+                <ChevronRight className="h-5 w-5" />
+              </div>
+            </div>
+          </button>
+        ))}
+
+        {Array.from({ length: slotsAvailable }).map((_, index) => (
+          <button
+            key={`slot-${index}`}
+            type="button"
+            className="group flex min-h-[17rem] flex-col items-center justify-center gap-6 border border-dashed border-[#1a1a1a] bg-[#0a0a0a]/45 p-8 text-neutral-700 transition hover:border-brand-primary/30 hover:text-brand-primary"
+            onClick={() => setCreating(true)}
+          >
+            <div className="grid h-12 w-12 place-items-center border border-[#1a1a1a] transition group-hover:bg-brand-primary group-hover:text-black">
+              <Plus className="h-6 w-6" />
+            </div>
+            <span className="text-[10px] font-bold uppercase tracking-[0.3em]">Open Server Slot</span>
+          </button>
+        ))}
+      </div>
+
+      {archives.length > 0 && (
+        <section className="space-y-5">
+          <div className="flex items-center justify-between border-b border-white/5 pb-4">
+            <div>
+              <p className="control-label">Saved Servers</p>
+              <h2 className="mt-1 text-xl font-black uppercase tracking-tight text-white">Recent Saves</h2>
+            </div>
+            <Button variant="ghost" className="control-button text-brand-primary hover:text-white" onClick={() => onNavigate({ page: "archives" })}>
+              View all <ChevronRight className="ml-1 h-4 w-4" />
+            </Button>
+          </div>
+          <div className="grid gap-3 md:grid-cols-3">
+            {archives.slice(0, 3).map((archive) => (
+              <div key={archive.id} className="control-surface p-5">
+                <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-neutral-700">{new Date(archive.createdAt).toLocaleDateString()}</p>
+                <p className="mt-2 font-bold uppercase tracking-tight text-white">{archive.label || archive.sourceName}</p>
+                <p className="mt-2 text-[10px] font-bold uppercase tracking-widest text-neutral-600">{archive.server.edition} {archive.server.mc_version}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function ArchivePage({ lifecycle, onRefresh }: { lifecycle: LifecycleState | null; onRefresh: () => Promise<void> | void }) {
+  const [restoreTarget, setRestoreTarget] = useState<ServerArchive | null>(null);
+  const [restoreName, setRestoreName] = useState("");
+  const [restorePort, setRestorePort] = useState(34567);
+  const [busy, setBusy] = useState(false);
+  const archives = lifecycle?.archives ?? [];
+  const slotsAvailable = lifecycle?.slotsAvailable ?? 0;
+
+  const openRestore = (archive: ServerArchive) => {
+    setRestoreTarget(archive);
+    setRestoreName(archive.server.name || archive.sourceName);
+    setRestorePort(archive.server.public_port || 34567);
+  };
+
+  const restore = async () => {
+    if (!restoreTarget) return;
+    setBusy(true);
+    try {
+      await api.restoreArchive(restoreTarget.id, { name: restoreName.trim() || undefined, public_port: restorePort });
+      toast.success("Saved server restored");
+      setRestoreTarget(null);
+      await onRefresh();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to restore saved server");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const deleteArchive = async (archive: ServerArchive) => {
+    setBusy(true);
+    try {
+      await api.deleteArchive(archive.id);
+      toast.success("Saved server deleted");
+      await onRefresh();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to delete saved server");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-end justify-between gap-4">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#F27D26]">Saved servers</p>
+          <h1 className="mt-2 text-3xl font-semibold text-white">Saved Servers</h1>
+          <p className="mt-2 text-sm text-[#8E9299]">Bring a saved Minecraft server back into an open server slot.</p>
+        </div>
+        <div className="text-right">
+          <p className="text-xs uppercase tracking-[0.16em] text-[#8E9299]">Slots available</p>
+          <p className="text-2xl font-semibold text-white">{slotsAvailable}</p>
+        </div>
+      </div>
+
+      {archives.length === 0 ? (
+        <div className="border border-dashed border-[#2C2E33] bg-[#1C1D21] p-12 text-center text-[#8E9299]">
+          <Archive className="mx-auto mb-4 h-10 w-10 opacity-40" />
+          <p className="font-medium text-white">No saved servers yet</p>
+          <p className="mt-2 text-sm">Save a season or world before freeing one of the three active server slots.</p>
+        </div>
+      ) : (
+        <div className="grid gap-4">
+          {archives.map((archive) => (
+            <div key={archive.id} className="grid gap-4 border border-[#2C2E33] bg-[#1C1D21] p-5 md:grid-cols-[1fr_auto] md:items-center">
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="text-lg font-semibold text-white">{archive.label || archive.sourceName}</h2>
+                  <Badge variant="secondary" className="rounded-sm">{archive.server.edition} {archive.server.mc_version}</Badge>
+                </div>
+                <p className="mt-1 text-xs text-[#8E9299]">
+                  {new Date(archive.createdAt).toLocaleString()} | {archive.server.memory_mb} MB | {archive.id}
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <Button className="rounded-sm" disabled={slotsAvailable <= 0 || busy} onClick={() => openRestore(archive)}>
+                  <DatabaseBackup className="mr-2 h-4 w-4" />
+                  Restore
+                </Button>
+                <Button variant="outline" className="rounded-sm text-red-200" disabled={busy} onClick={() => deleteArchive(archive)}>
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <Dialog open={Boolean(restoreTarget)} onOpenChange={(open) => !open && setRestoreTarget(null)}>
+        <DialogContent className="rounded-sm">
+          <DialogHeader>
+            <DialogTitle>Restore Saved Server</DialogTitle>
+            <DialogDescription>Bring this saved server back into an open server slot.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <Field label="Server name">
+              <Input value={restoreName} onChange={(event) => setRestoreName(event.target.value)} className="rounded-sm" />
+            </Field>
+            <Field label="Public port">
+              <Input type="number" value={restorePort} onChange={(event) => setRestorePort(Number(event.target.value))} className="rounded-sm" />
+            </Field>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" className="rounded-sm" onClick={() => setRestoreTarget(null)}>Cancel</Button>
+            <Button className="rounded-sm" onClick={restore} disabled={busy || slotsAvailable <= 0}>
+              {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <DatabaseBackup className="mr-2 h-4 w-4" />}
+              Restore
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function ServerWorkspacePage({
+  route,
+  servers,
+  lifecycle,
+  onNavigate,
+  onRefresh,
+}: {
+  route: Extract<Route, { page: "server" }>;
+  servers: ServerRow[];
+  lifecycle: LifecycleState | null;
+  onNavigate: (route: Route) => void;
+  onRefresh: () => Promise<void> | void;
+}) {
+  const server = servers.find((candidate) => candidate.name === route.name);
+  const [archiveOpen, setArchiveOpen] = useState(false);
+  const [archiveLabel, setArchiveLabel] = useState("");
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+
+  if (!server) {
+    return (
+      <div className="control-surface p-8 text-neutral-500">
+        Server `{route.name}` is not currently registered.
+      </div>
+    );
   }
 
-  async function checkPublicAccess(serverName: string) {
-    setPublicAccess(prev => {
-      const next = new Map(prev);
-      next.set(serverName, {
-        ...(next.get(serverName) || { accessible: null }),
-        checking: true,
-      });
-      return next;
-    });
-
+  const runLifecycleAction = async (action: "start" | "stop" | "restart" | "backup") => {
+    setBusyAction(action);
     try {
-      const response = await fetch(`/api/servers/${serverName}/check-public`, {
-        headers: authHeaders(),
-      });
-      const data = await response.json();
-      setPublicAccess(prev => {
-        const next = new Map(prev);
-        next.set(serverName, {
-          accessible: data.accessible === true,
-          checking: false,
-          reason: data.reason,
-          checkedAt: new Date().toISOString(),
-        });
-        return next;
-      });
-    } catch (err: any) {
-      setPublicAccess(prev => {
-        const next = new Map(prev);
-        next.set(serverName, {
-          accessible: false,
-          checking: false,
-          reason: err.message || "External status check failed",
-          checkedAt: new Date().toISOString(),
-        });
-        return next;
-      });
+      const result = await api.serverAction(server.name, action);
+      const message = typeof result === "string" ? result : result.message;
+      toast.success(message || `${action} completed`);
+      await onRefresh();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : `Failed to ${action} server`);
+    } finally {
+      setBusyAction(null);
     }
-  }
+  };
 
-  async function loadLifecycle() {
-    if (!isAdminAuthenticated && serverInventoryBlocked) {
-      setLifecycle(null);
+  const archiveServer = async () => {
+    setBusyAction("archive");
+    try {
+      await api.archiveServer(server.name, archiveLabel);
+      toast.success(`${server.name} saved`);
+      setArchiveOpen(false);
+      await onRefresh();
+      onNavigate({ page: "fleet" });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to save server");
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const isRunning = server.status === "Running";
+  const currentTab = route.tab;
+
+  return (
+    <div className="-mx-4 -my-8 min-h-[calc(100vh-0px)] lg:-mx-10">
+      <div className="sticky top-0 z-20 border-b border-[#1a1a1a] bg-black/95 px-4 py-6 backdrop-blur lg:px-10">
+        <div className="mx-auto max-w-7xl">
+          <div className="mb-7 flex flex-col gap-6 xl:flex-row xl:items-center xl:justify-between">
+            <div className="flex items-start gap-5">
+              <button
+                type="button"
+                onClick={() => onNavigate({ page: "fleet" })}
+                className="mt-1 grid h-10 w-10 shrink-0 place-items-center border border-[#1f1f1f] text-neutral-600 transition hover:border-brand-primary hover:text-brand-primary"
+                title="Back to servers"
+              >
+                <ArrowLeft className="h-4 w-4" />
+              </button>
+              <div>
+                <div className="flex flex-wrap items-center gap-4">
+                  <h1 className="font-display text-4xl font-black uppercase leading-none tracking-tight text-white">
+                    {server.name}
+                  </h1>
+                  <div className="flex items-center gap-3 border border-[#1f1f1f] bg-[#0a0a0a] px-3 py-1">
+                    <div className={`status-square ${isRunning ? "bg-brand-primary shadow-[0_0_10px_rgba(190,242,100,0.85)]" : ""}`} />
+                    <span className="text-[10px] font-black uppercase tracking-[0.2em] text-neutral-500">{server.status}</span>
+                  </div>
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-4 text-xs font-bold uppercase tracking-[0.14em] text-neutral-600">
+                  <span className="flex items-center gap-2"><Server className="h-3.5 w-3.5 text-brand-primary" />{server.edition} v{server.mc_version}</span>
+                  <span className="h-1 w-1 bg-neutral-800" />
+                  <span>{server.memory_mb} MB</span>
+                  <span className="h-1 w-1 bg-neutral-800" />
+                  <span>{server.cpu_limit || "Unlimited"} CPU</span>
+                  <span className="h-1 w-1 bg-neutral-800" />
+                  <span className="font-mono">{getPublicJoinAddress(server) || `:${server.public_port}`}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                className="control-button bg-brand-primary px-6 text-black hover:bg-white"
+                onClick={() => runLifecycleAction("start")}
+                disabled={busyAction !== null || isRunning}
+              >
+                <Play className="mr-2 h-4 w-4" />
+                Start
+              </Button>
+              <Button
+                variant="outline"
+                className="control-button border-[#1f1f1f] bg-black text-neutral-300 hover:bg-white/5 hover:text-white"
+                onClick={() => runLifecycleAction("restart")}
+                disabled={busyAction !== null || !isRunning}
+              >
+                <RotateCw className="mr-2 h-4 w-4" />
+                Restart
+              </Button>
+              <Button
+                variant="destructive"
+                className="control-button bg-rose-600 px-6 text-white hover:bg-rose-500"
+                onClick={() => runLifecycleAction("stop")}
+                disabled={busyAction !== null || !isRunning}
+              >
+                <Square className="mr-2 h-4 w-4" />
+                Stop
+              </Button>
+              <Button
+                variant="outline"
+                className="control-button border-[#1f1f1f] bg-black text-neutral-300 hover:bg-white/5 hover:text-white"
+                onClick={() => window.open(pathFor({ page: "public", name: server.name }), "_blank")}
+              >
+                <ExternalLink className="mr-2 h-4 w-4" />
+                Friend Join Page
+              </Button>
+              <Button
+                variant="outline"
+                className="control-button border-amber-400/25 bg-amber-400/5 text-amber-300 hover:bg-amber-400/10 hover:text-amber-200"
+                disabled={lifecycle?.configured === false || busyAction !== null}
+                onClick={() => {
+                  setArchiveLabel(`${server.name} ${new Date().toLocaleDateString()}`);
+                  setArchiveOpen(true);
+                }}
+              >
+                <Archive className="mr-2 h-4 w-4" />
+                Save Server
+              </Button>
+            </div>
+          </div>
+
+          <Tabs value={currentTab} onValueChange={(value) => onNavigate({ page: "server", name: server.name, tab: value as WorkspaceTab })}>
+            <TabsList className="h-auto flex-wrap justify-start rounded-none border-0 bg-transparent p-0">
+              {workspaceTabs.map(({ value, label, icon: Icon }) => (
+                <TabsTrigger
+                  key={value}
+                  value={value}
+                  className="rounded-none border-b-2 border-transparent px-5 py-3 text-xs font-bold uppercase tracking-[0.16em] text-neutral-500 data-[state=active]:border-brand-primary data-[state=active]:bg-[#0a0a0a] data-[state=active]:text-brand-primary"
+                >
+                  <Icon className="mr-2 h-4 w-4" />
+                  {label}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
+        </div>
+      </div>
+
+      <div className="mx-auto max-w-7xl px-4 py-8 lg:px-10">
+        <div role="tabpanel" aria-label={workspaceTabs.find((tab) => tab.value === currentTab)?.label || "Workspace"}>
+          {currentTab === "overview" && (
+            <OverviewTab server={server} onBackup={() => runLifecycleAction("backup")} />
+          )}
+          {currentTab === "players" && <PlayersTab server={server} />}
+          {currentTab === "content" && <ContentTab server={server} onRefresh={onRefresh} />}
+          {currentTab === "worlds" && <WorldsTab server={server} />}
+          {currentTab === "settings" && <SettingsTab server={server} onRefresh={onRefresh} />}
+        </div>
+      </div>
+
+      <Dialog open={archiveOpen} onOpenChange={setArchiveOpen}>
+        <DialogContent className="rounded-sm">
+          <DialogHeader>
+            <DialogTitle>Save Server</DialogTitle>
+            <DialogDescription>
+              This saves the complete Minecraft server, removes it from the active list, and frees one of the three server slots.
+            </DialogDescription>
+          </DialogHeader>
+          <Field label="Saved server name">
+            <Input value={archiveLabel} onChange={(event) => setArchiveLabel(event.target.value)} className="rounded-sm" />
+          </Field>
+          <DialogFooter>
+            <Button variant="outline" className="rounded-sm" onClick={() => setArchiveOpen(false)}>Cancel</Button>
+            <Button variant="destructive" className="rounded-sm" onClick={archiveServer} disabled={busyAction !== null}>
+              {busyAction === "archive" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Archive className="mr-2 h-4 w-4" />}
+              Save Server
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function OverviewTab({
+  server,
+  onBackup,
+}: {
+  server: ServerRow;
+  onBackup: () => void;
+}) {
+  const [logs, setLogs] = useState("");
+  const [loadingLogs, setLoadingLogs] = useState(false);
+  const [tps, setTps] = useState<number | null>(null);
+  const [publicAccess, setPublicAccess] = useState<PublicAccessState | null>(null);
+  const [command, setCommand] = useState("");
+  const [commandOutput, setCommandOutput] = useState("");
+  const logsRef = useRef<HTMLDivElement>(null);
+
+  const loadLogs = useCallback(async () => {
+    setLoadingLogs(true);
+    try {
+      const text = await api.getLogs(server.name);
+      setLogs(text.trim().split("\n").slice(-MAX_LOG_LINES).join("\n"));
+    } catch {
+      // Logs are convenience data; keep the workspace usable.
+    } finally {
+      setLoadingLogs(false);
+    }
+  }, [server.name]);
+
+  const loadTps = useCallback(async () => {
+    if (server.status !== "Running") {
+      setTps(null);
       return;
     }
     try {
-      const response = await fetch("/api/server-lifecycle", {
-        headers: authHeaders(),
-      });
-      if (!response.ok) {
-        setLifecycle(null);
-        return;
-      }
-      setLifecycle(await response.json());
+      const data = await api.getTps(server.name);
+      setTps(readTpsValue(data));
     } catch {
-      setLifecycle(null);
+      setTps(null);
     }
+  }, [server.name, server.status]);
+
+  const checkPublic = useCallback(async () => {
+    if (!server.public_domain) {
+      setPublicAccess({ accessible: false, checking: false, reason: "No public domain configured" });
+      return;
+    }
+    setPublicAccess((current) => ({ ...(current || { accessible: null }), checking: true }));
+    try {
+      const data = await api.checkPublicAccess(server.name);
+      setPublicAccess({ ...data, checking: false, checkedAt: new Date().toISOString() });
+    } catch (error) {
+      setPublicAccess({
+        accessible: false,
+        checking: false,
+        reason: error instanceof Error ? error.message : "External status check failed",
+      });
+    }
+  }, [server.name, server.public_domain]);
+
+  useEffect(() => {
+    void loadLogs();
+    void loadTps();
+    void checkPublic();
+    let logsInterval: number | null = null;
+    let logsSource: EventSource | null = null;
+    const stopLogPolling = () => {
+      if (logsInterval === null) return;
+      window.clearInterval(logsInterval);
+      logsInterval = null;
+    };
+    const startLogPolling = () => {
+      if (logsInterval !== null) return;
+      logsInterval = window.setInterval(() => void loadLogs(), 3000);
+    };
+    if ("EventSource" in window) {
+      logsSource = api.subscribeServerLogs(
+        server.name,
+        (state) => {
+          stopLogPolling();
+          setLoadingLogs(false);
+          setLogs(state.logs.trim().split("\n").slice(-MAX_LOG_LINES).join("\n"));
+        },
+        () => {
+          setLoadingLogs(false);
+          startLogPolling();
+        }
+      );
+    } else {
+      startLogPolling();
+    }
+    const tpsInterval = window.setInterval(() => void loadTps(), 5000);
+    const publicInterval = window.setInterval(() => void checkPublic(), 30000);
+    return () => {
+      logsSource?.close();
+      stopLogPolling();
+      window.clearInterval(tpsInterval);
+      window.clearInterval(publicInterval);
+    };
+  }, [checkPublic, loadLogs, loadTps, server.name]);
+
+  useEffect(() => {
+    if (logsRef.current) logsRef.current.scrollTop = logsRef.current.scrollHeight;
+  }, [logs]);
+
+  const runCommand = async () => {
+    if (!command.trim()) return;
+    try {
+      const output = await api.runCommand(server.name, command.trim());
+      setCommandOutput(output.trim() || "Command completed with no output.");
+      setCommand("");
+      await loadLogs();
+    } catch (error) {
+      setCommandOutput(error instanceof Error ? error.message : "Command failed");
+    }
+  };
+
+  const publicAddress = getPublicJoinAddress(server);
+  const localAddress = getLocalJoinAddress(server);
+  const logLines = logs ? logs.split("\n").filter(Boolean) : [];
+
+  return (
+    <div className="grid min-h-[42rem] gap-8 xl:grid-cols-[24rem_minmax(0,1fr)]">
+      <div className="space-y-6">
+        <section className="control-surface">
+          <div className="flex items-center justify-between border-b border-[#1a1a1a] px-6 py-4">
+            <h2 className="flex items-center gap-3 text-xs font-bold uppercase tracking-[0.2em] text-neutral-600">
+              <Activity className="h-4 w-4 text-brand-primary" />
+              Server Status
+            </h2>
+            {server.status === "Running" && <div className="status-square bg-brand-primary shadow-[0_0_8px_rgba(190,242,100,0.85)]" />}
+          </div>
+          <div className="grid grid-cols-2">
+            <MetricCell label="Status" value={server.status} tone={server.status === "Running" ? "primary" : "muted"} />
+            <MetricCell label="TPS" value={formatTps(tps)} mono />
+            <MetricCell label="Players" value={`${server.minecraft?.players?.online ?? 0}/${server.minecraft?.players?.max ?? 0}`} mono />
+            <MetricCell label="Memory" value={`${server.memory_mb} MB`} mono />
+            <MetricCell label="CPU" value={server.cpu_limit || "Unlimited"} mono />
+            <MetricCell label="Version" value={server.mc_version} mono />
+          </div>
+        </section>
+
+        <section className="control-surface">
+          <div className="border-b border-[#1a1a1a] px-6 py-4">
+            <h2 className="flex items-center gap-3 text-xs font-bold uppercase tracking-[0.2em] text-neutral-600">
+              <Globe className="h-4 w-4 text-brand-primary" />
+              Join Addresses
+            </h2>
+          </div>
+          <div className="space-y-7 p-6">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="control-label">Public join test</p>
+                <p className={`mt-1 text-sm font-black uppercase tracking-widest ${
+                  publicAccess?.checking ? "text-neutral-400" : publicAccess?.accessible ? "text-brand-primary" : "text-rose-500"
+                }`}>
+                  {publicAccess?.checking ? "Checking" : publicAccess?.accessible ? "Reachable" : "Restricted"}
+                </p>
+              </div>
+              {publicAccess?.checking && <Loader2 className="h-4 w-4 animate-spin text-neutral-500" />}
+            </div>
+            <AddressBlock label="Public join address" value={publicAddress || "Set a public domain first"} />
+            <AddressBlock label="LAN join address" value={localAddress || "Set LAN IP first"} />
+            {publicAccess?.accessible === false && (
+              <p className="border border-amber-400/25 bg-amber-400/5 p-4 text-xs font-bold uppercase tracking-[0.12em] text-amber-200">
+                If friends outside your Wi-Fi cannot join, forward TCP {server.public_port} to server port {getHostProxyPort(server)}.
+                {publicAccess.reason ? ` ${publicAccess.reason}` : ""}
+              </p>
+            )}
+            <Button
+              variant="outline"
+              className="control-button w-full border-[#1f1f1f] bg-black text-neutral-300 hover:bg-brand-primary hover:text-black"
+              disabled={!publicAddress}
+              onClick={async () => {
+                if (await copyToClipboard(buildPlayerInviteText(server))) toast.success("Player invite copied");
+              }}
+            >
+              <Copy className="mr-2 h-4 w-4" />
+              Copy Player Invite
+            </Button>
+          </div>
+        </section>
+
+        <section className="control-surface">
+          <div className="border-b border-[#1a1a1a] px-6 py-4">
+            <h2 className="flex items-center gap-3 text-xs font-bold uppercase tracking-[0.2em] text-neutral-600">
+              <HardDrive className="h-4 w-4 text-brand-primary" />
+              Server Actions
+            </h2>
+          </div>
+          <div className="grid gap-3 p-6">
+            <Button variant="outline" className="control-button border-[#1f1f1f] bg-black text-neutral-300 hover:bg-white/5 hover:text-white" onClick={onBackup}>
+              <HardDrive className="mr-2 h-4 w-4" />
+              Create Full Server Backup
+            </Button>
+          </div>
+        </section>
+      </div>
+
+      <section className="flex h-[40rem] flex-col overflow-hidden border border-[#1a1a1a] bg-[#050505]">
+        <div className="flex items-center justify-between border-b border-[#1a1a1a] bg-[#0a0a0a] px-6 py-4">
+          <h2 className="flex items-center gap-3 text-xs font-bold uppercase tracking-[0.2em] text-neutral-600">
+            <Terminal className="h-4 w-4 text-brand-primary" />
+            Minecraft Console
+          </h2>
+          <div className="flex items-center gap-3">
+            {server.status === "Running" && (
+              <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-brand-primary">Live Logs / latest {MAX_LOG_LINES}</span>
+            )}
+            {loadingLogs && <Loader2 className="h-4 w-4 animate-spin text-neutral-500" />}
+          </div>
+        </div>
+        <div
+          ref={logsRef}
+          className="min-h-0 flex-1 overflow-y-auto bg-black p-8 font-mono text-[13px] leading-relaxed text-neutral-500"
+          aria-live="polite"
+        >
+          {logLines.length > 0 ? (
+            <div className="space-y-1">
+              {logLines.map((line, index) => (
+                <div key={`${index}-${line}`} className="group -mx-4 flex gap-4 px-4 py-0.5 transition hover:bg-white/5">
+                  <span className="shrink-0 select-none text-[10px] text-neutral-800">{String(index + 1).padStart(3, "0")}</span>
+                  <span className="whitespace-pre-wrap break-words transition group-hover:text-white">{line}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="flex h-full flex-col items-center justify-center gap-4 text-center text-neutral-800">
+              <Terminal className="h-12 w-12 opacity-25" />
+              <p className="text-[10px] font-bold uppercase tracking-[0.3em]">No Logs Yet</p>
+            </div>
+          )}
+        </div>
+        <div className="border-t border-[#1a1a1a] bg-[#0a0a0a] p-6">
+          <div className="flex items-center gap-4 border border-[#1f1f1f] bg-black px-5 py-3 transition focus-within:border-brand-primary hover:border-brand-primary">
+            <span className="select-none font-mono font-bold text-brand-primary">$</span>
+            <input
+              value={command}
+              onChange={(event) => setCommand(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void runCommand();
+              }}
+              placeholder={server.status === "Running" ? "say Server restarting soon" : "Server is stopped"}
+              disabled={server.status !== "Running"}
+              className="flex-1 border-0 bg-transparent p-0 font-mono text-sm text-white outline-none placeholder:text-neutral-800 disabled:opacity-50"
+            />
+            <Button className="control-button bg-brand-primary text-black hover:bg-white" onClick={() => void runCommand()} disabled={server.status !== "Running"}>
+              Run
+            </Button>
+          </div>
+          {commandOutput && (
+            <pre className="mt-4 max-h-32 overflow-auto border border-[#1f1f1f] bg-black p-4 text-xs text-brand-primary whitespace-pre-wrap">
+              {commandOutput}
+            </pre>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function PlayersTab({ server }: { server: ServerRow }) {
+  const [settings, setSettings] = useState<ServerSettingsResponse | null>(null);
+  const [bans, setBans] = useState<BansResponse>({ players: [], ips: [] });
+  const [whitelistName, setWhitelistName] = useState("");
+  const [operatorName, setOperatorName] = useState("");
+  const [banName, setBanName] = useState("");
+  const [banReason, setBanReason] = useState("");
+  const [banIpValue, setBanIpValue] = useState("");
+  const [banIpReason, setBanIpReason] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const [settingsData, bansData] = await Promise.all([api.getSettings(server.name), api.getBans(server.name)]);
+      setSettings(settingsData);
+      setBans({ players: bansData.players || [], ips: bansData.ips || [] });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to load player data");
+    }
+  }, [server.name]);
+
+  useEffect(() => {
+    void load();
+    const interval = window.setInterval(() => void load(), 15000);
+    return () => window.clearInterval(interval);
+  }, [load]);
+
+  const whitelist = (settings?.whitelist || []).map((entry) => entry.name).filter(Boolean);
+  const operators = (settings?.operators || []).map((entry) => entry.name).filter(Boolean);
+
+  const updateLists = async (next: { whitelist?: string[]; operators?: string[] }) => {
+    setBusy(true);
+    try {
+      await api.applySettings(server.name, { ...next, restart: false });
+      await load();
+      toast.success("Player access updated");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to update player access");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const addWhitelist = () => {
+    const name = whitelistName.trim();
+    if (!name) return;
+    setWhitelistName("");
+    void updateLists({ whitelist: Array.from(new Set([...whitelist, name])) });
+  };
+
+  const addOperator = () => {
+    const name = operatorName.trim();
+    if (!name) return;
+    setOperatorName("");
+    void updateLists({ operators: Array.from(new Set([...operators, name])) });
+  };
+
+  const banPlayer = async () => {
+    const name = banName.trim();
+    if (!name) return;
+    setBusy(true);
+    try {
+      await api.banPlayer(server.name, name, banReason.trim() || "Banned by an operator");
+      setBanName("");
+      setBanReason("");
+      await load();
+      toast.success("Player banned");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to ban player");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const banIp = async () => {
+    const ip = banIpValue.trim();
+    if (!ip) return;
+    setBusy(true);
+    try {
+      await api.banIp(server.name, ip, banIpReason.trim() || "Banned by an operator");
+      setBanIpValue("");
+      setBanIpReason("");
+      await load();
+      toast.success("IP banned");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to ban IP");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="grid gap-5 xl:grid-cols-3">
+      <PlayerPanel title="Allowed Players" icon={Users}>
+        <InlineAdd value={whitelistName} onChange={setWhitelistName} onAdd={addWhitelist} placeholder="Minecraft username" disabled={busy} />
+        <NameList
+          empty="No players are allowed yet."
+          names={whitelist}
+          actionLabel="Remove"
+          onAction={(name) => updateLists({ whitelist: whitelist.filter((entry) => entry !== name) })}
+        />
+      </PlayerPanel>
+
+      <PlayerPanel title="Operators (OP)" icon={Shield}>
+        <InlineAdd value={operatorName} onChange={setOperatorName} onAdd={addOperator} placeholder="Minecraft username" disabled={busy} />
+        <NameList
+          empty="No operators assigned."
+          names={operators}
+          actionLabel="Deop"
+          onAction={(name) => updateLists({ operators: operators.filter((entry) => entry !== name) })}
+        />
+      </PlayerPanel>
+
+      <PlayerPanel title="Bans" icon={Trash2}>
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Input value={banName} onChange={(event) => setBanName(event.target.value)} placeholder="Player username" />
+            <Input value={banReason} onChange={(event) => setBanReason(event.target.value)} placeholder="Reason (optional)" />
+            <Button variant="destructive" className="control-button w-full" onClick={banPlayer} disabled={busy}>Ban Player</Button>
+          </div>
+          <Separator />
+          <div className="space-y-2">
+            <Input value={banIpValue} onChange={(event) => setBanIpValue(event.target.value)} placeholder="IP address" />
+            <Input value={banIpReason} onChange={(event) => setBanIpReason(event.target.value)} placeholder="Reason (optional)" />
+            <Button variant="destructive" className="control-button w-full" onClick={banIp} disabled={busy}>Ban IP Address</Button>
+          </div>
+        </div>
+        <Separator className="my-4" />
+        <div className="space-y-2">
+          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#8E9299]">Banned players</p>
+          {bans.players.length === 0 ? (
+            <p className="text-sm text-[#8E9299]">No banned players.</p>
+          ) : bans.players.map((ban) => (
+            <BanRow key={ban.uuid || ban.name} label={ban.name} reason={ban.reason} onPardon={async () => {
+              await api.pardonPlayer(server.name, ban.name);
+              await load();
+            }} />
+          ))}
+          <p className="pt-3 text-xs font-semibold uppercase tracking-[0.14em] text-[#8E9299]">Banned IPs</p>
+          {bans.ips.length === 0 ? (
+            <p className="text-sm text-[#8E9299]">No banned IPs.</p>
+          ) : bans.ips.map((ban) => (
+            <BanRow key={ban.ip} label={ban.ip} reason={ban.reason} onPardon={async () => {
+              await api.pardonIp(server.name, ban.ip);
+              await load();
+            }} />
+          ))}
+        </div>
+      </PlayerPanel>
+    </div>
+  );
+}
+
+function ContentTab({ server, onRefresh }: { server: ServerRow; onRefresh: () => Promise<void> | void }) {
+  if (serverSupportsMods(server)) {
+    return (
+      <ModsManagementPanel
+        serverName={server.name}
+        mcVersion={server.mc_version}
+        loader={server.edition.toLowerCase() as "forge" | "fabric" | "neoforge"}
+        serverMemoryMB={server.memory_mb}
+        publicAddress={getPublicJoinAddress(server) || undefined}
+      />
+    );
   }
 
-  async function loadServerSettings(server: ServerRow) {
-    setSelectedServer(server.name);
-    setAdminCommand("");
-    setAdminCommandOutput("");
-    setServerSettings(prev => ({
-      ...prev,
-      hostIp: server.host_ip || "",
-      publicDomain: server.public_domain || "",
-      publicPort: server.public_port || 25565,
-      hostProxyPort: server.host_proxy_port || server.public_port || 25565,
-    }));
+  if (!serverSupportsPlugins(server)) {
+    return (
+      <div className="control-surface p-8">
+        <p className="control-label mb-3">Vanilla Server</p>
+        <p className="max-w-2xl text-sm text-neutral-500">
+          Vanilla servers do not use server-side plugins or client mods through this panel.
+        </p>
+      </div>
+    );
+  }
 
-    const toBool = (value: unknown, fallback: boolean) => {
-      if (typeof value === "boolean") return value;
-      if (typeof value === "string") return value.toLowerCase() === "true";
-      return fallback;
-    };
-    const toNumber = (value: unknown, fallback: number) => {
-      const parsed = Number(value);
-      return Number.isFinite(parsed) ? parsed : fallback;
-    };
+  return <PluginManagementPanel server={server} onRefresh={onRefresh} />;
+}
 
+function PluginManagementPanel({ server, onRefresh }: { server: ServerRow; onRefresh: () => Promise<void> | void }) {
+  const [plugins, setPlugins] = useState<InstalledPlugin[]>([]);
+  const [search, setSearch] = useState("");
+  const [browserOpen, setBrowserOpen] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [busyPlugin, setBusyPlugin] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const loadPlugins = useCallback(async (showLoading = false) => {
+    if (showLoading) setLoading(true);
     try {
-      const [settingsRes, bansRes, jvmRes] = await Promise.all([
-        fetch(`/api/servers/${server.name}/settings`, { headers: authHeaders() }),
-        fetch(`/api/servers/${server.name}/settings/bans`, { headers: authHeaders() }),
-        fetch(`/api/servers/${server.name}/jvm/settings`, { headers: authHeaders() }),
+      const data = await api.getPlugins(server.name);
+      setPlugins(data.plugins || []);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to load plugins");
+    } finally {
+      setLoading(false);
+    }
+  }, [server.name]);
+
+  useEffect(() => {
+    void loadPlugins(true);
+    const interval = window.setInterval(() => void loadPlugins(), 15000);
+    return () => window.clearInterval(interval);
+  }, [loadPlugins]);
+
+  const upload = async (file: File | undefined) => {
+    if (!file) return;
+    setUploading(true);
+    try {
+      const message = await api.uploadFile(server.name, "plugins", file);
+      toast.success(message);
+      await loadPlugins();
+      await onRefresh();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : `Failed to upload ${file.name}`);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const toggle = async (plugin: InstalledPlugin) => {
+    setBusyPlugin(plugin.fileName);
+    try {
+      const result = await api.togglePlugin(server.name, plugin.fileName, !plugin.enabled);
+      toast.success(result.message || `Plugin ${plugin.enabled ? "disabled" : "enabled"}. Restart server to apply.`);
+      await loadPlugins();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to update plugin");
+    } finally {
+      setBusyPlugin(null);
+    }
+  };
+
+  const remove = async (plugin: InstalledPlugin) => {
+    setBusyPlugin(plugin.fileName);
+    try {
+      const result = await api.deletePlugin(server.name, plugin.fileName);
+      toast.success(result.message || "Plugin removed. Restart server to apply.");
+      await loadPlugins();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to remove plugin");
+    } finally {
+      setBusyPlugin(null);
+    }
+  };
+
+  const filtered = plugins.filter((plugin) => {
+    const query = search.trim().toLowerCase();
+    if (!query) return true;
+    return [plugin.name, plugin.fileName, plugin.pluginId, plugin.description]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(query));
+  });
+
+  return (
+    <div className="space-y-5">
+      <div className="grid gap-4 lg:grid-cols-[1fr_auto] lg:items-center">
+        <div>
+          <p className="control-label mb-2">Plugin Manager</p>
+          <h2 className="text-3xl font-black uppercase tracking-tight text-white">Server Plugins</h2>
+          <p className="mt-1 max-w-2xl text-sm text-neutral-500">
+            Paper servers can use server-side plugins. Friends do not install these unless a plugin says otherwise.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button className="control-button bg-brand-primary text-black hover:bg-white" onClick={() => setBrowserOpen(true)}>
+            <Package2 className="mr-2 h-4 w-4" />
+            Browse Plugins
+          </Button>
+          <UploadButton
+            label={uploading ? "Uploading..." : "Upload JAR"}
+            accept=".jar"
+            disabled={uploading}
+            onFile={upload}
+          />
+        </div>
+      </div>
+
+      <Panel title="Installed Plugins" icon={Package}>
+        <div className="space-y-4">
+          <Input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Search installed plugins..."
+          />
+          {loading ? (
+            <p className="py-8 text-center text-sm text-neutral-600">Loading plugins...</p>
+          ) : filtered.length === 0 ? (
+            <p className="py-8 text-center text-sm text-neutral-600">
+              {plugins.length === 0 ? "No plugins installed." : "No plugins match your search."}
+            </p>
+          ) : (
+            <div className="grid gap-3">
+              {filtered.map((plugin) => (
+                <div key={plugin.fileName} className="grid gap-3 border border-[#1a1a1a] bg-black p-4 transition hover:border-brand-primary/50 md:grid-cols-[1fr_auto] md:items-center">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="font-semibold text-white">{plugin.name || plugin.fileName}</p>
+                      <Badge variant={plugin.enabled ? "default" : "secondary"} className="rounded-sm">
+                        {plugin.enabled ? "Enabled" : "Disabled"}
+                      </Badge>
+                      <Badge variant="outline" className="rounded-sm">{plugin.version || "unknown"}</Badge>
+                    </div>
+                    <p className="mt-1 truncate text-xs text-[#8E9299]">{plugin.description || plugin.fileName}</p>
+                    {plugin.main && <p className="mt-1 truncate font-mono text-[11px] text-[#8E9299]">{plugin.main}</p>}
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="control-button border-[#1f1f1f] bg-black text-neutral-300 hover:bg-brand-primary hover:text-black"
+                      onClick={() => toggle(plugin)}
+                      disabled={busyPlugin === plugin.fileName}
+                    >
+                      {plugin.enabled ? "Disable" : "Enable"}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="control-button border-[#1f1f1f] bg-black text-red-200 hover:border-red-400 hover:bg-red-500/10"
+                      aria-label={`Delete ${plugin.name || plugin.fileName}`}
+                      onClick={() => remove(plugin)}
+                      disabled={busyPlugin === plugin.fileName}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </Panel>
+
+      <Panel title="Recommended Plugins" icon={Package}>
+        <RecommendedPlugins server={server} onRefresh={async () => {
+          await loadPlugins();
+          await onRefresh();
+        }} />
+      </Panel>
+
+      <Dialog open={browserOpen} onOpenChange={setBrowserOpen}>
+        <DialogContent className="w-[min(94vw,64rem)] max-w-none overflow-hidden rounded-none border-[#1a1a1a] bg-[#050505] p-0">
+          <DialogHeader className="border-b border-[#1a1a1a] px-5 py-4 pr-12 text-left">
+            <DialogTitle>Plugin Browser</DialogTitle>
+            <DialogDescription>
+              Search Modrinth plugins compatible with {server.edition} {server.mc_version}.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="px-5 py-5">
+            <ModBrowser
+              serverName={server.name}
+              mcVersion={server.mc_version}
+              loader={server.edition.toLowerCase() as "paper" | "spigot" | "purpur"}
+              serverMemoryMB={server.memory_mb}
+              type="plugin"
+              onInstall={() => {
+                toast.success(`Plugin installed. Restart ${server.name} to load it.`);
+                void loadPlugins();
+                void onRefresh();
+              }}
+            />
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function WorldsTab({ server }: { server: ServerRow }) {
+  const [worlds, setWorlds] = useState<WorldInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [generateOpen, setGenerateOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<WorldInfo | null>(null);
+  const [generateForm, setGenerateForm] = useState({ name: "", seed: "", levelType: "default" });
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      try {
+        setWorlds(await api.getWorldDetails(server.name));
+      } catch {
+        const names = await api.getWorlds(server.name);
+        setWorlds(names.map((name) => ({
+          name,
+          size: 0,
+          lastPlayed: "",
+          isActive: name === "world" || name === "default",
+        })));
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to load worlds");
+    } finally {
+      setLoading(false);
+    }
+  }, [server.name]);
+
+  useEffect(() => {
+    void load();
+    const interval = window.setInterval(() => void load(), 20000);
+    return () => window.clearInterval(interval);
+  }, [load]);
+
+  const switchWorld = async (world: WorldInfo) => {
+    setBusy(true);
+    try {
+      const message = await api.switchWorld(server.name, world.name);
+      toast.success(message || `Switched to ${world.name}`);
+      await load();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to switch world");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const generateWorld = async () => {
+    const name = generateForm.name.trim();
+    if (!name) {
+      toast.error("Enter a world name");
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await api.generateWorld(server.name, {
+        name,
+        seed: generateForm.seed.trim() || undefined,
+        levelType: generateForm.levelType,
+      });
+      toast.success(result.message || `Generated ${name}`);
+      setGenerateForm({ name: "", seed: "", levelType: "default" });
+      setGenerateOpen(false);
+      await load();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to generate world");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const uploadWorld = async (file: File | undefined) => {
+    if (!file) return;
+    setBusy(true);
+    try {
+      const message = await api.uploadFile(server.name, "worlds/upload", file);
+      toast.success(message);
+      await load();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to upload world");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const backupWorld = async (world: WorldInfo) => {
+    setBusy(true);
+    try {
+      const result = await api.backupWorld(server.name, world.name);
+      toast.success(result.backupPath ? `World backup created: ${result.backupPath}` : result.message || "World backup created");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to back up world");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const deleteWorld = async () => {
+    if (!deleteTarget) return;
+    setBusy(true);
+    try {
+      const result = await api.deleteWorld(server.name, deleteTarget.name);
+      toast.success(result.message || `Deleted ${deleteTarget.name}`);
+      setDeleteTarget(null);
+      await load();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to delete world");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="max-w-6xl space-y-5">
+      <div className="flex flex-col gap-4 border-b border-[#1a1a1a] pb-6 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="control-label mb-2">World_Store</p>
+          <h2 className="flex items-center gap-3 text-3xl font-black uppercase tracking-tight text-white">
+            <MapIcon className="h-6 w-6 text-brand-primary" />
+            Worlds
+          </h2>
+          <p className="mt-1 max-w-2xl text-sm text-neutral-500">Generate, upload, switch, back up, download, and delete worlds.</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" className="control-button border-[#1f1f1f] bg-black text-neutral-300 hover:bg-brand-primary hover:text-black" disabled={busy} onClick={() => setGenerateOpen(true)}>
+            <FilePlus className="mr-2 h-4 w-4" />
+            Generate
+          </Button>
+          <UploadButton label="Upload World" accept=".zip" disabled={busy} onFile={uploadWorld} />
+        </div>
+      </div>
+      <div className="space-y-3">
+        {loading ? (
+          <p className="control-surface p-6 text-sm text-neutral-600">Loading worlds...</p>
+        ) : worlds.length === 0 ? (
+          <p className="control-surface p-6 text-sm text-neutral-600">No worlds found.</p>
+        ) : worlds.map((world) => (
+          <div key={world.name} className="control-surface flex flex-col gap-4 p-5 xl:flex-row xl:items-center xl:justify-between">
+            <div className="flex items-center gap-3">
+              <div className={`status-square ${world.isActive ? "bg-brand-primary" : "bg-neutral-700"}`} />
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="font-medium text-white">{world.name}</p>
+                  {world.isActive && <Badge className="rounded-sm">Active</Badge>}
+                </div>
+                <p className="mt-1 text-xs text-[#8E9299]">
+                  {world.size ? formatBytes(world.size) : "Size unavailable"}
+                  {world.lastPlayed ? ` | Last played ${new Date(world.lastPlayed).toLocaleString()}` : ""}
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" className="control-button border-[#1f1f1f] bg-black text-neutral-300 hover:bg-brand-primary hover:text-black" onClick={() => switchWorld(world)} disabled={busy || world.isActive}>
+                Switch
+              </Button>
+              <Button variant="outline" className="control-button border-[#1f1f1f] bg-black text-neutral-300 hover:bg-white/5 hover:text-white" onClick={() => backupWorld(world)} disabled={busy}>
+                <DatabaseBackup className="mr-2 h-4 w-4" />
+                Backup
+              </Button>
+              <Button
+                variant="outline"
+                className="control-button border-[#1f1f1f] bg-black text-neutral-300 hover:bg-white/5 hover:text-white"
+                disabled={busy}
+                onClick={() => {
+                  window.location.href = api.worldDownloadUrl(server.name, world.name);
+                }}
+              >
+                <Download className="mr-2 h-4 w-4" />
+                Download
+              </Button>
+              <Button
+                variant="outline"
+                className="control-button border-[#1f1f1f] bg-black text-red-200 hover:border-red-400 hover:bg-red-500/10"
+                aria-label={`Delete ${world.name}`}
+                onClick={() => setDeleteTarget(world)}
+                disabled={busy || world.isActive}
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <Dialog open={generateOpen} onOpenChange={setGenerateOpen}>
+        <DialogContent className="rounded-none border-[#1a1a1a] bg-[#050505]">
+          <DialogHeader>
+            <DialogTitle>Generate World</DialogTitle>
+            <DialogDescription>
+              Minecraft will be started long enough to create the new level data, then left in its previous running state.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <Field label="World name">
+              <Input
+                value={generateForm.name}
+                onChange={(event) => setGenerateForm((current) => ({ ...current, name: event.target.value }))}
+                placeholder="survival-season-2"
+              />
+            </Field>
+            <Field label="Seed">
+              <Input
+                value={generateForm.seed}
+                onChange={(event) => setGenerateForm((current) => ({ ...current, seed: event.target.value }))}
+                placeholder="Optional"
+              />
+            </Field>
+            <Field label="World type">
+              <Select value={generateForm.levelType} onValueChange={(levelType) => setGenerateForm((current) => ({ ...current, levelType }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="default">Default</SelectItem>
+                  <SelectItem value="flat">Flat</SelectItem>
+                  <SelectItem value="large_biomes">Large biomes</SelectItem>
+                  <SelectItem value="amplified">Amplified</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" className="control-button border-[#1f1f1f] bg-black text-neutral-300 hover:bg-white/5 hover:text-white" onClick={() => setGenerateOpen(false)}>Cancel</Button>
+            <Button className="control-button bg-brand-primary text-black hover:bg-white" onClick={generateWorld} disabled={busy}>
+              {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FilePlus className="mr-2 h-4 w-4" />}
+              Generate
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(deleteTarget)} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <DialogContent className="rounded-none border-[#1a1a1a] bg-[#050505]">
+          <DialogHeader>
+            <DialogTitle>Delete World</DialogTitle>
+            <DialogDescription>
+              A world backup is created before deletion. Active worlds must be switched before they can be deleted.
+            </DialogDescription>
+          </DialogHeader>
+          <p className="border border-[#1f1f1f] bg-black p-3 font-mono text-sm text-white">
+            {deleteTarget?.name}
+          </p>
+          <DialogFooter>
+            <Button variant="outline" className="control-button border-[#1f1f1f] bg-black text-neutral-300 hover:bg-white/5 hover:text-white" onClick={() => setDeleteTarget(null)}>Cancel</Button>
+            <Button variant="destructive" className="control-button" onClick={deleteWorld} disabled={busy}>
+              {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Trash2 className="mr-2 h-4 w-4" />}
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function SettingsTab({ server, onRefresh }: { server: ServerRow; onRefresh: () => Promise<void> | void }) {
+  const [draft, setDraft] = useState<ServerSettingsDraft>({
+    ...defaultSettings,
+    hostIp: server.host_ip || "",
+    publicDomain: server.public_domain || "",
+    publicPort: server.public_port || 25565,
+    hostProxyPort: server.host_proxy_port || server.public_port || 25565,
+  });
+  const [versionType, setVersionType] = useState<"paper" | "vanilla" | "fabric" | "forge">(
+    server.edition.toLowerCase() as "paper" | "vanilla" | "fabric" | "forge"
+  );
+  const [newVersion, setNewVersion] = useState(server.mc_version);
+  const [plugins, setPlugins] = useState<Record<string, boolean>>({
+    luckperms: false,
+    essentialsx: false,
+    vault: false,
+    worldedit: false,
+  });
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const [settings, bans, jvm] = await Promise.all([
+        api.getSettings(server.name),
+        api.getBans(server.name),
+        api.getJvmSettings(server.name),
       ]);
-
-      const settings = settingsRes.ok ? await settingsRes.json() : {};
-      const bans = bansRes.ok ? await bansRes.json() : {};
-      const jvm = jvmRes.ok ? await jvmRes.json() : {};
       const props = settings.properties || {};
-
-      setServerSettings(prev => ({
-        ...prev,
+      setDraft((current) => ({
+        ...current,
         hostIp: server.host_ip || "",
         publicDomain: server.public_domain || "",
         publicPort: server.public_port || 25565,
         hostProxyPort: server.host_proxy_port || server.public_port || 25565,
-        motd: props.motd ?? prev.motd,
-        maxPlayers: toNumber(props["max-players"], prev.maxPlayers),
-        gamemode: props.gamemode ?? prev.gamemode,
-        difficulty: props.difficulty ?? prev.difficulty,
-        pvp: toBool(props.pvp, prev.pvp),
-        spawnProtection: toNumber(props["spawn-protection"], prev.spawnProtection),
-        viewDistance: toNumber(props["view-distance"], prev.viewDistance),
-        onlineMode: toBool(props["online-mode"], prev.onlineMode),
-        allowFlight: toBool(props["allow-flight"], prev.allowFlight),
-        enforceWhitelist: toBool(props["white-list"] ?? props["enforce-whitelist"], prev.enforceWhitelist),
-        whitelist: Array.isArray(settings.whitelist)
-          ? settings.whitelist.map((entry: any) => entry.name).filter(Boolean)
-          : prev.whitelist,
-        operators: Array.isArray(settings.operators)
-          ? settings.operators.map((entry: any) => entry.name).filter(Boolean)
-          : prev.operators,
+        motd: String(props.motd ?? current.motd),
+        maxPlayers: toNumber(props["max-players"], current.maxPlayers),
+        gamemode: String(props.gamemode ?? current.gamemode),
+        difficulty: String(props.difficulty ?? current.difficulty),
+        pvp: toBool(props.pvp, current.pvp),
+        spawnProtection: toNumber(props["spawn-protection"], current.spawnProtection),
+        viewDistance: toNumber(props["view-distance"], current.viewDistance),
+        onlineMode: toBool(props["online-mode"], current.onlineMode),
+        allowFlight: toBool(props["allow-flight"], current.allowFlight),
+        enforceWhitelist: toBool(props["white-list"] ?? props["enforce-whitelist"], current.enforceWhitelist),
+        whitelist: Array.isArray(settings.whitelist) ? settings.whitelist.map((entry) => entry.name).filter(Boolean) : [],
+        operators: Array.isArray(settings.operators) ? settings.operators.map((entry) => entry.name).filter(Boolean) : [],
         bannedPlayers: bans.players || [],
         bannedIps: bans.ips || [],
-        jvmXms: jvm.xms ?? prev.jvmXms,
-        jvmXmsUnit: jvm.xmsUnit ?? prev.jvmXmsUnit,
-        jvmXmx: jvm.xmx ?? prev.jvmXmx,
-        jvmXmxUnit: jvm.xmxUnit ?? prev.jvmXmxUnit,
-        jvmGc: jvm.gc ?? prev.jvmGc,
-        jvmCustomFlags: jvm.customFlags ?? prev.jvmCustomFlags,
+        jvmXms: jvm.xms,
+        jvmXmsUnit: jvm.xmsUnit,
+        jvmXmx: jvm.xmx,
+        jvmXmxUnit: jvm.xmxUnit,
+        jvmGc: jvm.gc,
+        jvmCustomFlags: jvm.customFlags,
       }));
-    } catch (err: any) {
-      toast.error(err.message || "Failed to load server settings");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to load settings");
     }
-  }
-
-  async function refresh() {
-    setIsRefreshing(true);
-    try {
-      const res = await fetch("/api/servers", { headers: authHeaders() });
-      if (res.status === 401 || res.status === 403 || res.status === 503) {
-        setServers([]);
-        setLogs("");
-        setLifecycle(null);
-        setIsAdminAuthenticated(false);
-        setServerInventoryBlocked(true);
-        setMessage("Admin access is required to view and manage servers.");
-        return;
-      }
-      if (!res.ok) {
-        throw new Error(`Failed to fetch servers: ${res.statusText}`);
-      }
-      const serverData = await res.json();
-      setServers(Array.isArray(serverData) ? serverData : []);
-      setIsAdminAuthenticated(true);
-      setServerInventoryBlocked(false);
-      setMessage("");
-      setTimeout(() => loadLifecycle(), 0);
-    } catch (err) {
-      setServerInventoryBlocked(false);
-      setMessage("Failed to fetch servers");
-    } finally {
-      setIsRefreshing(false);
-    }
-  }
-
-  // Fetch logs for the first server
-  async function fetchLogs() {
-    if (servers.length === 0) return;
-
-    setIsLoadingLogs(true);
-    try {
-      const response = await fetch(`/api/servers/${servers[0].name}/logs`, {
-        headers: authHeaders(),
-      });
-      if (!response.ok) {
-        throw new Error("Failed to fetch logs");
-      }
-      const logText = await response.text();
-
-      // Get last 100 lines for scrolling
-      const lines = logText.trim().split('\n');
-      const lastLines = lines.slice(-100).join('\n');
-      setLogs(lastLines);
-    } catch (err) {
-      console.error('Failed to fetch logs:', err);
-    } finally {
-      setIsLoadingLogs(false);
-    }
-  }
+  }, [server]);
 
   useEffect(() => {
-    refresh();
-    const interval = setInterval(refresh, 10000);
-    return () => clearInterval(interval);
+    void load();
+  }, [load]);
+
+  const saveNetwork = async () => {
+    setBusy(true);
+    try {
+      await api.patchServerConfig(server.name, {
+        host_ip: draft.hostIp.trim() || null,
+        public_domain: draft.publicDomain.trim() || null,
+        public_port: draft.publicPort,
+        host_proxy_port: draft.hostProxyPort,
+      });
+      toast.success("Join address updated");
+      await onRefresh();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to save network settings");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveProperties = async () => {
+    setBusy(true);
+    try {
+      await api.applySettings(server.name, {
+        properties: {
+          motd: draft.motd,
+          "max-players": draft.maxPlayers,
+          gamemode: draft.gamemode,
+          difficulty: draft.difficulty,
+          pvp: draft.pvp,
+          "spawn-protection": draft.spawnProtection,
+          "view-distance": draft.viewDistance,
+          "online-mode": draft.onlineMode,
+          "allow-flight": draft.allowFlight,
+          "white-list": draft.enforceWhitelist,
+          "enforce-whitelist": draft.enforceWhitelist,
+        },
+        whitelist: draft.whitelist,
+        operators: draft.operators,
+        restart: true,
+      });
+      toast.success("Server settings applied");
+      await onRefresh();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to apply settings");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveJvm = async () => {
+    setBusy(true);
+    try {
+      await api.applyJvmSettings(server.name, {
+        xms: draft.jvmXms,
+        xmsUnit: draft.jvmXmsUnit,
+        xmx: draft.jvmXmx,
+        xmxUnit: draft.jvmXmxUnit,
+        gc: draft.jvmGc,
+        customFlags: draft.jvmCustomFlags,
+      });
+      toast.success("JVM settings updated");
+      await onRefresh();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to update JVM settings");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const changeVersion = async () => {
+    if (!newVersion.trim()) {
+      toast.error("Enter a Minecraft version");
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await api.changeVersion(server.name, { type: versionType, version: newVersion.trim() });
+      toast.success(result.message || "Version changed");
+      await onRefresh();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to change version");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const installPlugins = async () => {
+    const requested = Object.entries(plugins).filter(([, enabled]) => enabled).map(([plugin]) => plugin);
+    if (requested.length === 0) return;
+    setBusy(true);
+    try {
+      const result = await api.installRecommendedPlugins(server.name, requested);
+      if (result.failed?.length) {
+        throw new Error(result.failed.map((entry) => `${entry.plugin}: ${entry.error}`).join("; "));
+      }
+      toast.success(`Installed plugins: ${result.installed.join(", ")}`);
+      setPlugins({ luckperms: false, essentialsx: false, vault: false, worldedit: false });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to install plugins");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="grid gap-5 xl:grid-cols-2">
+      <Panel title="Join Address" icon={Globe}>
+        <div className="grid gap-4">
+          <Field label="LAN IP address">
+            <Input value={draft.hostIp} onChange={(event) => setDraft({ ...draft, hostIp: event.target.value })} />
+          </Field>
+          <div className="grid gap-3 md:grid-cols-[1fr_8rem_10rem]">
+            <Field label="Public domain">
+              <Input value={draft.publicDomain} onChange={(event) => setDraft({ ...draft, publicDomain: event.target.value })} />
+            </Field>
+            <Field label="Public port">
+              <Input type="number" value={draft.publicPort} onChange={(event) => setDraft({ ...draft, publicPort: Number(event.target.value) })} />
+            </Field>
+            <Field label="Router target port">
+              <Input type="number" value={draft.hostProxyPort} onChange={(event) => setDraft({ ...draft, hostProxyPort: Number(event.target.value) })} />
+            </Field>
+          </div>
+          <AddressBlock
+            label="Player invite address"
+            value={formatMinecraftAddress(draft.publicDomain || server.public_domain, draft.publicPort || server.public_port) || "Set a public domain first"}
+          />
+          <p className="text-xs text-[#8E9299]">
+            {isDefaultMinecraftPort(draft.publicPort)
+              ? "Port 25565 is default; players can enter only the domain."
+              : `Players must include :${draft.publicPort}.`}
+          </p>
+          <Button className="control-button bg-brand-primary text-black hover:bg-white" onClick={saveNetwork} disabled={busy}>Save Join Address</Button>
+        </div>
+      </Panel>
+
+      <Panel title="Server Properties" icon={Settings}>
+        <div className="grid gap-4">
+          <Field label="MOTD">
+            <Textarea value={draft.motd} onChange={(event) => setDraft({ ...draft, motd: event.target.value })} />
+          </Field>
+          <div className="grid gap-3 md:grid-cols-2">
+            <Field label="Max players">
+              <Input type="number" value={draft.maxPlayers} onChange={(event) => setDraft({ ...draft, maxPlayers: Number(event.target.value) })} />
+            </Field>
+            <Field label="View distance">
+              <Input type="number" value={draft.viewDistance} onChange={(event) => setDraft({ ...draft, viewDistance: Number(event.target.value) })} />
+            </Field>
+            <Field label="Game mode">
+              <Select value={draft.gamemode} onValueChange={(gamemode) => setDraft({ ...draft, gamemode })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="survival">Survival</SelectItem>
+                  <SelectItem value="creative">Creative</SelectItem>
+                  <SelectItem value="adventure">Adventure</SelectItem>
+                  <SelectItem value="spectator">Spectator</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="Difficulty">
+              <Select value={draft.difficulty} onValueChange={(difficulty) => setDraft({ ...draft, difficulty })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="peaceful">Peaceful</SelectItem>
+                  <SelectItem value="easy">Easy</SelectItem>
+                  <SelectItem value="normal">Normal</SelectItem>
+                  <SelectItem value="hard">Hard</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="Spawn protection">
+              <Input type="number" value={draft.spawnProtection} onChange={(event) => setDraft({ ...draft, spawnProtection: Number(event.target.value) })} />
+            </Field>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <CheckField label="PVP" checked={draft.pvp} onChange={(pvp) => setDraft({ ...draft, pvp })} />
+            <CheckField label="Online mode" checked={draft.onlineMode} onChange={(onlineMode) => setDraft({ ...draft, onlineMode })} />
+            <CheckField label="Allow flight" checked={draft.allowFlight} onChange={(allowFlight) => setDraft({ ...draft, allowFlight })} />
+            <CheckField label="Enforce whitelist" checked={draft.enforceWhitelist} onChange={(enforceWhitelist) => setDraft({ ...draft, enforceWhitelist })} />
+          </div>
+          <Button className="control-button bg-brand-primary text-black hover:bg-white" onClick={saveProperties} disabled={busy}>Save and Restart</Button>
+        </div>
+      </Panel>
+
+      <Panel title="JVM Settings" icon={Activity}>
+        <div className="grid gap-4">
+          <div className="grid gap-3 md:grid-cols-2">
+            <MemoryField label="Initial heap (-Xms)" value={draft.jvmXms} unit={draft.jvmXmsUnit} onValue={(jvmXms) => setDraft({ ...draft, jvmXms })} onUnit={(jvmXmsUnit) => setDraft({ ...draft, jvmXmsUnit })} />
+            <MemoryField label="Maximum heap (-Xmx)" value={draft.jvmXmx} unit={draft.jvmXmxUnit} onValue={(jvmXmx) => setDraft({ ...draft, jvmXmx })} onUnit={(jvmXmxUnit) => setDraft({ ...draft, jvmXmxUnit })} />
+          </div>
+          <Field label="Garbage collector">
+            <Select value={draft.jvmGc} onValueChange={(jvmGc) => setDraft({ ...draft, jvmGc })}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="default">Default</SelectItem>
+                <SelectItem value="g1gc">G1GC</SelectItem>
+                <SelectItem value="zgc">ZGC</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field label="Custom flags">
+            <Input value={draft.jvmCustomFlags} onChange={(event) => setDraft({ ...draft, jvmCustomFlags: event.target.value })} className="font-mono" />
+          </Field>
+          <Button className="control-button bg-brand-primary text-black hover:bg-white" onClick={saveJvm} disabled={busy}>Apply JVM Settings</Button>
+        </div>
+      </Panel>
+
+      <Panel title="Minecraft Version" icon={Package}>
+        <div className="grid gap-4">
+          <div className="grid gap-3 md:grid-cols-[12rem_1fr_auto] md:items-end">
+            <Field label="Server type">
+              <Select value={versionType} onValueChange={(value) => setVersionType(value as typeof versionType)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="paper">Paper</SelectItem>
+                  <SelectItem value="vanilla">Vanilla</SelectItem>
+                  <SelectItem value="fabric">Fabric</SelectItem>
+                  <SelectItem value="forge">Forge</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="Minecraft version">
+              <Input value={newVersion} onChange={(event) => setNewVersion(event.target.value)} />
+            </Field>
+            <Button className="control-button bg-brand-primary text-black hover:bg-white" onClick={changeVersion} disabled={busy}>Change Version</Button>
+          </div>
+
+          {serverSupportsPlugins(server) && (
+            <>
+              <Separator />
+              <p className="text-sm text-[#8E9299]">Install common Paper plugins from Modrinth.</p>
+              <div className="grid gap-2 md:grid-cols-2">
+                {Object.keys(plugins).map((plugin) => (
+                  <CheckField
+                    key={plugin}
+                    label={plugin}
+                    checked={plugins[plugin]}
+                    onChange={(checked) => setPlugins((current) => ({ ...current, [plugin]: checked }))}
+                  />
+                ))}
+              </div>
+              <Button variant="outline" className="control-button border-[#1f1f1f] bg-black text-neutral-300 hover:bg-brand-primary hover:text-black" onClick={installPlugins} disabled={busy}>
+                Install Selected Plugins
+              </Button>
+            </>
+          )}
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+function PublicServersPage({
+  serverName,
+  onPublicHome,
+  onAdminAccess,
+}: {
+  serverName?: string;
+  onPublicHome: () => void;
+  onAdminAccess: () => void;
+}) {
+  const [servers, setServers] = useState<PublicServerRow[]>([]);
+  const [liveStatus, setLiveStatus] = useState<"checking" | "live" | "syncing">("checking");
+  const [message, setMessage] = useState("");
+  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const data = await api.getPublicServers();
+      setServers(Array.isArray(data) ? data : []);
+      setMessage("");
+      setLastUpdated(new Date().toISOString());
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to load running servers");
+    }
   }, []);
 
-  // Auto-refresh logs every 5 seconds
   useEffect(() => {
-    fetchLogs();
-    const interval = setInterval(fetchLogs, 5000);
-    return () => clearInterval(interval);
-  }, [servers]);
+    let fallbackInterval: number | undefined;
+    let fallbackTimer: number | undefined;
+    let source: EventSource | null = null;
 
-  const handleServerAction = async (serverName: string, action: string) => {
-    try {
-      const res = await fetch(`/api/servers/${serverName}/${action}`, {
-        method: "POST",
-        headers: authHeaders(),
-      });
-      const msg = await res.text();
-      if (!res.ok) {
-        throw new Error(msg || `Failed to ${action} server`);
+    const stopFallback = () => {
+      if (fallbackInterval) {
+        window.clearInterval(fallbackInterval);
+        fallbackInterval = undefined;
       }
-      setMessage(msg);
-      setTimeout(() => refresh(), 2000);
-    } catch (err: any) {
-      setMessage(err.message || `Failed to ${action} server`);
-    }
-  };
-
-  const handleCreateServer = async () => {
-    setIsLifecycleBusy(true);
-    try {
-      const response = await fetch("/api/server-lifecycle/create", {
-        method: "POST",
-        headers: jsonAuthHeaders(),
-        body: JSON.stringify({
-          name: newServerForm.name.trim() || undefined,
-          edition: newServerForm.edition,
-          mc_version: newServerForm.mcVersion,
-          memory_mb: Number(newServerForm.memoryMb),
-          cpu_limit: newServerForm.cpuLimit,
-          public_port: Number(newServerForm.publicPort),
-        }),
-      });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(result.error || "Failed to create server");
-      toast.success(result.message || "Server created");
-      setCreateServerDialog(false);
-      setNewServerForm((form) => ({ ...form, name: "", publicPort: form.publicPort + 1 }));
-      await refresh();
-      await loadLifecycle();
-    } catch (err: any) {
-      toast.error(err.message || "Failed to create server");
-    } finally {
-      setIsLifecycleBusy(false);
-    }
-  };
-
-  const handleArchiveServer = async () => {
-    if (!archiveTarget) return;
-    setIsLifecycleBusy(true);
-    try {
-      const response = await fetch(`/api/servers/${archiveTarget.name}/archive`, {
-        method: "POST",
-        headers: jsonAuthHeaders(),
-        body: JSON.stringify({ label: archiveLabel.trim() || undefined }),
-      });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(result.error || "Failed to archive server");
-      toast.success(result.message || `${archiveTarget.name} archived`);
-      setArchiveTarget(null);
-      setArchiveLabel("");
-      await refresh();
-      await loadLifecycle();
-    } catch (err: any) {
-      toast.error(err.message || "Failed to archive server");
-    } finally {
-      setIsLifecycleBusy(false);
-    }
-  };
-
-  const openRestoreDialog = (archive: ServerArchive) => {
-    setRestoreTarget(archive);
-    setRestoreForm({
-      name: archive.server.name || archive.sourceName,
-      publicPort: archive.server.public_port || 34567,
-    });
-  };
-
-  const handleRestoreArchive = async () => {
-    if (!restoreTarget) return;
-    setIsLifecycleBusy(true);
-    try {
-      const response = await fetch(`/api/server-lifecycle/archives/${restoreTarget.id}/restore`, {
-        method: "POST",
-        headers: jsonAuthHeaders(),
-        body: JSON.stringify({
-          name: restoreForm.name.trim() || undefined,
-          public_port: Number(restoreForm.publicPort),
-        }),
-      });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(result.error || "Failed to restore archive");
-      toast.success(result.message || "Archive restored");
-      setRestoreTarget(null);
-      await refresh();
-      await loadLifecycle();
-    } catch (err: any) {
-      toast.error(err.message || "Failed to restore archive");
-    } finally {
-      setIsLifecycleBusy(false);
-    }
-  };
-
-  const handleDeleteArchive = async (archive: ServerArchive) => {
-    setIsLifecycleBusy(true);
-    try {
-      const response = await fetch(`/api/server-lifecycle/archives/${archive.id}`, {
-        method: "DELETE",
-        headers: authHeaders(),
-      });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(result.error || "Failed to delete archive");
-      toast.success(result.message || "Archive deleted");
-      await loadLifecycle();
-    } catch (err: any) {
-      toast.error(err.message || "Failed to delete archive");
-    } finally {
-      setIsLifecycleBusy(false);
-    }
-  };
-
-  const runAdminCommand = async (serverName: string) => {
-    const command = adminCommand.trim();
-    if (!command) return;
-
-    setIsRunningCommand(true);
-    setAdminCommandOutput("");
-    try {
-      const response = await fetch(`/api/servers/${serverName}/command`, {
-        method: "POST",
-        headers: jsonAuthHeaders(),
-        body: JSON.stringify({ command }),
-      });
-      const text = await response.text();
-      setAdminCommandOutput(text.trim() || "Command completed with no output.");
-      if (!response.ok) {
-        throw new Error(text || "Command failed");
+      if (fallbackTimer) {
+        window.clearTimeout(fallbackTimer);
+        fallbackTimer = undefined;
       }
-      setAdminCommand("");
-    } catch (err: any) {
-      setAdminCommandOutput(err.message || "Command failed");
-    } finally {
-      setIsRunningCommand(false);
-    }
-  };
+    };
 
-  /**
-   * Save server settings to backend
-   * Maps frontend state to backend API format and applies all settings
-   */
-  const handleSaveSettings = async (serverName: string) => {
-    setIsSavingSettings(true);
-    try {
-      const payload = {
-        properties: {
-          'motd': serverSettings.motd,
-          'max-players': serverSettings.maxPlayers,
-          'gamemode': serverSettings.gamemode,
-          'difficulty': serverSettings.difficulty,
-          'pvp': serverSettings.pvp,
-          'spawn-protection': serverSettings.spawnProtection,
-          'view-distance': serverSettings.viewDistance,
-          'online-mode': serverSettings.onlineMode,
-          'allow-flight': serverSettings.allowFlight,
-          'white-list': serverSettings.enforceWhitelist,
-          'enforce-whitelist': serverSettings.enforceWhitelist,
+    const startFallback = () => {
+      if (fallbackInterval) return;
+      setLiveStatus("syncing");
+      void load();
+      fallbackInterval = window.setInterval(() => void load(), 10000);
+    };
+
+    if ("EventSource" in window) {
+      setLiveStatus("checking");
+      fallbackTimer = window.setTimeout(startFallback, 12000);
+      source = api.subscribePublicServerEvents(
+        (state) => {
+          stopFallback();
+          setServers(Array.isArray(state.servers) ? state.servers : []);
+          setLastUpdated(state.generatedAt);
+          setMessage("");
+          setLiveStatus("live");
         },
-        whitelist: serverSettings.whitelist,
-        operators: serverSettings.operators,
-        restart: true
-      };
-
-      const response = await fetch(`/api/servers/${serverName}/settings`, {
-        method: 'POST',
-        headers: jsonAuthHeaders(),
-        body: JSON.stringify(payload)
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: response.statusText }));
-        throw new Error(errorData.error || 'Failed to save settings');
-      }
-
-      const data = await response.json();
-      toast.success(data.message || 'Settings applied successfully');
-
-      const requestedPlugins = Object.entries(serverSettings.plugins)
-        .filter(([, enabled]) => enabled)
-        .map(([plugin]) => plugin);
-
-      if (requestedPlugins.length > 0) {
-        const pluginResponse = await fetch(`/api/servers/${serverName}/plugins/recommended`, {
-          method: "POST",
-          headers: jsonAuthHeaders(),
-          body: JSON.stringify({ plugins: requestedPlugins }),
-        });
-        const pluginResult = await pluginResponse.json();
-
-        if (!pluginResponse.ok || pluginResult.failed?.length > 0) {
-          const failed = pluginResult.failed
-            ?.map((entry: any) => `${entry.plugin}: ${entry.error}`)
-            .join("; ");
-          throw new Error(failed || pluginResult.error || "Failed to install selected plugins");
-        }
-
-        toast.success(`Installed plugins: ${pluginResult.installed.join(", ")}`);
-        setServerSettings(prev => ({
-          ...prev,
-          plugins: {
-            luckperms: false,
-            essentialsx: false,
-            vault: false,
-            worldedit: false,
-          },
-        }));
-      }
-
-      setServerSettingsDialog(null);
-
-      setTimeout(() => refresh(), 2000);
-    } catch (err: any) {
-      toast.error(err.message || 'Failed to save settings');
-    } finally {
-      setIsSavingSettings(false);
-    }
-  };
-
-  // Fetch bans when settings dialog opens
-  const fetchBans = async (serverName: string) => {
-    try {
-      const response = await fetch(`/api/servers/${serverName}/settings/bans`, {
-        headers: authHeaders(),
-      });
-      if (!response.ok) throw new Error('Failed to fetch bans');
-      const data = await response.json();
-      setServerSettings(prev => ({
-        ...prev,
-        bannedPlayers: data.players || [],
-        bannedIps: data.ips || []
-      }));
-    } catch (err: any) {
-      toast.error(err.message || 'Failed to fetch bans');
-    }
-  };
-
-  // Ban a player
-  const banPlayer = async (serverName: string) => {
-    if (!serverSettings.newBanPlayer.trim()) return;
-
-    try {
-      const response = await fetch(`/api/servers/${serverName}/settings/bans/player/add`, {
-        method: 'POST',
-        headers: jsonAuthHeaders(),
-        body: JSON.stringify({
-          username: serverSettings.newBanPlayer.trim(),
-          reason: serverSettings.newBanPlayerReason.trim() || 'Banned by an operator'
-        })
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: response.statusText }));
-        throw new Error(errorData.error || 'Failed to ban player');
-      }
-
-      const data = await response.json();
-      toast.success(data.message || 'Player banned successfully');
-      setServerSettings({
-        ...serverSettings,
-        newBanPlayer: '',
-        newBanPlayerReason: ''
-      });
-      await fetchBans(serverName);
-    } catch (err: any) {
-      toast.error(err.message || 'Failed to ban player');
-    }
-  };
-
-  // Pardon a player
-  const pardonPlayer = async (serverName: string, username: string) => {
-    try {
-      const response = await fetch(`/api/servers/${serverName}/settings/bans/player/remove`, {
-        method: 'POST',
-        headers: jsonAuthHeaders(),
-        body: JSON.stringify({ username })
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: response.statusText }));
-        throw new Error(errorData.error || 'Failed to pardon player');
-      }
-
-      const data = await response.json();
-      toast.success(data.message || 'Player pardoned successfully');
-      await fetchBans(serverName);
-    } catch (err: any) {
-      toast.error(err.message || 'Failed to pardon player');
-    }
-  };
-
-  // Ban an IP
-  const banIp = async (serverName: string) => {
-    if (!serverSettings.newBanIp.trim()) return;
-
-    try {
-      const response = await fetch(`/api/servers/${serverName}/settings/bans/ip/add`, {
-        method: 'POST',
-        headers: jsonAuthHeaders(),
-        body: JSON.stringify({
-          ip: serverSettings.newBanIp.trim(),
-          reason: serverSettings.newBanIpReason.trim() || 'Banned by an operator'
-        })
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: response.statusText }));
-        throw new Error(errorData.error || 'Failed to ban IP');
-      }
-
-      const data = await response.json();
-      toast.success(data.message || 'IP banned successfully');
-      setServerSettings({
-        ...serverSettings,
-        newBanIp: '',
-        newBanIpReason: ''
-      });
-      await fetchBans(serverName);
-    } catch (err: any) {
-      toast.error(err.message || 'Failed to ban IP');
-    }
-  };
-
-  // Pardon an IP
-  const pardonIp = async (serverName: string, ip: string) => {
-    try {
-      const response = await fetch(`/api/servers/${serverName}/settings/bans/ip/remove`, {
-        method: 'POST',
-        headers: jsonAuthHeaders(),
-        body: JSON.stringify({ ip })
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: response.statusText }));
-        throw new Error(errorData.error || 'Failed to pardon IP');
-      }
-
-      const data = await response.json();
-      toast.success(data.message || 'IP pardoned successfully');
-      await fetchBans(serverName);
-    } catch (err: any) {
-      toast.error(err.message || 'Failed to pardon IP');
-    }
-  };
-
-  // Fetch TPS for a server
-  const fetchTps = async (serverName: string) => {
-    try {
-      const response = await fetch(`/api/servers/${serverName}/tps`, {
-        headers: authHeaders(),
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setServerTps(prev => new Map(prev).set(serverName, data.tps));
-      }
-    } catch (err) {
-      // Silently fail - TPS might not be available for all server types
-      setServerTps(prev => new Map(prev).set(serverName, null));
-    }
-  };
-
-  // Fetch TPS for all running servers
-  const fetchAllTps = () => {
-    servers.forEach(server => {
-      if (server.status === 'Running') {
-        fetchTps(server.name);
-      }
-    });
-  };
-
-  // Fetch JVM settings
-  const fetchJvmSettings = async (serverName: string) => {
-    try {
-      const response = await fetch(`/api/servers/${serverName}/jvm/settings`, {
-        headers: authHeaders(),
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setServerSettings({
-          ...serverSettings,
-          jvmXms: data.xms,
-          jvmXmsUnit: data.xmsUnit,
-          jvmXmx: data.xmx,
-          jvmXmxUnit: data.xmxUnit,
-          jvmGc: data.gc,
-          jvmCustomFlags: data.customFlags
-        });
-      }
-    } catch (err: any) {
-      toast.error('Failed to fetch JVM settings');
-    }
-  };
-
-  // Update JVM settings
-  const updateJvmSettings = async (serverName: string) => {
-    try {
-      const response = await fetch(`/api/servers/${serverName}/jvm/settings`, {
-        method: 'POST',
-        headers: jsonAuthHeaders(),
-        body: JSON.stringify({
-          xms: serverSettings.jvmXms,
-          xmsUnit: serverSettings.jvmXmsUnit,
-          xmx: serverSettings.jvmXmx,
-          xmxUnit: serverSettings.jvmXmxUnit,
-          gc: serverSettings.jvmGc,
-          customFlags: serverSettings.jvmCustomFlags
-        })
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: response.statusText }));
-        throw new Error(errorData.error || 'Failed to update JVM settings');
-      }
-
-      const data = await response.json();
-      toast.success(data.message || 'JVM settings updated successfully');
-    } catch (err: any) {
-      toast.error(err.message || 'Failed to update JVM settings');
-    }
-  };
-
-  const handleFileUpload = async (
-    serverName: string,
-    type: string,
-    event: React.ChangeEvent<HTMLInputElement>
-  ) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    const fd = new FormData();
-    fd.append("file", file);
-
-    try {
-      const res = await fetch(`/api/servers/${serverName}/${type}`, {
-        method: "POST",
-        headers: authHeaders(),
-        body: fd,
-      });
-      const msg = await res.text();
-      if (!res.ok) {
-        throw new Error(msg || `Failed to upload ${file.name}`);
-      }
-      setMessage(msg);
-      event.target.value = "";
-    } catch (err: any) {
-      setMessage(err.message || `Failed to upload ${file.name}`);
-    }
-  };
-
-  const handleVersionChange = async (serverName: string) => {
-    if (!newVersion) {
-      setMessage("Please enter a version");
-      return;
-    }
-
-    setIsChangingVersion(true);
-    try {
-      const res = await fetch(`/api/servers/${serverName}/version/change`, {
-        method: "POST",
-        headers: jsonAuthHeaders(),
-        body: JSON.stringify({
-          type: versionType,
-          version: newVersion,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || "Failed to change version");
-      }
-      setMessage(data.message || "Version changed successfully");
-      setNewVersion("");
-      setTimeout(() => refresh(), 3000);
-    } catch (err: any) {
-      setMessage(err.message || "Failed to change version");
-    } finally {
-      setIsChangingVersion(false);
-    }
-  };
-
-  const saveAdminToken = async () => {
-    const token = adminToken.trim();
-    if (token) {
-      try {
-        await loginWithAdminToken(token);
-        setIsAdminAuthenticated(true);
-        setAdminToken("");
-        setAdminAccessDialog(false);
-        toast.success("Admin session started");
-        setTimeout(() => refresh(), 0);
-      } catch (err: any) {
-        toast.error(err.message || "Admin token sign-in failed");
-        return;
-      }
+        () => startFallback()
+      );
     } else {
-      toast.error("Enter an admin token");
-      return;
+      startFallback();
     }
-    setAdminAccessDialog(false);
-  };
 
-  const handleRegisterPasskey = async () => {
-    setIsPasskeyBusy(true);
-    try {
-      await registerPasskey(passkeyName.trim() || "Admin passkey", passkeySetupCode);
-      setIsAdminAuthenticated(true);
-      setPasskeySetupCode("");
-      setShowPasskeyRegistration(false);
-      setAdminAccessDialog(false);
-      toast.success("Passkey registered");
-      await loadAuthConfig();
-      await refresh();
-    } catch (err: any) {
-      toast.error(err.message || "Failed to register passkey");
-    } finally {
-      setIsPasskeyBusy(false);
-    }
-  };
+    return () => {
+      source?.close();
+      stopFallback();
+    };
+  }, [load]);
 
-  const handleDeleteSetupCode = async (id: string) => {
-    setSetupCodeDeleteId(id);
-    try {
-      await deletePasskeyRegistrationCode(id);
-      setSetupCodes((codes) => codes.filter((code) => code.id !== id));
-      toast.success("Setup code revoked");
-      await loadAuthConfig();
-    } catch (err: any) {
-      toast.error(err.message || "Failed to revoke setup code");
-    } finally {
-      setSetupCodeDeleteId(null);
-    }
-  };
-
-  const handlePasskeyLogin = async () => {
-    setIsPasskeyBusy(true);
-    try {
-      await loginWithPasskey();
-      setIsAdminAuthenticated(true);
-      setPasskeySetupCode("");
-      setShowPasskeyRegistration(false);
-      setAdminAccessDialog(false);
-      toast.success("Signed in with passkey");
-      await loadAuthConfig();
-      await refresh();
-    } catch (err: any) {
-      toast.error(err.message || "Passkey sign-in failed");
-    } finally {
-      setIsPasskeyBusy(false);
-    }
-  };
-
-  const clearAdminAccess = async () => {
-    try {
-      await logoutPasskeySession();
-    } catch {
-      // Clearing local UI state is still correct if the server session was already gone.
-    }
-    setAdminToken("");
-    setIsAdminAuthenticated(false);
-    setServers([]);
-    setLogs("");
-    setLifecycle(null);
-    setSetupCodes([]);
-    setServerInventoryBlocked(true);
-    setMessage("Admin access is required to view and manage servers.");
-    localStorage.removeItem("ADMIN_TOKEN");
-    localStorage.removeItem("ADMIN_SESSION");
-    setAdminAccessDialog(false);
-    toast.success("Admin access cleared");
-  };
-
-  const getStatusColor = (status: string) => {
-    const statusLower = status.toLowerCase();
-    if (statusLower.includes("running")) return "default";
-    if (statusLower.includes("stopped")) return "secondary";
-    return "destructive";
-  };
-
-  const passkeyConfig = authConfig?.passkeys;
-  const canUsePasskeys = passkeysAvailable();
-  const canRegisterPasskey = isAdminAuthenticated || Boolean(passkeySetupCode.trim());
-  const tokenAuthEnabled = Array.isArray(authConfig?.authMethods) && authConfig.authMethods.includes("token");
-  const hasPasskeys = Boolean(passkeyConfig?.hasPasskeys);
-  const registrationOpen = showPasskeyRegistration || (Boolean(authConfig) && !hasPasskeys);
-  const maxActiveServers = lifecycle?.maxActiveServers ?? 3;
-  const slotsAvailable = lifecycle?.slotsAvailable ?? Math.max(0, maxActiveServers - servers.length);
-  const archiveCount = lifecycle?.archives.length ?? 0;
-  const lifecycleUnavailable = lifecycle?.configured === false ? lifecycle.unavailableReason : "";
+  const visibleServers = serverName
+    ? servers.filter((server) => server.name === serverName)
+    : servers;
+  const liveLabel = liveStatus === "live"
+    ? "Live updates"
+    : liveStatus === "syncing"
+      ? "Syncing"
+      : "Checking";
+  const heading = serverName || "Server List";
+  const emptyTitle = serverName ? "Offline" : "No Online Servers";
 
   return (
     <TooltipProvider>
-      <div className="min-h-screen bg-[#050914] text-slate-100 [background-image:linear-gradient(rgba(148,163,184,0.055)_1px,transparent_1px),linear-gradient(90deg,rgba(148,163,184,0.055)_1px,transparent_1px)] [background-size:48px_48px]">
-        <div className="mx-auto max-w-7xl space-y-5 px-3 py-4 sm:px-6 sm:py-6">
-        {/* Header */}
-        <div className="flex flex-col gap-4 border-b border-slate-800/90 pb-5 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex min-w-0 items-center gap-3 sm:gap-4">
-            <div className="flex h-12 w-12 flex-shrink-0 items-center justify-center border border-emerald-400/30 bg-emerald-400/10 shadow-[0_0_24px_rgba(52,211,153,0.14)]">
-              <img src="/mc-logo.svg" alt="Minecraft Server" className="h-8 w-8 object-contain" />
+      <main className="min-h-screen bg-black text-white lg:flex">
+        <PublicSidebar
+          liveStatus={liveStatus}
+          liveLabel={liveLabel}
+          onPublicHome={onPublicHome}
+          onAdminAccess={onAdminAccess}
+        />
+        <section className="min-w-0 flex-1">
+          <header className="border-b border-[#1a1a1a] bg-[#050505] px-4 py-5 lg:hidden">
+            <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+              <button type="button" onClick={onPublicHome} className="flex items-center gap-3 text-left">
+                <div className="h-3 w-3 bg-brand-primary shadow-[0_0_12px_rgba(190,242,100,0.45)]" />
+                <div>
+                  <p className="font-display text-xl font-extrabold uppercase tracking-tight text-white">Minecraft</p>
+                  <p className="font-mono text-[9px] font-bold uppercase tracking-[0.25em] text-neutral-700">Server Portal</p>
+                </div>
+              </button>
+              <Button variant="outline" className="control-button border-[#1f1f1f] bg-black text-neutral-300 hover:bg-brand-primary hover:text-black" onClick={onAdminAccess}>
+                <KeyRound className="mr-2 h-4 w-4" />
+                Admin
+              </Button>
             </div>
-            <div className="min-w-0">
-              <h1 className="text-xl font-semibold tracking-tight text-slate-50 sm:text-2xl md:text-3xl">
-                Minecraft Server Manager
+          </header>
+
+        <div className="mx-auto max-w-7xl px-4 py-10 lg:px-10">
+          <div className="mb-10 flex flex-col gap-5 border-b border-white/5 pb-8 md:flex-row md:items-end md:justify-between">
+            <div>
+              <p className="control-label text-brand-primary">Servers</p>
+              <h1 className="mt-3 font-display text-5xl font-black uppercase leading-none tracking-tight text-white md:text-6xl">
+                {heading}
               </h1>
-              <p className="mt-1 text-xs text-slate-400 sm:text-sm">
-                Server operations, player access, content, and console in one workspace.
+              <p className="mt-4 max-w-2xl text-sm text-neutral-500">Online servers only.</p>
+            </div>
+            <div className="text-left md:text-right">
+              <p className="control-label">Last update</p>
+              <p className="mt-2 font-mono text-xs font-bold uppercase tracking-[0.12em] text-neutral-400">
+                {lastUpdated ? new Date(lastUpdated).toLocaleTimeString() : "Waiting"}
               </p>
             </div>
           </div>
-          <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:flex-nowrap">
-            <Dialog open={adminAccessDialog} onOpenChange={(open) => {
-              setAdminAccessDialog(open);
-              if (open) {
-                setAdminToken("");
-                setPasskeySetupCode("");
-                setShowPasskeyRegistration(false);
-                loadAuthConfig();
-                checkAdminSession();
-              } else {
-                setPasskeySetupCode("");
-                setShowPasskeyRegistration(false);
-              }
-            }}>
-              <DialogTrigger asChild>
-                <Button
-                  variant={hasAdminAccess ? "default" : "outline"}
-                  size="sm"
-                  className="rounded-sm flex-1 sm:flex-none"
-                >
-                  <KeyRound className="mr-1 sm:mr-2 h-4 w-4" />
-                  <span className="text-xs sm:text-sm">Admin Access</span>
+
+          {message && (
+            <div className="mb-6 border border-amber-400/25 bg-amber-400/5 p-4 text-xs font-bold uppercase tracking-[0.16em] text-amber-200">
+              {message}
+            </div>
+          )}
+
+          {visibleServers.length === 0 ? (
+            <div className="grid min-h-[20rem] place-items-center border border-dashed border-[#1a1a1a] bg-[#050505] p-8 text-center">
+              <div>
+                <Server className="mx-auto mb-5 h-10 w-10 text-neutral-800" />
+                <p className="text-sm font-bold uppercase tracking-[0.18em] text-neutral-400">
+                  {emptyTitle}
+                </p>
+                <Button className="control-button mt-6 bg-brand-primary text-black hover:bg-white" onClick={onAdminAccess}>
+                  <KeyRound className="mr-2 h-4 w-4" />
+                  Admin
                 </Button>
-              </DialogTrigger>
-              <DialogContent className="w-[min(92vw,34rem)] max-w-none gap-0 overflow-hidden rounded-sm border-border/70 p-0 sm:max-w-none">
-                <DialogHeader className="border-b px-5 py-4 pr-12 text-left">
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="min-w-0">
-                      <DialogTitle>Admin Access</DialogTitle>
-                      <DialogDescription className="mt-1">
-                        Sign in to view and manage servers.
-                      </DialogDescription>
-                    </div>
-                    <Badge variant={isAdminAuthenticated ? "default" : "outline"} className="shrink-0">
-                      {isAdminAuthenticated ? "Signed in" : "Locked"}
-                    </Badge>
-                  </div>
-                </DialogHeader>
+              </div>
+            </div>
+          ) : (
+            <div className="grid gap-6 lg:grid-cols-2">
+              {visibleServers.map((server) => (
+                <PublicServerCard key={server.name} server={server} />
+              ))}
+            </div>
+          )}
+        </div>
+        </section>
+      </main>
+    </TooltipProvider>
+  );
+}
 
-                <div className="max-h-[calc(100vh-10rem)] space-y-5 overflow-y-auto px-5 py-5">
-                  <section className="space-y-3">
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="min-w-0">
-                        <h3 className="text-sm font-medium">Passkey Session</h3>
-                        <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                          {isAdminAuthenticated
-                            ? "This browser has an active admin session."
-                            : hasPasskeys
-                              ? "Use a registered passkey to unlock server controls."
-                              : "Register the first passkey with a one-time setup code."}
-                        </p>
-                      </div>
-                      {isAdminAuthenticated && (
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          className="shrink-0 rounded-sm"
-                          onClick={clearAdminAccess}
-                        >
-                          <LogOut className="mr-2 h-4 w-4" />
-                          Sign Out
-                        </Button>
-                      )}
-                    </div>
+function PublicSidebar({
+  liveStatus,
+  liveLabel,
+  onPublicHome,
+  onAdminAccess,
+}: {
+  liveStatus: "checking" | "live" | "syncing";
+  liveLabel: string;
+  onPublicHome: () => void;
+  onAdminAccess: () => void;
+}) {
+  return (
+    <aside className="hidden w-64 shrink-0 flex-col border-r border-[#1a1a1a] bg-black lg:flex">
+      <div className="flex h-24 items-center border-b border-[#1a1a1a] px-8">
+        <button type="button" onClick={onPublicHome} className="flex items-center gap-3 text-left">
+          <div className="h-3 w-3 bg-brand-primary shadow-[0_0_12px_rgba(190,242,100,0.45)]" />
+          <div>
+            <p className="font-display text-xl font-extrabold uppercase tracking-tight text-white">Server</p>
+            <p className="font-mono text-[9px] font-bold uppercase tracking-[0.25em] text-neutral-700">Portal</p>
+          </div>
+        </button>
+      </div>
 
-                    {!canUsePasskeys && (
-                      <p className="rounded-sm border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-300">
-                        Passkeys require HTTPS or localhost in this browser.
-                      </p>
-                    )}
-
-                    {!isAdminAuthenticated && hasPasskeys && (
-                      <div className="space-y-2">
-                        <Button
-                          type="button"
-                          className="w-full rounded-sm"
-                          onClick={handlePasskeyLogin}
-                          disabled={!canUsePasskeys || !hasPasskeys || isPasskeyBusy}
-                        >
-                          {isPasskeyBusy ? (
-                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          ) : (
-                            <Fingerprint className="mr-2 h-4 w-4" />
-                          )}
-                          Sign In With Passkey
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          className="w-full rounded-sm text-muted-foreground"
-                          onClick={() => setShowPasskeyRegistration((current) => !current)}
-                        >
-                          {registrationOpen ? "Hide setup-code registration" : "Register a new passkey with a code"}
-                        </Button>
-                      </div>
-                    )}
-
-                    {isAdminAuthenticated && hasPasskeys && (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="w-full rounded-sm"
-                        onClick={() => setShowPasskeyRegistration((current) => !current)}
-                      >
-                        <Fingerprint className="mr-2 h-4 w-4" />
-                        {registrationOpen ? "Cancel Passkey Setup" : "Add This Device as a Passkey"}
-                      </Button>
-                    )}
-                  </section>
-
-                  {registrationOpen && (
-                    <section className="space-y-3 border-t pt-5">
-                      <div>
-                        <h3 className="text-sm font-medium">
-                          {isAdminAuthenticated ? "Add Passkey" : "Register With Setup Code"}
-                        </h3>
-                        <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                          {isAdminAuthenticated
-                            ? hasPasskeys
-                              ? "Add another synced passkey without entering a setup code."
-                              : "Add the first passkey for this deployment without entering a setup code."
-                            : "Paste a one-time code from the root-only host command, then name this passkey."}
-                        </p>
-                      </div>
-
-                      {!isAdminAuthenticated && (
-                        <div className="space-y-1.5">
-                          <Label htmlFor="passkeySetupCode">One-time setup code</Label>
-                          <Input
-                            id="passkeySetupCode"
-                            type="password"
-                            value={passkeySetupCode}
-                            onChange={(event) => setPasskeySetupCode(event.target.value)}
-                            placeholder="Paste setup code"
-                            className="rounded-sm"
-                          />
-                        </div>
-                      )}
-
-                      <div className="space-y-1.5">
-                        <Label htmlFor="passkeyName">Passkey name</Label>
-                        <Input
-                          id="passkeyName"
-                          value={passkeyName}
-                          onChange={(event) => setPasskeyName(event.target.value)}
-                          placeholder="Admin passkey"
-                          className="rounded-sm"
-                        />
-                      </div>
-
-                      <Button
-                        type="button"
-                        variant={isAdminAuthenticated ? "outline" : "default"}
-                        className="w-full rounded-sm"
-                        onClick={handleRegisterPasskey}
-                        disabled={!canUsePasskeys || !canRegisterPasskey || isPasskeyBusy}
-                      >
-                        {isPasskeyBusy ? (
-                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        ) : (
-                          <Fingerprint className="mr-2 h-4 w-4" />
-                        )}
-                        {isAdminAuthenticated ? "Add Passkey" : "Register Passkey"}
-                      </Button>
-                    </section>
-                  )}
-
-                  {isAdminAuthenticated && setupCodes.length > 0 && (
-                    <section className="space-y-3 border-t pt-5">
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
-                          <h3 className="text-sm font-medium">One-time Codes</h3>
-                          <p className="mt-1 text-xs text-muted-foreground">
-                            Generated on the host. Plaintext codes are not stored.
-                          </p>
-                        </div>
-                        <Badge variant="outline">{setupCodes.filter((code) => !code.usedAt).length} open</Badge>
-                      </div>
-                      <div className="space-y-2">
-                        {setupCodes.map((code) => (
-                          <div key={code.id} className="flex items-center gap-3 border-b py-2 last:border-b-0">
-                            <div className="min-w-0 flex-1">
-                              <p className="truncate text-xs font-medium">{code.label || "Setup code"}</p>
-                              <p className="text-[11px] text-muted-foreground">
-                                {code.usedAt
-                                  ? `Used ${new Date(code.usedAt).toLocaleString()}`
-                                  : "Unused"}
-                              </p>
-                              {code.usedByCredentialId && (
-                                <p className="truncate text-[11px] text-muted-foreground">
-                                  Passkey {code.usedByCredentialId}
-                                </p>
-                              )}
-                            </div>
-                            <Badge variant={code.usedAt ? "secondary" : "outline"} className="shrink-0">
-                              {code.usedAt ? "Used" : "Open"}
-                            </Badge>
-                            {code.source === "env" && (
-                              <Badge variant="secondary" className="shrink-0">Config</Badge>
-                            )}
-                            {!code.usedAt && code.source === "generated" && (
-                              <Button
-                                type="button"
-                                size="sm"
-                                variant="ghost"
-                                className="shrink-0 rounded-sm"
-                                aria-label="Revoke setup code"
-                                disabled={setupCodeDeleteId === code.id}
-                                onClick={() => handleDeleteSetupCode(code.id)}
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </section>
-                  )}
-
-                  {tokenAuthEnabled && !isAdminAuthenticated && (
-                    <section className="space-y-3 border-t pt-5">
-                      <div>
-                        <h3 className="text-sm font-medium">Token Fallback</h3>
-                        <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                          Use only when token authentication is enabled for this deployment.
-                        </p>
-                      </div>
-                      <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
-                        <Input
-                          id="adminToken"
-                          type="password"
-                          value={adminToken}
-                          onChange={(event) => setAdminToken(event.target.value)}
-                          placeholder="Paste admin token"
-                          className="rounded-sm"
-                        />
-                        <Button className="rounded-sm" onClick={saveAdminToken}>
-                          Sign In
-                        </Button>
-                      </div>
-                    </section>
-                  )}
-                </div>
-              </DialogContent>
-            </Dialog>
-            <Dialog open={helpDialog} onOpenChange={setHelpDialog}>
-              <DialogTrigger asChild>
-                <Button data-tour="help-button" variant="outline" size="sm" className="rounded-sm hover:bg-green-500/10 hover:border-green-500 transition-all flex-1 sm:flex-none">
-                  <HelpCircle className="mr-1 sm:mr-2 h-4 w-4" />
-                  <span className="text-xs sm:text-sm">Help</span>
-                </Button>
-              </DialogTrigger>
-              <DialogContent className="rounded-sm max-w-[95vw] sm:max-w-3xl max-h-[90vh] overflow-y-auto">
-                <DialogHeader>
-                  <DialogTitle>User Documentation</DialogTitle>
-                  <DialogDescription>
-                    Complete guide to managing your Minecraft server
-                  </DialogDescription>
-                </DialogHeader>
-                <div className="space-y-6 text-sm">
-
-                  <section className="bg-blue-50 dark:bg-blue-950/30 border-l-4 border-blue-500 p-4 rounded-sm">
-                    <h2 className="text-lg font-bold mb-3 text-blue-900 dark:text-blue-100">New to MC Manager?</h2>
-                    <p className="text-blue-700 dark:text-blue-300 mb-4">
-                      Take our interactive guided tour to learn all the features and how to get your server running!
-                    </p>
-                    <Button
-                      onClick={() => {
-                        setHelpDialog(false);
-                        setTimeout(() => startTour(), 100);
-                      }}
-                      className="w-full rounded-sm"
-                      variant="default"
-                    >
-                      Start Guided Tour
-                    </Button>
-                  </section>
-
-                  <section>
-                    <h2 className="text-lg font-bold mb-3 border-b pb-2">Server Controls</h2>
-                    <div className="space-y-2">
-                      <div className="grid grid-cols-2 gap-2 text-xs">
-                        <div><strong>Play (▶):</strong> Start the server</div>
-                        <div><strong>Stop (■):</strong> Gracefully stop the server</div>
-                        <div><strong>Restart (↻):</strong> Stop and start the server</div>
-                        <div><strong>Refresh (⟳):</strong> Update server status</div>
-                      </div>
-                    </div>
-                  </section>
-
-                  <section>
-                    <h2 className="text-lg font-bold mb-3 border-b pb-2">Server Fleet</h2>
-                    <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
-                      <li>Up to three active LXD servers can be registered at once.</li>
-                      <li>Use New Server to create another Paper or Vanilla server when a slot is open.</li>
-                      <li>Use Archive Server to stop a server, publish a complete LXD image, remove it from the active slot list, and keep it available for restore.</li>
-                      <li>Use Archives to restore an archived image back into an open slot or remove archive images you no longer need.</li>
-                      <li>Lifecycle actions require the root-only host helper to be configured for the management service.</li>
-                    </ul>
-                  </section>
-
-                  <section>
-                    <h2 className="text-lg font-bold mb-3 border-b pb-2">Server Settings</h2>
-                    <p className="text-muted-foreground mb-3">Click "Server Settings" to configure your server before launch, then save to apply changes.</p>
-
-                    <div className="space-y-3">
-                      <div>
-                        <h3 className="font-semibold mb-1">Network Tab</h3>
-                        <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
-                          <li><strong>Host IP:</strong> Set to your LXD host's local IP (e.g., 192.168.0.170) for local network access</li>
-                          <li><strong>Public Domain:</strong> Set the player-facing DNS name, such as mc.basementnodes.ca</li>
-                          <li><strong>Public Port:</strong> Use 25565 when possible so players do not need to type a port</li>
-                          <li><strong>Host Proxy Port:</strong> The reachable nodev2 LXC proxy port your router forwards to</li>
-                        </ul>
-                      </div>
-
-                      <div>
-                        <h3 className="font-semibold mb-1">Properties Tab</h3>
-                        <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
-                          <li><strong>MOTD:</strong> Message shown in server list</li>
-                          <li><strong>Max Players:</strong> Maximum concurrent players allowed</li>
-                          <li><strong>View Distance:</strong> How far players can see (lower = better performance)</li>
-                          <li><strong>Online Mode:</strong> Requires Minecraft account authentication (recommended)</li>
-                        </ul>
-                      </div>
-
-                      <div>
-                        <h3 className="font-semibold mb-1">Gameplay Tab</h3>
-                        <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
-                          <li><strong>Game Mode:</strong> Survival, Creative, Adventure, or Spectator</li>
-                          <li><strong>Difficulty:</strong> Peaceful, Easy, Normal, or Hard</li>
-                          <li><strong>PVP:</strong> Enable/disable player vs player combat</li>
-                          <li><strong>Allow Flight:</strong> Allow flying in survival mode</li>
-                          <li><strong>Spawn Protection:</strong> Blocks around spawn that only ops can modify</li>
-                        </ul>
-                      </div>
-
-                      <div>
-                        <h3 className="font-semibold mb-1">Security Tab</h3>
-                        <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
-                          <li><strong>Whitelist:</strong> Only allow approved players (recommended for private servers)</li>
-                          <li>Add players by username, remove them with the X button</li>
-                        </ul>
-                      </div>
-
-                      <div>
-                        <h3 className="font-semibold mb-1">Plugins Tab</h3>
-                        <p className="text-muted-foreground text-xs">Select popular plugins to install. Server must be restarted after installation.</p>
-                      </div>
-
-                      <div>
-                        <h3 className="font-semibold mb-1">Admins Tab</h3>
-                        <p className="text-muted-foreground text-xs">Add server operators (admins) who can use all commands. Only give OP to trusted players.</p>
-                      </div>
-                    </div>
-                  </section>
-
-                  <section>
-                    <h2 className="text-lg font-bold mb-3 border-b pb-2">Upload Content</h2>
-
-                    <div className="space-y-3">
-                      <div>
-                        <h3 className="font-semibold mb-1">Plugins (Paper/Purpur/Spigot only)</h3>
-                        <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
-                          <li>Download .jar files from SpigotMC, Bukkit, or Modrinth</li>
-                          <li>Click "Upload Plugin" and select the .jar file</li>
-                          <li>Restart server to load the plugin</li>
-                          <li>Popular plugins: EssentialsX, WorldEdit, LuckPerms, Vault</li>
-                        </ul>
-                      </div>
-
-                      <div>
-                        <h3 className="font-semibold mb-1">Mods (Forge/NeoForge/Fabric only)</h3>
-                        <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
-                          <li>Download .jar files from CurseForge or Modrinth</li>
-                          <li>Click "Upload Mod" and select the .jar file</li>
-                          <li>Players MUST have the same mods installed to join</li>
-                          <li>Restart server after adding mods</li>
-                        </ul>
-                      </div>
-
-                      <div>
-                        <h3 className="font-semibold mb-1">Worlds</h3>
-                        <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
-                          <li>Compress your world folder into a .zip file</li>
-                          <li>The .zip must contain level.dat, region/, data/ folders</li>
-                          <li>Click "Upload World" and select the .zip file</li>
-                          <li>Server will stop, replace the world, and restart automatically</li>
-                        </ul>
-                      </div>
-                    </div>
-                  </section>
-
-                  <section>
-                    <h2 className="text-lg font-bold mb-3 border-b pb-2">Console Panel</h2>
-                    <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
-                      <li>Shows the last 10 lines of server logs in real-time</li>
-                      <li>Auto-refreshes every 5 seconds</li>
-                      <li>Click the chevron to collapse/expand</li>
-                      <li>Use for debugging connection issues or plugin errors</li>
-                      <li>Click "Refresh Now" for immediate update</li>
-                    </ul>
-                  </section>
-
-                  <section>
-                    <h2 className="text-lg font-bold mb-3 border-b pb-2">Connection Status</h2>
-                    <div className="space-y-2">
-                      <div>
-                        <h3 className="font-semibold mb-1">Status Badges</h3>
-                        <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
-                          <li><strong className="text-green-500">✓ ONLINE:</strong> Server is accessible</li>
-                          <li><strong className="text-red-500">✗ OFFLINE:</strong> Server is not reachable</li>
-                          <li><strong>⟳ CHECKING:</strong> Verifying connection status</li>
-                        </ul>
-                      </div>
-                      <div>
-                        <h3 className="font-semibold mb-1">LAN Address</h3>
-                        <p className="text-muted-foreground text-xs">Shows status for players on your local WiFi network. Set Host IP in Network settings first.</p>
-                      </div>
-                      <div>
-                        <h3 className="font-semibold mb-1">Public Address</h3>
-                        <p className="text-muted-foreground text-xs">Shows the player join address for friends outside your house. With port 25565, players enter only the domain name.</p>
-                      </div>
-                    </div>
-                  </section>
-
-                  <section>
-                    <h2 className="text-lg font-bold mb-3 border-b pb-2">Troubleshooting</h2>
-                    <div className="space-y-2">
-                      <div>
-                        <h3 className="font-semibold mb-1">Server won't start</h3>
-                        <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
-                          <li>Check the Console panel for error messages</li>
-                          <li>Click "View Logs" for full server logs</li>
-                          <li>Ensure enough memory is allocated (8GB recommended)</li>
-                        </ul>
-                      </div>
-                      <div>
-                        <h3 className="font-semibold mb-1">Can't connect locally</h3>
-                        <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
-                          <li>Set Host IP in Server Settings → Network tab</li>
-                          <li>Verify server status shows "Running"</li>
-                          <li>Check that the LAN address is configured and the server is running</li>
-                          <li>Make sure you're on the same WiFi network</li>
-                        </ul>
-                      </div>
-                      <div>
-                        <h3 className="font-semibold mb-1">Can't connect from internet</h3>
-                        <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
-                          <li>Forward TCP 25565 to the reachable nodev2 LXC proxy port shown in Server Settings → Network</li>
-                          <li>Set the DNS A record for mc.basementnodes.ca to your public IP</li>
-                          <li>Set Public Domain to mc.basementnodes.ca, Public Port to 25565, and Host Proxy Port to the nodev2 proxy port</li>
-                          <li>Share only the Minecraft join address with players, not the admin panel URL</li>
-                          <li>Wait for DNS propagation (can take up to 24 hours)</li>
-                        </ul>
-                      </div>
-                      <div>
-                        <h3 className="font-semibold mb-1">Plugin/Mod not working</h3>
-                        <ul className="list-disc list-inside space-y-1 text-muted-foreground ml-2 text-xs">
-                          <li>Ensure plugin is compatible with your server version</li>
-                          <li>Restart server after uploading</li>
-                          <li>Check Console panel for plugin errors</li>
-                          <li>For mods: players must have the exact same mods installed</li>
-                        </ul>
-                      </div>
-                    </div>
-                  </section>
-
-                  <section className="bg-muted/50 p-3 rounded-lg">
-                    <h2 className="text-sm font-bold mb-2">Important Notes</h2>
-                    <ul className="list-disc list-inside space-y-1 text-xs text-muted-foreground">
-                      <li>Always back up your world before major changes</li>
-                      <li>Use Save & Apply in Server Settings to write configuration changes</li>
-                      <li>Keep Online Mode ON to prevent unauthorized access</li>
-                      <li>Only give operator status to people you completely trust</li>
-                      <li>Monitor the Console panel for errors and warnings</li>
-                    </ul>
-                  </section>
-
-                </div>
-              </DialogContent>
-            </Dialog>
-            <Button
-              variant="outline"
-              size="sm"
-              className="rounded-sm flex-1 sm:flex-none"
-              onClick={refresh}
-              disabled={isRefreshing}
-            >
-              <RefreshCw
-                className={`mr-1 sm:mr-2 h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`}
-              />
-              <span className="text-xs sm:text-sm">Refresh</span>
-            </Button>
+      <nav className="flex-1 space-y-8 p-6">
+        <div>
+          <h4 className="mb-4 px-4 text-[10px] font-bold uppercase tracking-[0.22em] text-neutral-700">
+            Servers
+          </h4>
+          <div className="space-y-1">
+            <SidebarButton active icon={Server} label="Server List" onClick={onPublicHome} />
           </div>
         </div>
 
-
-        {/* Message Banner */}
-        {message && (
-          <Card className="rounded-sm border-l-4 border-l-primary">
-            <CardContent className="py-3">
-              <p className="text-sm">{message}</p>
-            </CardContent>
-          </Card>
-        )}
-
-        {hasAdminAccess && !serverInventoryBlocked && (
-          <section data-tour="server-fleet" className="grid gap-4 border border-slate-800 bg-[#07111f]/90 p-4 shadow-[0_20px_70px_rgba(0,0,0,0.35)] lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
-            <div className="grid gap-4 md:grid-cols-[auto_minmax(0,1fr)] md:items-center">
-              <div className="grid h-20 w-20 place-items-center border border-emerald-400/25 bg-emerald-400/10 text-emerald-200">
-                <Server className="h-9 w-9" />
-              </div>
-              <div className="min-w-0">
-                <div className="mb-2 flex flex-wrap items-center gap-2">
-                  <span className="border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-300">
-                    Server Fleet
-                  </span>
-                  <Badge className="rounded-sm bg-emerald-500 text-slate-950 hover:bg-emerald-500">
-                    {servers.length}/{maxActiveServers} active
-                  </Badge>
-                  <Badge variant="outline" className="rounded-sm border-amber-400/30 text-amber-200">
-                    {archiveCount} archived
-                  </Badge>
-                </div>
-                <h2 className="text-2xl font-semibold text-slate-50">Active Slots and Archives</h2>
-                <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-400">
-                  Keep up to three servers online. Archive a server to stop it, image its full LXD state, and free the slot for another world.
-                </p>
-                {lifecycleUnavailable && (
-                  <p className="mt-3 border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-200">
-                    Host lifecycle actions need setup: {lifecycleUnavailable}
-                  </p>
-                )}
-              </div>
-            </div>
-
-            <div className="grid gap-2 sm:grid-cols-2 lg:w-[22rem]">
-              <Dialog open={createServerDialog} onOpenChange={setCreateServerDialog}>
-                <DialogTrigger asChild>
-                  <Button
-                    className="h-12 rounded-sm bg-emerald-500 text-slate-950 hover:bg-emerald-400"
-                    disabled={slotsAvailable <= 0}
-                  >
-                    <Plus className="mr-2 h-4 w-4" />
-                    New Server
-                  </Button>
-                </DialogTrigger>
-                <DialogContent className="w-[min(94vw,34rem)] max-w-none rounded-sm border-slate-800 bg-[#07111f]">
-                  <DialogHeader>
-                    <DialogTitle>Create Server</DialogTitle>
-                    <DialogDescription>
-                      Creates a new LXD-backed Minecraft server when an active slot is available.
-                    </DialogDescription>
-                  </DialogHeader>
-                  <div className="grid gap-4">
-                    <div className="grid gap-2">
-                      <Label htmlFor="new-server-name">Server name</Label>
-                      <Input
-                        id="new-server-name"
-                        value={newServerForm.name}
-                        onChange={(event) => setNewServerForm((form) => ({ ...form, name: event.target.value }))}
-                        placeholder="mc-server-2"
-                        className="rounded-sm"
-                      />
-                    </div>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div className="grid gap-2">
-                        <Label>Edition</Label>
-                        <Select
-                          value={newServerForm.edition}
-                          onValueChange={(edition) => setNewServerForm((form) => ({ ...form, edition }))}
-                        >
-                          <SelectTrigger className="rounded-sm">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="paper">Paper</SelectItem>
-                            <SelectItem value="vanilla">Vanilla</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div className="grid gap-2">
-                        <Label htmlFor="new-server-version">Minecraft version</Label>
-                        <Input
-                          id="new-server-version"
-                          value={newServerForm.mcVersion}
-                          onChange={(event) => setNewServerForm((form) => ({ ...form, mcVersion: event.target.value }))}
-                          className="rounded-sm"
-                        />
-                      </div>
-                    </div>
-                    <div className="grid gap-3 sm:grid-cols-3">
-                      <div className="grid gap-2">
-                        <Label htmlFor="new-server-memory">Memory MB</Label>
-                        <Input
-                          id="new-server-memory"
-                          type="number"
-                          min={1024}
-                          value={newServerForm.memoryMb}
-                          onChange={(event) => setNewServerForm((form) => ({ ...form, memoryMb: Number(event.target.value) }))}
-                          className="rounded-sm"
-                        />
-                      </div>
-                      <div className="grid gap-2">
-                        <Label htmlFor="new-server-cpu">CPU</Label>
-                        <Input
-                          id="new-server-cpu"
-                          value={newServerForm.cpuLimit}
-                          onChange={(event) => setNewServerForm((form) => ({ ...form, cpuLimit: event.target.value }))}
-                          className="rounded-sm"
-                        />
-                      </div>
-                      <div className="grid gap-2">
-                        <Label htmlFor="new-server-port">Public port</Label>
-                        <Input
-                          id="new-server-port"
-                          type="number"
-                          min={1}
-                          max={65535}
-                          value={newServerForm.publicPort}
-                          onChange={(event) => setNewServerForm((form) => ({ ...form, publicPort: Number(event.target.value) }))}
-                          className="rounded-sm"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                  <DialogFooter>
-                    <Button variant="outline" className="rounded-sm" onClick={() => setCreateServerDialog(false)}>
-                      Cancel
-                    </Button>
-                    <Button
-                      className="rounded-sm bg-emerald-500 text-slate-950 hover:bg-emerald-400"
-                      onClick={handleCreateServer}
-                      disabled={isLifecycleBusy || slotsAvailable <= 0 || lifecycle?.configured === false}
-                    >
-                      {isLifecycleBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
-                      Create
-                    </Button>
-                  </DialogFooter>
-                </DialogContent>
-              </Dialog>
-
-              <Dialog open={archivesDialog} onOpenChange={setArchivesDialog}>
-                <DialogTrigger asChild>
-                  <Button variant="outline" className="h-12 rounded-sm border-amber-400/30 bg-amber-400/10 text-amber-100 hover:bg-amber-400/20">
-                    <Archive className="mr-2 h-4 w-4" />
-                    Archives
-                  </Button>
-                </DialogTrigger>
-                <DialogContent className="w-[min(94vw,48rem)] max-w-none rounded-sm border-slate-800 bg-[#07111f]">
-                  <DialogHeader>
-                    <DialogTitle>Archived Servers</DialogTitle>
-                    <DialogDescription>
-                      Restore an archived server into an open active slot, or delete an archive image when it is no longer needed.
-                    </DialogDescription>
-                  </DialogHeader>
-                  <div className="max-h-[60vh] space-y-3 overflow-y-auto pr-1">
-                    {archiveCount === 0 ? (
-                      <div className="border border-slate-800 bg-slate-950 p-6 text-center text-sm text-slate-400">
-                        No server archives yet.
-                      </div>
-                    ) : (
-                      lifecycle?.archives.map((archive) => (
-                        <div key={archive.id} className="grid gap-3 border border-slate-800 bg-slate-950 p-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
-                          <div className="min-w-0">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <h3 className="truncate text-base font-semibold text-slate-100">
-                                {archive.label || archive.sourceName}
-                              </h3>
-                              <Badge variant="secondary" className="rounded-sm">
-                                {archive.server.edition} {archive.server.mc_version}
-                              </Badge>
-                            </div>
-                            <p className="mt-1 text-xs text-slate-500">
-                              {new Date(archive.createdAt).toLocaleString()} · {archive.server.memory_mb}MB · image {archive.imageAlias}
-                            </p>
-                          </div>
-                          <div className="flex flex-wrap gap-2">
-                            <Button
-                              size="sm"
-                              className="rounded-sm"
-                              disabled={slotsAvailable <= 0 || isLifecycleBusy}
-                              onClick={() => openRestoreDialog(archive)}
-                            >
-                              <DatabaseBackup className="mr-2 h-4 w-4" />
-                              Restore
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="rounded-sm text-red-200 hover:text-red-100"
-                              disabled={isLifecycleBusy}
-                              onClick={() => handleDeleteArchive(archive)}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </DialogContent>
-              </Dialog>
-            </div>
-          </section>
-        )}
-
-        <Dialog open={Boolean(restoreTarget)} onOpenChange={(open) => !open && setRestoreTarget(null)}>
-          <DialogContent className="w-[min(94vw,32rem)] max-w-none rounded-sm border-slate-800 bg-[#07111f]">
-            <DialogHeader>
-              <DialogTitle>Restore Archive</DialogTitle>
-              <DialogDescription>
-                Launch this image as an active server and register it in the manager.
-              </DialogDescription>
-            </DialogHeader>
-            {restoreTarget && (
-              <div className="grid gap-4">
-                <div className="border border-slate-800 bg-slate-950 p-3 text-sm text-slate-300">
-                  <p className="font-semibold text-slate-100">{restoreTarget.label || restoreTarget.sourceName}</p>
-                  <p className="mt-1 text-xs text-slate-500">
-                    {restoreTarget.server.edition} {restoreTarget.server.mc_version} · archived {new Date(restoreTarget.createdAt).toLocaleString()}
-                  </p>
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div className="grid gap-2">
-                    <Label htmlFor="restore-server-name">Server name</Label>
-                    <Input
-                      id="restore-server-name"
-                      value={restoreForm.name}
-                      onChange={(event) => setRestoreForm((form) => ({ ...form, name: event.target.value }))}
-                      className="rounded-sm"
-                    />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label htmlFor="restore-server-port">Public port</Label>
-                    <Input
-                      id="restore-server-port"
-                      type="number"
-                      min={1}
-                      max={65535}
-                      value={restoreForm.publicPort}
-                      onChange={(event) => setRestoreForm((form) => ({ ...form, publicPort: Number(event.target.value) }))}
-                      className="rounded-sm"
-                    />
-                  </div>
-                </div>
-              </div>
-            )}
-            <DialogFooter>
-              <Button variant="outline" className="rounded-sm" onClick={() => setRestoreTarget(null)}>
-                Cancel
-              </Button>
-              <Button
-                className="rounded-sm"
-                onClick={handleRestoreArchive}
-                disabled={isLifecycleBusy || slotsAvailable <= 0 || lifecycle?.configured === false}
-              >
-                {isLifecycleBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <DatabaseBackup className="mr-2 h-4 w-4" />}
-                Restore
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-
-        <Dialog open={Boolean(archiveTarget)} onOpenChange={(open) => !open && setArchiveTarget(null)}>
-          <DialogContent className="w-[min(94vw,32rem)] max-w-none rounded-sm border-slate-800 bg-[#07111f]">
-            <DialogHeader>
-              <DialogTitle>Archive Server</DialogTitle>
-              <DialogDescription>
-                This stops the server, publishes an LXD image of the complete game state, removes the active container, and frees one server slot.
-              </DialogDescription>
-            </DialogHeader>
-            {archiveTarget && (
-              <div className="grid gap-4">
-                <div className="border border-amber-400/30 bg-amber-400/10 p-3 text-sm text-amber-100">
-                  Archiving {archiveTarget.name} will disconnect players and take the server offline until it is restored.
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="archive-label">Archive label</Label>
-                  <Input
-                    id="archive-label"
-                    value={archiveLabel}
-                    onChange={(event) => setArchiveLabel(event.target.value)}
-                    placeholder={`${archiveTarget.name} archive`}
-                    className="rounded-sm"
-                  />
-                </div>
-              </div>
-            )}
-            <DialogFooter>
-              <Button variant="outline" className="rounded-sm" onClick={() => setArchiveTarget(null)}>
-                Cancel
-              </Button>
-              <Button
-                variant="destructive"
-                className="rounded-sm"
-                onClick={handleArchiveServer}
-                disabled={isLifecycleBusy || lifecycle?.configured === false}
-              >
-                {isLifecycleBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Archive className="mr-2 h-4 w-4" />}
-                Archive
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-
-        {/* Server List */}
-        {serverInventoryBlocked ? (
-          <Card className="rounded-sm">
-            <CardContent className="py-12 text-center space-y-4">
-              <p className="text-muted-foreground">
-                Registered servers are hidden until admin access is unlocked.
-              </p>
-              <Button
-                type="button"
-                variant="outline"
-                className="rounded-sm"
-                onClick={() => {
-                  setAdminAccessDialog(true);
-                  loadAuthConfig();
-                  checkAdminSession();
-                }}
-              >
-                <KeyRound className="mr-2 h-4 w-4" />
-                Admin Access
-              </Button>
-            </CardContent>
-          </Card>
-        ) : servers.length === 0 ? (
-          <Card className="rounded-sm">
-            <CardContent className="py-12 text-center">
-              <p className="text-muted-foreground">
-                No servers registered. Run the setup script on your host to create servers.
-              </p>
-            </CardContent>
-          </Card>
-        ) : (
-          <div className="grid gap-6">
-            {servers.map((server) => (
-              <Card key={server.name} className="overflow-hidden rounded-sm border-emerald-400/20 bg-[#07111f]/95 shadow-[0_28px_90px_rgba(0,0,0,0.42)]">
-                <CardHeader className="border-b border-slate-800/90 bg-[linear-gradient(180deg,rgba(15,23,42,0.95),rgba(7,17,31,0.92))] p-4 sm:p-6">
-                  <div className="flex flex-col gap-5">
-                    <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-                      <div className="min-w-0 flex-1">
-                        <div className="mb-3 flex flex-wrap items-center gap-2">
-                          <span className="border border-emerald-400/30 bg-emerald-400/10 px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-200">
-                            Active Server
-                          </span>
-                          <Badge
-                            variant={getStatusColor(server.status)}
-                            className="rounded-sm text-xs"
-                          >
-                            {server.status}
-                          </Badge>
-                          {server.status === 'Running' && serverTps.get(server.name) !== undefined && (
-                            <Badge
-                              variant={serverTps.get(server.name) && serverTps.get(server.name)! >= 19.5 ? "default" : "destructive"}
-                              className="rounded-sm text-xs"
-                            >
-                              TPS {serverTps.get(server.name)?.toFixed(1) || 'N/A'}
-                            </Badge>
-                          )}
-                        </div>
-                        <CardTitle className="text-2xl font-semibold tracking-tight text-slate-50 sm:text-3xl">
-                          {server.name}
-                        </CardTitle>
-                        <CardDescription className="mt-2 text-sm text-slate-400">
-                          {server.edition} {server.mc_version} · {server.memory_mb}MB memory · {server.cpu_limit} CPU
-                        </CardDescription>
-                        {server.minecraft?.online && server.minecraft.players && (
-                          <div className="mt-4 flex flex-wrap items-center gap-2 text-xs sm:text-sm">
-                            <Users className="h-4 w-4 text-emerald-300" />
-                            <span className="font-medium text-slate-400">Players</span>
-                            <Badge variant="secondary" className="rounded-sm border-slate-700 bg-slate-800 text-slate-100">
-                              {server.minecraft.players.online}/{server.minecraft.players.max}
-                            </Badge>
-                            {server.minecraft.description && (
-                              <span className="text-slate-400">
-                                {server.minecraft.description}
-                              </span>
-                            )}
-                          </div>
-                        )}
-                      </div>
-
-                      <div data-tour="server-controls" className="grid w-full grid-cols-3 gap-2 lg:w-[27rem]">
-                      <Button
-                        variant="outline"
-                        className="h-14 rounded-sm border-emerald-400/30 bg-emerald-400/10 text-emerald-100 transition-all hover:border-emerald-300 hover:bg-emerald-400/20"
-                        onClick={() => handleServerAction(server.name, "start")}
-                        title="Start"
-                      >
-                        <Play className="mr-2 h-4 w-4" />
-                        Start
-                      </Button>
-                      <Button
-                        variant="outline"
-                        className="h-14 rounded-sm border-red-400/25 bg-red-400/10 text-red-100 transition-all hover:border-red-300 hover:bg-red-400/20"
-                        onClick={() => handleServerAction(server.name, "stop")}
-                        title="Stop"
-                      >
-                        <Square className="mr-2 h-4 w-4" />
-                        Stop
-                      </Button>
-                      <Button
-                        variant="outline"
-                        className="h-14 rounded-sm border-sky-400/25 bg-sky-400/10 text-sky-100 transition-all hover:border-sky-300 hover:bg-sky-400/20"
-                        onClick={() => handleServerAction(server.name, "restart")}
-                        title="Restart"
-                      >
-                        <RotateCw className="mr-2 h-4 w-4" />
-                        Restart
-                      </Button>
-                      </div>
-                    </div>
-
-                    <div className="grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(20rem,0.75fr)]">
-                      <section data-tour="connection-public" className="border border-sky-400/20 bg-sky-400/[0.06] p-4">
-                        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                          <div>
-                            <h3 className="text-sm font-semibold uppercase tracking-[0.16em] text-sky-200">Player Connection</h3>
-                            <p className="mt-1 text-xs text-slate-400">Share the public address, then verify the route before inviting players.</p>
-                          </div>
-                          {server.public_domain ? (
-                            publicAccess.get(server.name)?.checking ? (
-                              <Badge variant="outline" className="w-fit rounded-sm border-sky-400/30 bg-sky-400/10 text-sky-100">Checking</Badge>
-                            ) : publicAccess.get(server.name)?.accessible ? (
-                              <Badge className="w-fit rounded-sm bg-emerald-500 text-slate-950 hover:bg-emerald-500">Reachable externally</Badge>
-                            ) : (
-                              <Badge variant="destructive" className="w-fit rounded-sm">Not reachable</Badge>
-                            )
-                          ) : (
-                            <Badge variant="outline" className="w-fit rounded-sm">Not configured</Badge>
-                          )}
-                        </div>
-
-                        {server.public_domain ? (
-                          <>
-                            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-                              <code className="min-w-0 flex-1 rounded-sm border border-sky-400/25 bg-[#030712] px-4 py-4 text-lg font-semibold text-sky-200 break-all sm:text-2xl">
-                                {getPublicJoinAddress(server)}
-                              </code>
-                              <Button
-                                variant="outline"
-                                className="h-14 rounded-sm border-sky-400/30 bg-sky-400/10 text-sky-100 hover:bg-sky-400/20"
-                                onClick={() => copyToClipboard(getPublicJoinAddress(server))}
-                              >
-                                <Copy className="mr-2 h-4 w-4" />
-                                Copy Address
-                              </Button>
-                            </div>
-                            <div className="mt-4 flex flex-col gap-3 border-t border-sky-400/15 pt-4 sm:flex-row sm:items-center sm:justify-between">
-                              <p className="text-xs text-slate-400">
-                                {isDefaultMinecraftPort(server.public_port)
-                                  ? "Port 25565 is default; players can enter only the domain."
-                                  : `Custom port: players must include :${server.public_port}.`}
-                              </p>
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                className="rounded-sm border-slate-700 bg-slate-950 text-slate-100 hover:bg-slate-900"
-                                onClick={() => checkPublicAccess(server.name)}
-                                disabled={publicAccess.get(server.name)?.checking}
-                              >
-                                <RefreshCw className={`mr-1.5 h-3 w-3 ${publicAccess.get(server.name)?.checking ? "animate-spin" : ""}`} />
-                                Test Public Route
-                              </Button>
-                            </div>
-                            {publicAccess.get(server.name)?.accessible === false && (
-                              <p className="mt-3 border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-200">
-                                External check failed. Forward TCP {server.public_port} to {server.host_ip || "nodev2"}:{getHostProxyPort(server)}.
-                                {publicAccess.get(server.name)?.reason ? ` ${publicAccess.get(server.name)?.reason}` : ""}
-                              </p>
-                            )}
-                          </>
-                        ) : (
-                          <div className="border border-slate-700 bg-slate-950 p-4 text-sm text-slate-400">
-                            Set a player-facing domain in the Network tab.
-                          </div>
-                        )}
-
-                        <div data-tour="connection-local" className="mt-4 grid gap-3 border-t border-sky-400/15 pt-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
-                          <div>
-                            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-emerald-200">LAN Address</p>
-                            <code className="mt-1 block rounded-sm border border-emerald-400/20 bg-[#030712] px-3 py-2 text-sm font-semibold text-emerald-200 break-all">
-                              {getLocalJoinAddress(server) || "Set host IP first"}
-                            </code>
-                            <p className="mt-1 text-xs text-slate-500">
-                              {server.host_ip ? "For players on the same network." : "Set Host IP in the Network tab."}
-                            </p>
-                          </div>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="rounded-sm text-slate-300 hover:bg-slate-800"
-                            onClick={() => copyToClipboard(getLocalJoinAddress(server))}
-                          >
-                            <Copy className="mr-2 h-4 w-4" />
-                            Copy LAN
-                          </Button>
-                        </div>
-                      </section>
-
-                      <section className="border border-emerald-400/20 bg-emerald-400/[0.055] p-4">
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <h3 className="text-sm font-semibold uppercase tracking-[0.16em] text-emerald-200">Player Invite</h3>
-                            <p className="mt-1 text-xs text-slate-400">Copy a clean invite after the public route is ready.</p>
-                          </div>
-                          {server.public_domain && (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="rounded-sm border-emerald-400/30 bg-emerald-400/10 text-emerald-100 hover:bg-emerald-400/20"
-                              onClick={() => {
-                                copyToClipboard(buildPlayerInviteText(server));
-                                toast.success("Player invite copied.");
-                              }}
-                            >
-                              <Copy className="mr-2 h-4 w-4" />
-                              Copy
-                            </Button>
-                          )}
-                        </div>
-                        {server.public_domain ? (
-                          <ol className="mt-5 space-y-3 text-sm text-slate-300">
-                            <li className="flex gap-3"><span className="text-emerald-300">01</span><span>Open Minecraft: Java Edition.</span></li>
-                            <li className="flex gap-3"><span className="text-emerald-300">02</span><span>Choose Multiplayer, then Add Server.</span></li>
-                            <li className="flex gap-3"><span className="text-emerald-300">03</span><span>Paste <span className="font-semibold text-slate-100">{getPublicJoinAddress(server)}</span>.</span></li>
-                            <li className="flex gap-3"><span className="text-emerald-300">04</span><span>{requiresClientMods(server.edition)
-                              ? `Install ${server.edition} for Minecraft ${server.mc_version} and the matching mod list before joining.`
-                              : `Use Minecraft ${server.mc_version}; server plugins do not require client setup.`}</span></li>
-                          </ol>
-                        ) : (
-                          <p className="mt-5 text-sm text-slate-400">Set a public address before sending player invites.</p>
-                        )}
-                      </section>
-                    </div>
-                  </div>
-                </CardHeader>
-                <CardContent className="border-t border-slate-800/90 bg-[#050b16] p-4 sm:p-6">
-                  <div className="mb-4 flex items-end justify-between gap-4">
-                    <div>
-                    <h3 className="text-sm font-semibold uppercase tracking-[0.16em] text-slate-200">Management</h3>
-                    <p className="mt-1 text-xs text-slate-500">
-                      Change runtime, content, settings, and backups from one place.
-                    </p>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                    {/* Version Management */}
-                    <Dialog>
-                      <DialogTrigger asChild>
-                        <Button
-                          data-tour="version-button"
-                          variant="outline"
-                          className="group h-16 w-full justify-start rounded-sm border-sky-400/20 bg-sky-400/[0.055] text-left text-slate-100 transition-all hover:border-sky-300/60 hover:bg-sky-400/10"
-                          onClick={() => setSelectedServer(server.name)}
-                        >
-                          <Settings className="mr-3 h-5 w-5 text-sky-300" />
-                          <span className="flex flex-col">
-                            <span className="font-semibold">Change Version</span>
-                            <span className="text-xs font-normal text-slate-400">Switch runtime or Minecraft release</span>
-                          </span>
-                        </Button>
-                      </DialogTrigger>
-                      <DialogContent className="rounded-sm">
-                        <DialogHeader>
-                          <DialogTitle>Change Server Version</DialogTitle>
-                          <DialogDescription>
-                            Update {server.name} to a different Minecraft version
-                          </DialogDescription>
-                        </DialogHeader>
-                        <div className="space-y-4">
-                          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                            {(["paper", "vanilla", "fabric", "forge"] as const).map((type) => (
-                              <Button
-                                key={type}
-                                variant={versionType === type ? "default" : "outline"}
-                                className="rounded-sm"
-                                onClick={() => setVersionType(type)}
-                              >
-                                {type[0].toUpperCase() + type.slice(1)}
-                              </Button>
-                            ))}
-                          </div>
-                          <Input
-                            placeholder="e.g., 1.21.3"
-                            value={newVersion}
-                            onChange={(e) => setNewVersion(e.target.value)}
-                            className="rounded-sm"
-                          />
-                        </div>
-                        <DialogFooter>
-                          <Button
-                            className="rounded-sm"
-                            onClick={() => handleVersionChange(server.name)}
-                            disabled={isChangingVersion}
-                          >
-                            {isChangingVersion ? "Changing..." : "Change Version"}
-                          </Button>
-                        </DialogFooter>
-                      </DialogContent>
-                    </Dialog>
-
-                    {/* Plugin Management - Only for Paper/Purpur/Spigot */}
-                    {['paper', 'purpur', 'spigot'].includes(server.edition.toLowerCase()) && (
-                      <>
-                        <Dialog>
-                          <DialogTrigger asChild>
-                            <Button
-                              variant="outline"
-                              className="group h-16 w-full justify-start rounded-sm border-violet-400/20 bg-violet-400/[0.055] text-left text-slate-100 transition-all hover:border-violet-300/60 hover:bg-violet-400/10"
-                            >
-                              <Package2 className="mr-3 h-5 w-5 text-violet-300" />
-                              <span className="flex flex-col">
-                                <span className="font-semibold">Browse Plugins</span>
-                                <span className="text-xs font-normal text-slate-400">Install compatible server plugins</span>
-                              </span>
-                            </Button>
-                          </DialogTrigger>
-                          <DialogContent className="w-[min(94vw,64rem)] max-w-none overflow-hidden rounded-sm border-slate-800 bg-[#07111f] p-0">
-                            <DialogHeader className="border-b border-slate-800 bg-slate-950/70 px-5 py-4 pr-12 text-left">
-                              <DialogTitle>Plugin Browser</DialogTitle>
-                              <DialogDescription>
-                                Search Modrinth plugins compatible with {server.edition} {server.mc_version}.
-                              </DialogDescription>
-                            </DialogHeader>
-                            <div className="px-5 py-5">
-                            <ModBrowser
-                              serverName={server.name}
-                              mcVersion={server.mc_version}
-                              loader={server.edition.toLowerCase() as 'paper' | 'spigot' | 'purpur'}
-                              serverMemoryMB={server.memory_mb}
-                              type="plugin"
-                              onInstall={() => {
-                                setMessage(`Plugin installed. Restart ${server.name} to load the plugin.`);
-                                refresh();
-                              }}
-                            />
-                            </div>
-                          </DialogContent>
-                        </Dialog>
-
-                        <Tooltip>
-                          <div>
-                            <input
-                              type="file"
-                              accept=".jar"
-                              id={`plugin-${server.name}`}
-                              className="hidden"
-                              onChange={(e) =>
-                                handleFileUpload(server.name, "plugins", e)
-                              }
-                            />
-                            <label htmlFor={`plugin-${server.name}`}>
-                              <TooltipTrigger asChild>
-                                <Button
-                                  variant="outline"
-                                  className="group h-16 w-full justify-start rounded-sm border-fuchsia-400/20 bg-fuchsia-400/[0.055] text-left text-slate-100 transition-all hover:border-fuchsia-300/60 hover:bg-fuchsia-400/10"
-                                  asChild
-                                >
-                                  <span>
-                                    <Package className="mr-3 h-5 w-5 text-fuchsia-300" />
-                                    <span className="flex flex-col">
-                                      <span className="font-semibold">Upload Plugin</span>
-                                      <span className="text-xs font-normal text-slate-400">Add a local .jar file</span>
-                                    </span>
-                                  </span>
-                                </Button>
-                              </TooltipTrigger>
-                            </label>
-                          </div>
-                          <TooltipContent className="max-w-xs">
-                            <p className="font-semibold mb-1">Upload Plugin (.jar)</p>
-                            <p className="text-xs">Download from SpigotMC, Bukkit, or Modrinth. Restart server after upload.</p>
-                          </TooltipContent>
-                        </Tooltip>
-                      </>
-                    )}
-
-                    {/* Mod Management - Only for Forge/NeoForge/Fabric */}
-                    {['forge', 'neoforge', 'fabric'].includes(server.edition.toLowerCase()) && (
-                      <>
-                        <Dialog>
-                          <DialogTrigger asChild>
-                            <Button
-                              variant="outline"
-                              className="group h-16 w-full justify-start rounded-sm border-violet-400/20 bg-violet-400/[0.055] text-left text-slate-100 transition-all hover:border-violet-300/60 hover:bg-violet-400/10"
-                            >
-                              <Package2 className="mr-3 h-5 w-5 text-violet-300" />
-                              <span className="flex flex-col">
-                                <span className="font-semibold">Browse Mods</span>
-                                <span className="text-xs font-normal text-slate-400">Install client/server mod files</span>
-                              </span>
-                            </Button>
-                          </DialogTrigger>
-                          <DialogContent className="w-[min(94vw,64rem)] max-w-none overflow-hidden rounded-sm border-slate-800 bg-[#07111f] p-0">
-                            <DialogHeader className="border-b border-slate-800 bg-slate-950/70 px-5 py-4 pr-12 text-left">
-                              <DialogTitle>Mod Browser</DialogTitle>
-                              <DialogDescription>
-                                Search Modrinth mods compatible with {server.edition} {server.mc_version}.
-                              </DialogDescription>
-                            </DialogHeader>
-                            <div className="px-5 py-5">
-                            <ModBrowser
-                              serverName={server.name}
-                              mcVersion={server.mc_version}
-                              loader={server.edition.toLowerCase() as 'forge' | 'fabric' | 'neoforge'}
-                              serverMemoryMB={server.memory_mb}
-                              onInstall={() => {
-                                setMessage(`Mod installed. Restart ${server.name} to load the mod.`);
-                                refresh();
-                              }}
-                            />
-                            </div>
-                          </DialogContent>
-                        </Dialog>
-
-                        <Tooltip>
-                          <div>
-                            <input
-                              type="file"
-                              accept=".jar"
-                              id={`mod-${server.name}`}
-                              className="hidden"
-                              onChange={(e) => handleFileUpload(server.name, "mods", e)}
-                            />
-                            <label htmlFor={`mod-${server.name}`}>
-                              <TooltipTrigger asChild>
-                                <Button
-                                  variant="outline"
-                                  className="group h-16 w-full justify-start rounded-sm border-orange-400/20 bg-orange-400/[0.055] text-left text-slate-100 transition-all hover:border-orange-300/60 hover:bg-orange-400/10"
-                                  asChild
-                                >
-                                  <span>
-                                    <Upload className="mr-3 h-5 w-5 text-orange-300" />
-                                    <span className="flex flex-col">
-                                      <span className="font-semibold">Upload Mod</span>
-                                      <span className="text-xs font-normal text-slate-400">Add a local .jar file</span>
-                                    </span>
-                                  </span>
-                                </Button>
-                              </TooltipTrigger>
-                            </label>
-                          </div>
-                          <TooltipContent className="max-w-xs">
-                            <p className="font-semibold mb-1">Upload Mod (.jar)</p>
-                            <p className="text-xs">Download from CurseForge or Modrinth. Players must have matching mods.</p>
-                          </TooltipContent>
-                        </Tooltip>
-                      </>
-                    )}
-
-                    {/* Upload World */}
-                    <Tooltip>
-                      <div data-tour="upload-world">
-                        <input
-                          type="file"
-                          accept=".zip"
-                          id={`world-${server.name}`}
-                          className="hidden"
-                          onChange={(e) =>
-                            handleFileUpload(server.name, "worlds/upload", e)
-                          }
-                        />
-                        <label htmlFor={`world-${server.name}`}>
-                          <TooltipTrigger asChild>
-                            <Button
-                              variant="outline"
-                              className="group h-16 w-full justify-start rounded-sm border-cyan-400/20 bg-cyan-400/[0.055] text-left text-slate-100 transition-all hover:border-cyan-300/60 hover:bg-cyan-400/10"
-                              asChild
-                            >
-                              <span>
-                                <Globe className="mr-3 h-5 w-5 text-cyan-300" />
-                                <span className="flex flex-col">
-                                  <span className="font-semibold">Upload World</span>
-                                  <span className="text-xs font-normal text-slate-400">Replace world from a zip</span>
-                                </span>
-                              </span>
-                            </Button>
-                          </TooltipTrigger>
-                        </label>
-                      </div>
-                      <TooltipContent className="max-w-xs">
-                        <p className="font-semibold mb-1">Upload World (.zip)</p>
-                        <p className="text-xs">Compress your world folder. Must contain level.dat, region/, and data/ folders. Server will restart.</p>
-                      </TooltipContent>
-                    </Tooltip>
-
-                    {/* Server Settings */}
-                    <Dialog open={serverSettingsDialog === server.name} onOpenChange={(open) => {
-                      if (open) {
-                        setServerSettingsDialog(server.name);
-                        loadServerSettings(server);
-                      } else if (serverSettingsDialog === server.name) {
-                        setServerSettingsDialog(null);
-                      }
-                    }}>
-                      <DialogTrigger asChild>
-                        <Button
-                          data-tour="settings-button"
-                          variant="outline"
-                          className="group h-16 w-full justify-start rounded-sm border-slate-600/60 bg-slate-900/70 text-left text-slate-100 transition-all hover:border-slate-400 hover:bg-slate-800"
-                        >
-                          <Settings className="mr-3 h-5 w-5 text-slate-300" />
-                          <span className="flex flex-col">
-                            <span className="font-semibold">Server Settings</span>
-                            <span className="text-xs font-normal text-slate-400">Network, gameplay, security</span>
-                          </span>
-                        </Button>
-                      </DialogTrigger>
-                      <DialogContent className="rounded-sm max-w-[95vw] sm:max-w-3xl max-h-[90vh] overflow-y-auto">
-                        <DialogHeader>
-                          <DialogTitle>⚙️ Server Configuration</DialogTitle>
-                          <DialogDescription>
-                            Configure server properties, plugins, and admins
-                          </DialogDescription>
-                        </DialogHeader>
-
-                        <Tabs defaultValue="properties" className="w-full">
-                          <TabsList className="grid w-full grid-cols-3 sm:grid-cols-5 gap-1 h-auto">
-                            <TabsTrigger value="network">Network</TabsTrigger>
-                            <TabsTrigger value="properties">Properties</TabsTrigger>
-                            <TabsTrigger value="gameplay">Gameplay</TabsTrigger>
-                            <TabsTrigger value="security">Security</TabsTrigger>
-                            <TabsTrigger value="performance">Performance</TabsTrigger>
-                            <TabsTrigger value="plugins">Plugins</TabsTrigger>
-                            <TabsTrigger value="admins">Admins</TabsTrigger>
-                            <TabsTrigger value="bans">Bans</TabsTrigger>
-                            <TabsTrigger value="console">Console</TabsTrigger>
-                            {['forge', 'neoforge', 'fabric'].includes(server.edition.toLowerCase()) && (
-                              <TabsTrigger value="mods">Mods</TabsTrigger>
-                            )}
-                          </TabsList>
-
-                          {/* Network Tab */}
-                          <TabsContent value="network" className="space-y-4">
-                            <div className="space-y-4">
-                              <div>
-                                <Label htmlFor="hostIp">Host IP Address (LAN)</Label>
-                                <Input
-                                  id="hostIp"
-                                  type="text"
-                                  value={serverSettings.hostIp}
-                                  onChange={(e) => setServerSettings({...serverSettings, hostIp: e.target.value})}
-                                  onBlur={(e) => saveNetworkConfig(server.name, 'host_ip', e.target.value)}
-                                  placeholder="192.168.0.170"
-                                  className="rounded-sm"
-                                />
-                                <p className="text-xs text-muted-foreground mt-1">
-                                  The IP address of the LXD host machine on your local network
-                                </p>
-                              </div>
-
-                              <div className="grid gap-4 sm:grid-cols-[1fr_140px_160px]">
-                                <div>
-                                  <Label htmlFor="publicDomain">Player-facing Domain</Label>
-                                  <Input
-                                    id="publicDomain"
-                                    type="text"
-                                    value={serverSettings.publicDomain}
-                                    onChange={(e) => setServerSettings({...serverSettings, publicDomain: e.target.value})}
-                                    onBlur={(e) => saveNetworkConfig(server.name, 'public_domain', e.target.value)}
-                                    placeholder="mc.yourdomain.com"
-                                    className="rounded-sm"
-                                  />
-                                  <p className="text-xs text-muted-foreground mt-1">
-                                    The DNS name friends outside your network will enter in Minecraft.
-                                  </p>
-                                </div>
-                                <div>
-                                  <Label htmlFor="publicPort">Public Port</Label>
-                                  <Input
-                                    id="publicPort"
-                                    type="number"
-                                    value={serverSettings.publicPort}
-                                    onChange={(e) => setServerSettings({...serverSettings, publicPort: e.target.value})}
-                                    onBlur={async (e) => {
-                                      const saved = await saveNetworkConfig(server.name, 'public_port', e.target.value);
-                                      if (!saved) {
-                                        setServerSettings(prev => ({...prev, publicPort: server.public_port || 25565}));
-                                      }
-                                    }}
-                                    className="rounded-sm"
-                                  />
-                                  <p className="text-xs text-muted-foreground mt-1">
-                                    25565 lets players omit the port.
-                                  </p>
-                                </div>
-                                <div>
-                                  <Label htmlFor="hostProxyPort">Host Proxy Port</Label>
-                                  <Input
-                                    id="hostProxyPort"
-                                    type="number"
-                                    value={serverSettings.hostProxyPort}
-                                    onChange={(e) => setServerSettings({...serverSettings, hostProxyPort: e.target.value})}
-                                    onBlur={async (e) => {
-                                      const saved = await saveNetworkConfig(server.name, 'host_proxy_port', e.target.value);
-                                      if (!saved) {
-                                        setServerSettings(prev => ({
-                                          ...prev,
-                                          hostProxyPort: server.host_proxy_port || server.public_port || 25565,
-                                        }));
-                                      }
-                                    }}
-                                    className="rounded-sm"
-                                  />
-                                  <p className="text-xs text-muted-foreground mt-1">
-                                    Router forwards to this nodev2 port.
-                                  </p>
-                                </div>
-                              </div>
-
-                              <Separator />
-
-                              <div className="rounded-sm border bg-muted/40 p-3">
-                                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                                  <div>
-                                    <p className="text-sm font-semibold">Player invite address</p>
-                                    <code className="mt-1 block rounded-sm border bg-background px-3 py-2 text-sm font-semibold break-all">
-                                      {formatMinecraftAddress(
-                                        serverSettings.publicDomain || server.public_domain,
-                                        serverSettings.publicPort || server.public_port
-                                      ) || "Set a public domain first"}
-                                    </code>
-                                    <p className="mt-1 text-xs text-muted-foreground">
-                                      {isDefaultMinecraftPort(serverSettings.publicPort || server.public_port)
-                                        ? "No :25565 suffix is needed in Minecraft."
-                                        : "This custom port must be included when players join."}
-                                    </p>
-                                  </div>
-                                  <Button
-                                    variant="outline"
-                                    className="rounded-sm"
-                                    onClick={() => {
-                                      copyToClipboard(buildPlayerInviteText({
-                                        ...server,
-                                        public_domain: serverSettings.publicDomain || server.public_domain,
-                                        public_port: serverSettings.publicPort || server.public_port,
-                                        host_proxy_port: serverSettings.hostProxyPort || server.host_proxy_port,
-                                        host_ip: serverSettings.hostIp || server.host_ip,
-                                      }));
-                                      toast.success("Player invite copied.");
-                                    }}
-                                  >
-                                    <Copy className="mr-2 h-4 w-4" />
-                                    Copy Player Invite
-                                  </Button>
-                                </div>
-
-                                <ol className="mt-3 text-xs text-muted-foreground space-y-1 list-decimal ml-4">
-                                  <li>Forward TCP {serverSettings.publicPort || server.public_port} to {serverSettings.hostIp || server.host_ip || 'the nodev2 host'}:{serverSettings.hostProxyPort || server.host_proxy_port || server.public_port}.</li>
-                                  <li>The LXC proxy forwards host port {serverSettings.hostProxyPort || server.host_proxy_port || server.public_port} to the Minecraft container on port {server.local_port || 25565}.</li>
-                                  <li>Point DNS for {serverSettings.publicDomain || server.public_domain || 'your public domain'} to your public IP address.</li>
-                                  <li>Share the Minecraft address above with players. Do not share the admin panel URL.</li>
-                                  <li>
-                                    {requiresClientMods(server.edition)
-                                      ? "Use the Mods tab Client Setup button to copy the exact client mod list."
-                                      : "Paper plugins run on the server; players do not install them locally."}
-                                  </li>
-                                </ol>
-                              </div>
-                            </div>
-                          </TabsContent>
-
-                          {/* Server Properties Tab */}
-                          <TabsContent value="properties" className="space-y-4">
-                            <div className="space-y-3">
-                              <div>
-                                <Label htmlFor="motd">Server Description (MOTD)</Label>
-                                <Textarea
-                                  id="motd"
-                                  value={serverSettings.motd}
-                                  onChange={(e) => setServerSettings({...serverSettings, motd: e.target.value})}
-                                  placeholder="A Minecraft Server"
-                                  className="rounded-sm"
-                                />
-                                <p className="text-xs text-muted-foreground mt-1">Shown in the server list</p>
-                              </div>
-
-                              <div>
-                                <Label htmlFor="maxPlayers">Max Players</Label>
-                                <Input
-                                  id="maxPlayers"
-                                  type="number"
-                                  value={serverSettings.maxPlayers}
-                                  onChange={(e) => setServerSettings({...serverSettings, maxPlayers: parseInt(e.target.value)})}
-                                  className="rounded-sm"
-                                />
-                              </div>
-
-                              <div>
-                                <Label htmlFor="viewDistance">View Distance (chunks)</Label>
-                                <Input
-                                  id="viewDistance"
-                                  type="number"
-                                  min="3"
-                                  max="32"
-                                  value={serverSettings.viewDistance}
-                                  onChange={(e) => setServerSettings({...serverSettings, viewDistance: parseInt(e.target.value)})}
-                                  className="rounded-sm"
-                                />
-                                <p className="text-xs text-muted-foreground mt-1">Lower = better performance</p>
-                              </div>
-
-                              <div className="flex items-center space-x-2">
-                                <Checkbox
-                                  id="onlineMode"
-                                  checked={serverSettings.onlineMode}
-                                  onCheckedChange={(checked) => setServerSettings({...serverSettings, onlineMode: !!checked})}
-                                />
-                                <Label htmlFor="onlineMode" className="cursor-pointer">
-                                  Online Mode (Minecraft account required)
-                                </Label>
-                              </div>
-                            </div>
-                          </TabsContent>
-
-                          {/* Gameplay Tab */}
-                          <TabsContent value="gameplay" className="space-y-4">
-                            <div className="space-y-3">
-                              <div>
-                                <Label htmlFor="gamemode">Default Game Mode</Label>
-                                <Select
-                                  value={serverSettings.gamemode}
-                                  onValueChange={(value) => setServerSettings({...serverSettings, gamemode: value})}
-                                >
-                                  <SelectTrigger className="rounded-sm">
-                                    <SelectValue />
-                                  </SelectTrigger>
-                                  <SelectContent>
-                                    <SelectItem value="survival">Survival</SelectItem>
-                                    <SelectItem value="creative">Creative</SelectItem>
-                                    <SelectItem value="adventure">Adventure</SelectItem>
-                                    <SelectItem value="spectator">Spectator</SelectItem>
-                                  </SelectContent>
-                                </Select>
-                              </div>
-
-                              <div>
-                                <Label htmlFor="difficulty">Difficulty</Label>
-                                <Select
-                                  value={serverSettings.difficulty}
-                                  onValueChange={(value) => setServerSettings({...serverSettings, difficulty: value})}
-                                >
-                                  <SelectTrigger className="rounded-sm">
-                                    <SelectValue />
-                                  </SelectTrigger>
-                                  <SelectContent>
-                                    <SelectItem value="peaceful">Peaceful</SelectItem>
-                                    <SelectItem value="easy">Easy</SelectItem>
-                                    <SelectItem value="normal">Normal</SelectItem>
-                                    <SelectItem value="hard">Hard</SelectItem>
-                                  </SelectContent>
-                                </Select>
-                              </div>
-
-                              <div className="flex items-center space-x-2">
-                                <Checkbox
-                                  id="pvp"
-                                  checked={serverSettings.pvp}
-                                  onCheckedChange={(checked) => setServerSettings({...serverSettings, pvp: !!checked})}
-                                />
-                                <Label htmlFor="pvp" className="cursor-pointer">
-                                  Enable PvP (Player vs Player)
-                                </Label>
-                              </div>
-
-                              <div className="flex items-center space-x-2">
-                                <Checkbox
-                                  id="allowFlight"
-                                  checked={serverSettings.allowFlight}
-                                  onCheckedChange={(checked) => setServerSettings({...serverSettings, allowFlight: !!checked})}
-                                />
-                                <Label htmlFor="allowFlight" className="cursor-pointer">
-                                  Allow Flight
-                                </Label>
-                              </div>
-
-                              <div>
-                                <Label htmlFor="spawnProtection">Spawn Protection (blocks)</Label>
-                                <Input
-                                  id="spawnProtection"
-                                  type="number"
-                                  min="0"
-                                  value={serverSettings.spawnProtection}
-                                  onChange={(e) => setServerSettings({...serverSettings, spawnProtection: parseInt(e.target.value)})}
-                                  className="rounded-sm"
-                                />
-                                <p className="text-xs text-muted-foreground mt-1">Radius around spawn where non-ops can't build</p>
-                              </div>
-                            </div>
-                          </TabsContent>
-
-                          {/* Security Tab */}
-                          <TabsContent value="security" className="space-y-4">
-                            <div className="space-y-4">
-                              <div>
-                                <div className="flex items-center space-x-2 mb-3">
-                                  <Checkbox
-                                    id="enforceWhitelist"
-                                    checked={serverSettings.enforceWhitelist}
-                                    onCheckedChange={(checked) => setServerSettings({
-                                      ...serverSettings,
-                                      enforceWhitelist: !!checked
-                                    })}
-                                  />
-                                  <Label htmlFor="enforceWhitelist" className="cursor-pointer">
-                                    Enable Whitelist (Only approved players can join)
-                                  </Label>
-                                </div>
-
-                                {serverSettings.enforceWhitelist && (
-                                  <div className="space-y-3 pl-6">
-                                    <div>
-                                      <Label>Whitelisted Players</Label>
-                                      <p className="text-xs text-muted-foreground mb-2">
-                                        Only these players can join when whitelist is enabled
-                                      </p>
-                                      <div className="flex gap-2">
-                                        <Input
-                                          placeholder="Enter Minecraft username"
-                                          value={serverSettings.newWhitelistPlayer}
-                                          onChange={(e) => setServerSettings({
-                                            ...serverSettings,
-                                            newWhitelistPlayer: e.target.value
-                                          })}
-                                          onKeyDown={(e) => {
-                                            if (e.key === 'Enter' && serverSettings.newWhitelistPlayer.trim()) {
-                                              setServerSettings({
-                                                ...serverSettings,
-                                                whitelist: [...serverSettings.whitelist, serverSettings.newWhitelistPlayer.trim()],
-                                                newWhitelistPlayer: ""
-                                              });
-                                            }
-                                          }}
-                                          className="rounded-sm"
-                                        />
-                                        <Button
-                                          type="button"
-                                          variant="outline"
-                                          className="rounded-sm"
-                                          onClick={() => {
-                                            if (serverSettings.newWhitelistPlayer.trim()) {
-                                              setServerSettings({
-                                                ...serverSettings,
-                                                whitelist: [...serverSettings.whitelist, serverSettings.newWhitelistPlayer.trim()],
-                                                newWhitelistPlayer: ""
-                                              });
-                                            }
-                                          }}
-                                        >
-                                          Add
-                                        </Button>
-                                      </div>
-                                    </div>
-
-                                    {serverSettings.whitelist.length > 0 && (
-                                      <div className="space-y-2">
-                                        <Label>Whitelisted:</Label>
-                                        <div className="space-y-1">
-                                          {serverSettings.whitelist.map((player, idx) => (
-                                            <div key={idx} className="flex items-center justify-between p-2 bg-muted rounded-sm">
-                                              <span className="flex items-center gap-2">
-                                                <Users className="h-4 w-4" />
-                                                {player}
-                                              </span>
-                                              <Button
-                                                variant="ghost"
-                                                size="sm"
-                                                className="h-6 px-2"
-                                                onClick={() => {
-                                                  setServerSettings({
-                                                    ...serverSettings,
-                                                    whitelist: serverSettings.whitelist.filter((_, i) => i !== idx)
-                                                  });
-                                                }}
-                                              >
-                                                Remove
-                                              </Button>
-                                            </div>
-                                          ))}
-                                        </div>
-                                      </div>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
-
-                              <Separator />
-
-                              <div className="bg-muted/50 p-3 rounded-lg">
-                                <p className="text-sm font-semibold mb-1">💡 Security Tips</p>
-                                <ul className="text-xs text-muted-foreground space-y-1">
-                                  <li>• Use whitelist for private servers with friends</li>
-                                  <li>• Keep Online Mode ON to prevent fake accounts</li>
-                                  <li>• Only give OP to people you trust completely</li>
-                                  <li>• Use the whitelist for private servers reachable from the internet</li>
-                                </ul>
-                              </div>
-                            </div>
-                          </TabsContent>
-
-                          {/* Performance Tab */}
-                          <TabsContent value="performance" className="space-y-4">
-                            <div className="space-y-4">
-                              <div className="bg-blue-50 dark:bg-blue-950/30 border-l-4 border-blue-500 p-3 rounded-sm">
-                                <p className="text-sm font-semibold text-blue-900 dark:text-blue-100 mb-1">
-                                  JVM Performance Settings
-                                </p>
-                                <p className="text-xs text-blue-700 dark:text-blue-300">
-                                  Adjust Java memory allocation and garbage collector. Server will restart after applying changes.
-                                </p>
-                              </div>
-
-                              {/* Heap Size */}
-                              <div className="grid grid-cols-2 gap-4">
-                                <div>
-                                  <Label>Initial Heap Size (-Xms)</Label>
-                                  <p className="text-xs text-muted-foreground mb-2">
-                                    Starting memory allocation
-                                  </p>
-                                  <div className="flex gap-2">
-                                    <Input
-                                      type="number"
-                                      min="128"
-                                      value={serverSettings.jvmXms}
-                                      onChange={(e) => setServerSettings({...serverSettings, jvmXms: parseInt(e.target.value)})}
-                                      className="rounded-sm"
-                                    />
-                                    <select
-                                      className="rounded-sm border px-3 py-2"
-                                      value={serverSettings.jvmXmsUnit}
-                                      onChange={(e) => setServerSettings({...serverSettings, jvmXmsUnit: e.target.value})}
-                                    >
-                                      <option value="M">MB</option>
-                                      <option value="G">GB</option>
-                                    </select>
-                                  </div>
-                                </div>
-
-                                <div>
-                                  <Label>Maximum Heap Size (-Xmx)</Label>
-                                  <p className="text-xs text-muted-foreground mb-2">
-                                    Maximum memory allowed
-                                  </p>
-                                  <div className="flex gap-2">
-                                    <Input
-                                      type="number"
-                                      min="512"
-                                      value={serverSettings.jvmXmx}
-                                      onChange={(e) => setServerSettings({...serverSettings, jvmXmx: parseInt(e.target.value)})}
-                                      className="rounded-sm"
-                                    />
-                                    <select
-                                      className="rounded-sm border px-3 py-2"
-                                      value={serverSettings.jvmXmxUnit}
-                                      onChange={(e) => setServerSettings({...serverSettings, jvmXmxUnit: e.target.value})}
-                                    >
-                                      <option value="M">MB</option>
-                                      <option value="G">GB</option>
-                                    </select>
-                                  </div>
-                                </div>
-                              </div>
-
-                              {/* Garbage Collector */}
-                              <div>
-                                <Label>Garbage Collector</Label>
-                                <p className="text-xs text-muted-foreground mb-2">
-                                  Choose GC algorithm for memory management
-                                </p>
-                                <select
-                                  className="rounded-sm border px-3 py-2 w-full"
-                                  value={serverSettings.jvmGc}
-                                  onChange={(e) => setServerSettings({...serverSettings, jvmGc: e.target.value})}
-                                >
-                                  <option value="default">Default (ParallelGC)</option>
-                                  <option value="g1gc">G1GC (Recommended for Java 9+)</option>
-                                  <option value="zgc">ZGC (Low-latency, Java 14+)</option>
-                                </select>
-                                <p className="text-xs text-muted-foreground mt-1">
-                                  G1GC is recommended for modern Minecraft servers. ZGC provides near lag-free performance.
-                                </p>
-                              </div>
-
-                              {/* Custom Flags */}
-                              <div>
-                                <Label>Custom JVM Flags (Advanced)</Label>
-                                <p className="text-xs text-muted-foreground mb-2">
-                                  Additional JVM arguments (e.g., -XX:MaxGCPauseMillis=200)
-                                </p>
-                                <Input
-                                  placeholder="Optional custom flags"
-                                  value={serverSettings.jvmCustomFlags}
-                                  onChange={(e) => setServerSettings({...serverSettings, jvmCustomFlags: e.target.value})}
-                                  className="rounded-sm font-mono text-xs"
-                                />
-                              </div>
-
-                              {/* Apply Button */}
-                              <div className="flex justify-end">
-                                <Button
-                                  onClick={() => updateJvmSettings(server.name)}
-                                  className="rounded-sm"
-                                >
-                                  Apply JVM Settings & Restart Server
-                                </Button>
-                              </div>
-
-                              <div className="bg-muted/50 p-3 rounded-lg">
-                                <p className="text-sm font-semibold mb-1">💡 Performance Tips</p>
-                                <ul className="text-xs text-muted-foreground space-y-1">
-                                  <li>• Set -Xms equal to -Xmx for consistent performance</li>
-                                  <li>• Leave at least 1-2GB free for the OS</li>
-                                  <li>• G1GC is best for servers with 4GB+ RAM</li>
-                                  <li>• ZGC requires Java 14+ and works best with 8GB+ RAM</li>
-                                </ul>
-                              </div>
-                            </div>
-                          </TabsContent>
-
-                          {/* Plugins Tab */}
-                          <TabsContent value="plugins" className="space-y-4">
-                            <p className="text-sm text-muted-foreground">
-                              Select plugins to install automatically (Paper/Spigot only)
-                            </p>
-                            <div className="space-y-3">
-                              <div className="flex items-center space-x-2">
-                                <Checkbox
-                                  id="plugin-luckperms"
-                                  checked={serverSettings.plugins.luckperms}
-                                  onCheckedChange={(checked) => setServerSettings({
-                                    ...serverSettings,
-                                    plugins: {...serverSettings.plugins, luckperms: !!checked}
-                                  })}
-                                />
-                                <Label htmlFor="plugin-luckperms" className="cursor-pointer">
-                                  <span className="font-semibold">LuckPerms</span>
-                                  <span className="text-xs text-muted-foreground ml-2">- Advanced permissions plugin</span>
-                                </Label>
-                              </div>
-
-                              <div className="flex items-center space-x-2">
-                                <Checkbox
-                                  id="plugin-essentialsx"
-                                  checked={serverSettings.plugins.essentialsx}
-                                  onCheckedChange={(checked) => setServerSettings({
-                                    ...serverSettings,
-                                    plugins: {...serverSettings.plugins, essentialsx: !!checked}
-                                  })}
-                                />
-                                <Label htmlFor="plugin-essentialsx" className="cursor-pointer">
-                                  <span className="font-semibold">EssentialsX</span>
-                                  <span className="text-xs text-muted-foreground ml-2">- Essential commands & features</span>
-                                </Label>
-                              </div>
-
-                              <div className="flex items-center space-x-2">
-                                <Checkbox
-                                  id="plugin-vault"
-                                  checked={serverSettings.plugins.vault}
-                                  onCheckedChange={(checked) => setServerSettings({
-                                    ...serverSettings,
-                                    plugins: {...serverSettings.plugins, vault: !!checked}
-                                  })}
-                                />
-                                <Label htmlFor="plugin-vault" className="cursor-pointer">
-                                  <span className="font-semibold">Vault</span>
-                                  <span className="text-xs text-muted-foreground ml-2">- Economy & permissions API</span>
-                                </Label>
-                              </div>
-
-                              <div className="flex items-center space-x-2">
-                                <Checkbox
-                                  id="plugin-worldedit"
-                                  checked={serverSettings.plugins.worldedit}
-                                  onCheckedChange={(checked) => setServerSettings({
-                                    ...serverSettings,
-                                    plugins: {...serverSettings.plugins, worldedit: !!checked}
-                                  })}
-                                />
-                                <Label htmlFor="plugin-worldedit" className="cursor-pointer">
-                                  <span className="font-semibold">WorldEdit</span>
-                                  <span className="text-xs text-muted-foreground ml-2">- In-game world editor</span>
-                                </Label>
-                              </div>
-                            </div>
-                          </TabsContent>
-
-                          {/* Admins Tab */}
-                          <TabsContent value="admins" className="space-y-4">
-                            <div className="space-y-3">
-                              <div>
-                                <Label>Server Operators (Admins)</Label>
-                                <p className="text-xs text-muted-foreground mb-2">
-                                  Operators have full permissions and can use all commands
-                                </p>
-                                <div className="flex gap-2">
-                                  <Input
-                                    placeholder="Enter Minecraft username"
-                                    value={serverSettings.newOperator}
-                                    onChange={(e) => setServerSettings({...serverSettings, newOperator: e.target.value})}
-                                    onKeyDown={(e) => {
-                                      if (e.key === 'Enter' && serverSettings.newOperator.trim()) {
-                                        setServerSettings({
-                                          ...serverSettings,
-                                          operators: [...serverSettings.operators, serverSettings.newOperator.trim()],
-                                          newOperator: ""
-                                        });
-                                      }
-                                    }}
-                                    className="rounded-sm"
-                                  />
-                                  <Button
-                                    type="button"
-                                    variant="outline"
-                                    className="rounded-sm"
-                                    onClick={() => {
-                                      if (serverSettings.newOperator.trim()) {
-                                        setServerSettings({
-                                          ...serverSettings,
-                                          operators: [...serverSettings.operators, serverSettings.newOperator.trim()],
-                                          newOperator: ""
-                                        });
-                                      }
-                                    }}
-                                  >
-                                    Add
-                                  </Button>
-                                </div>
-                              </div>
-
-                              {serverSettings.operators.length > 0 && (
-                                <div className="space-y-2">
-                                  <Label>Current Operators:</Label>
-                                  <div className="space-y-1">
-                                    {serverSettings.operators.map((op, idx) => (
-                                      <div key={idx} className="flex items-center justify-between p-2 bg-muted rounded-sm">
-                                        <span className="flex items-center gap-2">
-                                          <Users className="h-4 w-4" />
-                                          {op}
-                                        </span>
-                                        <Button
-                                          variant="ghost"
-                                          size="sm"
-                                          className="h-6 px-2"
-                                          onClick={() => {
-                                            setServerSettings({
-                                              ...serverSettings,
-                                              operators: serverSettings.operators.filter((_, i) => i !== idx)
-                                            });
-                                          }}
-                                        >
-                                          Remove
-                                        </Button>
-                                      </div>
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          </TabsContent>
-
-                          {/* Bans Tab */}
-                          <TabsContent value="bans" className="space-y-4">
-                            <div className="space-y-4">
-                              {/* Player Bans */}
-                              <div>
-                                <Label>Ban Players</Label>
-                                <p className="text-xs text-muted-foreground mb-2">
-                                  Ban players by username to prevent them from joining
-                                </p>
-                                <div className="space-y-2">
-                                  <Input
-                                    placeholder="Minecraft username"
-                                    value={serverSettings.newBanPlayer}
-                                    onChange={(e) => setServerSettings({...serverSettings, newBanPlayer: e.target.value})}
-                                    className="rounded-sm"
-                                  />
-                                  <Input
-                                    placeholder="Reason (optional)"
-                                    value={serverSettings.newBanPlayerReason}
-                                    onChange={(e) => setServerSettings({...serverSettings, newBanPlayerReason: e.target.value})}
-                                    onKeyDown={(e) => {
-                                      if (e.key === 'Enter' && serverSettings.newBanPlayer.trim()) {
-                                        banPlayer(server.name);
-                                      }
-                                    }}
-                                    className="rounded-sm"
-                                  />
-                                  <Button
-                                    type="button"
-                                    variant="destructive"
-                                    className="rounded-sm w-full"
-                                    onClick={() => banPlayer(server.name)}
-                                  >
-                                    Ban Player
-                                  </Button>
-                                </div>
-                              </div>
-
-                              {/* Banned Players List */}
-                              {serverSettings.bannedPlayers.length > 0 && (
-                                <div className="space-y-2">
-                                  <Label>Banned Players:</Label>
-                                  <div className="space-y-1">
-                                    {serverSettings.bannedPlayers.map((ban, idx) => (
-                                      <div key={idx} className="flex items-start justify-between p-2 bg-muted rounded-sm">
-                                        <div className="flex flex-col">
-                                          <span className="font-medium">{ban.name}</span>
-                                          {ban.reason && (
-                                            <span className="text-xs text-muted-foreground">Reason: {ban.reason}</span>
-                                          )}
-                                          <span className="text-xs text-muted-foreground">
-                                            Banned: {new Date(ban.created).toLocaleDateString()}
-                                          </span>
-                                        </div>
-                                        <Button
-                                          variant="ghost"
-                                          size="sm"
-                                          className="h-6 px-2"
-                                          onClick={() => pardonPlayer(server.name, ban.name)}
-                                        >
-                                          Pardon
-                                        </Button>
-                                      </div>
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
-
-                              <div className="border-t pt-4 mt-4" />
-
-                              {/* IP Bans */}
-                              <div>
-                                <Label>Ban IP Addresses</Label>
-                                <p className="text-xs text-muted-foreground mb-2">
-                                  Ban IP addresses to block connections from specific networks
-                                </p>
-                                <div className="space-y-2">
-                                  <Input
-                                    placeholder="IP address (e.g., 192.168.1.100)"
-                                    value={serverSettings.newBanIp}
-                                    onChange={(e) => setServerSettings({...serverSettings, newBanIp: e.target.value})}
-                                    className="rounded-sm"
-                                  />
-                                  <Input
-                                    placeholder="Reason (optional)"
-                                    value={serverSettings.newBanIpReason}
-                                    onChange={(e) => setServerSettings({...serverSettings, newBanIpReason: e.target.value})}
-                                    onKeyDown={(e) => {
-                                      if (e.key === 'Enter' && serverSettings.newBanIp.trim()) {
-                                        banIp(server.name);
-                                      }
-                                    }}
-                                    className="rounded-sm"
-                                  />
-                                  <Button
-                                    type="button"
-                                    variant="destructive"
-                                    className="rounded-sm w-full"
-                                    onClick={() => banIp(server.name)}
-                                  >
-                                    Ban IP Address
-                                  </Button>
-                                </div>
-                              </div>
-
-                              {/* Banned IPs List */}
-                              {serverSettings.bannedIps.length > 0 && (
-                                <div className="space-y-2">
-                                  <Label>Banned IP Addresses:</Label>
-                                  <div className="space-y-1">
-                                    {serverSettings.bannedIps.map((ban, idx) => (
-                                      <div key={idx} className="flex items-start justify-between p-2 bg-muted rounded-sm">
-                                        <div className="flex flex-col">
-                                          <span className="font-medium font-mono">{ban.ip}</span>
-                                          {ban.reason && (
-                                            <span className="text-xs text-muted-foreground">Reason: {ban.reason}</span>
-                                          )}
-                                          <span className="text-xs text-muted-foreground">
-                                            Banned: {new Date(ban.created).toLocaleDateString()}
-                                          </span>
-                                        </div>
-                                        <Button
-                                          variant="ghost"
-                                          size="sm"
-                                          className="h-6 px-2"
-                                          onClick={() => pardonIp(server.name, ban.ip)}
-                                        >
-                                          Pardon
-                                        </Button>
-                                      </div>
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          </TabsContent>
-
-                          {/* Mods Tab - Only for Forge/NeoForge/Fabric */}
-                          {['forge', 'neoforge', 'fabric'].includes(server.edition.toLowerCase()) && (
-                            <TabsContent value="mods">
-                              <ModsManagementPanel
-                                serverName={server.name}
-                                mcVersion={server.mc_version}
-                                loader={server.edition.toLowerCase() as 'forge' | 'fabric' | 'neoforge'}
-                                serverMemoryMB={server.memory_mb}
-                                publicAddress={getPublicJoinAddress(server) || undefined}
-                              />
-                            </TabsContent>
-                          )}
-
-                          <TabsContent value="console" className="space-y-4">
-                            <div className="space-y-3">
-                              <div>
-                                <Label htmlFor="adminCommand">Server Command</Label>
-                                <div className="flex gap-2">
-                                  <Input
-                                    id="adminCommand"
-                                    value={adminCommand}
-                                    onChange={(e) => setAdminCommand(e.target.value)}
-                                    onKeyDown={(e) => {
-                                      if (e.key === "Enter") {
-                                        runAdminCommand(server.name);
-                                      }
-                                    }}
-                                    placeholder="say Server restarting soon"
-                                    className="rounded-sm font-mono"
-                                  />
-                                  <Button
-                                    className="rounded-sm"
-                                    onClick={() => runAdminCommand(server.name)}
-                                    disabled={isRunningCommand}
-                                  >
-                                    {isRunningCommand ? "Running..." : "Run"}
-                                  </Button>
-                                </div>
-                              </div>
-                              {adminCommandOutput && (
-                                <pre className="max-h-48 overflow-auto rounded-sm bg-black/90 p-3 text-xs text-green-400 whitespace-pre-wrap">
-                                  {adminCommandOutput}
-                                </pre>
-                              )}
-                            </div>
-                          </TabsContent>
-                        </Tabs>
-
-                        <DialogFooter>
-                          <Button
-                            variant="outline"
-                            className="rounded-sm"
-                            onClick={() => setServerSettingsDialog(null)}
-                            disabled={isSavingSettings}
-                          >
-                            Cancel
-                          </Button>
-                          <Button
-                            className="rounded-sm"
-                            onClick={() => handleSaveSettings(server.name)}
-                            disabled={isSavingSettings}
-                          >
-                            {isSavingSettings ? (
-                              <>
-                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                Saving...
-                              </>
-                            ) : (
-                              "Save & Apply"
-                            )}
-                          </Button>
-                        </DialogFooter>
-                      </DialogContent>
-                    </Dialog>
-
-                    {/* Create Backup */}
-                    <Button
-                      variant="outline"
-                      className="group h-16 justify-start rounded-sm border-amber-400/20 bg-amber-400/[0.055] text-left text-slate-100 transition-all hover:border-amber-300/60 hover:bg-amber-400/10"
-                      onClick={() => handleServerAction(server.name, "backup")}
-                    >
-                      <HardDrive className="mr-3 h-5 w-5 text-amber-300" />
-                      <span className="flex flex-col">
-                        <span className="font-semibold">Create Backup</span>
-                        <span className="text-xs font-normal text-slate-400">Snapshot the current world</span>
-                      </span>
-                    </Button>
-
-                    {/* Archive Server */}
-                    <Button
-                      variant="outline"
-                      className="group h-16 justify-start rounded-sm border-red-400/20 bg-red-400/[0.055] text-left text-slate-100 transition-all hover:border-red-300/60 hover:bg-red-400/10"
-                      onClick={() => {
-                        setArchiveTarget(server);
-                        setArchiveLabel(`${server.name} ${new Date().toLocaleDateString()}`);
-                      }}
-                      disabled={lifecycle?.configured === false}
-                    >
-                      <Archive className="mr-3 h-5 w-5 text-red-300" />
-                      <span className="flex flex-col">
-                        <span className="font-semibold">Archive Server</span>
-                        <span className="text-xs font-normal text-slate-400">Image and free this slot</span>
-                      </span>
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
+        <div>
+          <h4 className="mb-4 px-4 text-[10px] font-bold uppercase tracking-[0.22em] text-neutral-700">
+            Admin
+          </h4>
+          <div className="space-y-1">
+            <SidebarButton active={false} icon={KeyRound} label="Login" onClick={onAdminAccess} />
           </div>
-        )}
+        </div>
+      </nav>
 
-        {/* Console Log Panel */}
-        {servers.length > 0 && (
-          <Card data-tour="console" className="overflow-hidden rounded-sm border-amber-400/20 bg-[#050b16] shadow-[0_22px_70px_rgba(0,0,0,0.32)]">
-            <CardHeader className="border-b border-amber-400/10 bg-amber-400/[0.045] p-4 sm:p-5">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-1.5 sm:gap-2">
-                  <Terminal className="h-4 w-4 flex-shrink-0 text-amber-300" />
-                  <CardTitle className="text-sm uppercase tracking-[0.16em] text-amber-100 sm:text-base">Server Console</CardTitle>
-                  {isLoadingLogs && (
-                    <RefreshCw className="h-3 w-3 animate-spin text-muted-foreground" />
-                  )}
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setShowLogs(!showLogs)}
-                  className="h-6 w-6 p-0"
-                >
-                  {showLogs ? (
-                    <ChevronUp className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
-                  ) : (
-                    <ChevronDown className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
-                  )}
-                </Button>
-              </div>
-            </CardHeader>
-            {showLogs && (
-              <CardContent className="p-4 sm:p-5">
-                <div className="h-72 overflow-y-auto rounded-sm border border-emerald-400/20 bg-black p-3 font-mono text-[10px] text-emerald-300 shadow-inner sm:text-xs">
-                  {logs ? (
-                    <pre className="whitespace-pre-wrap break-words overflow-hidden">{logs}</pre>
-                  ) : (
-                    <span className="text-slate-500 italic">No logs available...</span>
-                  )}
-                </div>
-                <div className="mt-3 flex flex-col items-start justify-between gap-2 text-[10px] text-slate-500 sm:flex-row sm:items-center sm:text-xs">
-                  <span className="leading-tight">Auto-refreshes every 5 seconds</span>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => fetchLogs()}
-                    className="h-7 rounded-sm px-2 text-[10px] text-slate-300 hover:bg-slate-800 sm:text-xs"
-                  >
-                    <RefreshCw className="h-3 w-3 mr-1" />
-                    Refresh Now
-                  </Button>
-                </div>
-              </CardContent>
-            )}
-          </Card>
-        )}
-
-        {/* Tour Overlay */}
-        {tourActive && (
-          <div className="fixed inset-0 z-50 pointer-events-none">
-            {/* Backdrop with spotlight effect */}
-            <div
-              className="absolute inset-0 bg-black/70 pointer-events-auto"
-              onClick={skipTour}
-              style={{
-                boxShadow: tourElementRect
-                  ? `0 0 0 9999px rgba(0,0,0,0.7), inset 0 0 0 ${tourElementRect.top}px rgba(0,0,0,0.7)`
-                  : undefined
-              }}
-            />
-
-            {/* Highlight box around target element */}
-            {tourElementRect && (
-              <div
-                className="absolute pointer-events-none animate-pulse"
-                style={{
-                  top: tourElementRect.top - 8,
-                  left: tourElementRect.left - 8,
-                  width: tourElementRect.width + 16,
-                  height: tourElementRect.height + 16,
-                  border: '3px solid rgb(34, 197, 94)',
-                  borderRadius: '8px',
-                  boxShadow: '0 0 20px rgba(34, 197, 94, 0.6), inset 0 0 20px rgba(34, 197, 94, 0.2)',
-                }}
-              />
-            )}
-
-            {/* Tour Tooltip - positioned near highlighted element */}
-            <div
-              className="absolute pointer-events-auto"
-              style={{
-                top: tourElementRect
-                  ? (tourElementRect.bottom + 20 < window.innerHeight - 300
-                      ? tourElementRect.bottom + 20  // Below element
-                      : tourElementRect.top > 300
-                        ? tourElementRect.top - 320  // Above element
-                        : window.innerHeight / 2 - 150)  // Center fallback
-                  : window.innerHeight / 2 - 150,
-                left: tourElementRect
-                  ? Math.max(20, Math.min(tourElementRect.left, window.innerWidth - 420))
-                  : window.innerWidth / 2 - 200,
-                maxWidth: '400px',
-                width: 'calc(100vw - 40px)',
-              }}
-            >
-              <Card className="rounded-sm shadow-2xl border-2 border-green-500 bg-background/95 backdrop-blur">
-                <CardHeader className="pb-3">
-                  <div className="flex items-center justify-between mb-2">
-                    <Badge variant="outline" className="rounded-sm bg-green-500/10 border-green-500">
-                      Step {tourStep + 1} of {tourSteps.length}
-                    </Badge>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={skipTour}
-                      className="h-6 px-2 text-xs hover:bg-red-500/10"
-                    >
-                      Skip Tour
-                    </Button>
-                  </div>
-                  <CardTitle className="text-lg text-green-500">{tourSteps[tourStep].title}</CardTitle>
-                </CardHeader>
-                <CardContent className="pb-4">
-                  <p className="text-sm mb-4">
-                    {tourSteps[tourStep].content}
-                  </p>
-                  <div className="flex items-center justify-between gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={prevTourStep}
-                      disabled={tourStep === 0}
-                      className="rounded-sm"
-                    >
-                      Previous
-                    </Button>
-                    <Button
-                      size="sm"
-                      onClick={nextTourStep}
-                      className="rounded-sm bg-green-500 hover:bg-green-600"
-                    >
-                      {tourStep === tourSteps.length - 1 ? 'Finish' : 'Next'}
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
+      <div className="space-y-3 border-t border-[#1a1a1a] p-6">
+        <div className="flex items-center gap-3 border border-[#1f1f1f] bg-[#0a0a0a] px-4 py-3 text-neutral-500">
+          <div className={`status-square ${liveStatus === "live" ? "bg-brand-primary shadow-[0_0_10px_rgba(190,242,100,0.85)]" : ""}`} />
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-neutral-600">Server State</p>
+            <p className="mt-1 text-xs font-bold uppercase tracking-[0.12em] text-neutral-400">{liveLabel}</p>
           </div>
-        )}
         </div>
       </div>
-    </TooltipProvider>
+    </aside>
+  );
+}
+
+function PublicServerCard({ server }: { server: PublicServerRow }) {
+  const inviteText = [
+    `${server.name}`,
+    `IP: ${server.public_address}`,
+    `Version: ${server.mc_version}`,
+    `Type: ${server.edition}`,
+    server.requires_client_mods && server.modpack_url
+      ? `Mods: download the modpack from ${window.location.origin}${server.modpack_url}`
+      : "Mods: no client modpack is required unless an admin says otherwise.",
+  ].join("\n");
+
+  return (
+    <section className="control-surface grid min-h-[24rem] gap-6 p-6 md:grid-cols-[1fr_auto]">
+      <div className="min-w-0">
+        <div className="mb-8 flex flex-wrap items-center gap-3">
+          <div className="status-square bg-brand-primary shadow-[0_0_10px_rgba(190,242,100,0.85)]" />
+          <span className="text-[10px] font-bold uppercase tracking-[0.22em] text-brand-primary">Online</span>
+          <span className="h-1 w-1 bg-neutral-800" />
+          <span className="text-[10px] font-bold uppercase tracking-[0.22em] text-neutral-600">
+            {server.edition} v{server.mc_version}
+          </span>
+        </div>
+
+        <h2 className="font-display text-4xl font-black uppercase leading-none tracking-tight text-white">
+          {server.name}
+        </h2>
+        {server.description && (
+          <p className="mt-4 max-w-xl text-sm text-neutral-500">{server.description}</p>
+        )}
+
+        <div className="mt-8 grid gap-4 sm:grid-cols-3">
+          <Metric label="Players" value={`${server.players.online}/${server.players.max}`} />
+          <Metric label="Version" value={server.version || server.mc_version} />
+          <Metric label="Latency" value={server.latency === null ? "N/A" : `${server.latency}ms`} />
+        </div>
+
+        <div className="mt-8">
+          <AddressBlock label="IP" value={server.public_address} />
+        </div>
+      </div>
+
+      <div className="flex min-w-[13rem] flex-col justify-end gap-3">
+        <Button
+          className="control-button bg-brand-primary text-black hover:bg-white"
+          onClick={async () => {
+            if (await copyToClipboard(server.public_address)) toast.success("IP copied");
+          }}
+        >
+          <Copy className="mr-2 h-4 w-4" />
+          Copy IP
+        </Button>
+        <Button
+          variant="outline"
+          className="control-button border-[#1f1f1f] bg-black text-neutral-300 hover:bg-white/5 hover:text-white"
+          onClick={async () => {
+            if (await copyToClipboard(inviteText)) toast.success("Invite copied");
+          }}
+        >
+          <Copy className="mr-2 h-4 w-4" />
+          Copy Invite
+        </Button>
+        {server.modpack_url && (
+          <Button
+            variant="outline"
+            className="control-button border-[#1f1f1f] bg-black text-neutral-300 hover:bg-white/5 hover:text-white"
+            onClick={() => {
+              window.location.href = server.modpack_url || "#";
+            }}
+          >
+            <Download className="mr-2 h-4 w-4" />
+            Pack
+          </Button>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function HelpDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[85vh] w-[min(94vw,48rem)] max-w-none overflow-y-auto rounded-sm">
+        <DialogHeader>
+          <DialogTitle>Minecraft Server Help</DialogTitle>
+          <DialogDescription>Quick checklist for running servers and helping friends join.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-5 text-sm text-[#8E9299]">
+          <GuideSection title="Pick A Server">
+            Use Servers for the three active slots. Open a server, check that it is running, then copy the join address from Overview.
+          </GuideSection>
+          <GuideSection title="Help A Friend Join">
+            Send the Friend Join Page. They open Java Edition, choose Multiplayer, add a server, and paste the public join address. If public access says restricted, use the LAN address only for friends on the same Wi-Fi until port forwarding is fixed.
+          </GuideSection>
+          <GuideSection title="Mods And Plugins">
+            Paper servers use plugins. Fabric, Forge, and NeoForge servers require matching client mods. Use Content to copy a friend setup guide or share the modpack before anyone joins.
+          </GuideSection>
+          <GuideSection title="Worlds">
+            Use Worlds to switch maps, upload a zip, generate a new seed or world type, download backups, and delete old worlds. The active world must be switched before it can be deleted.
+          </GuideSection>
+          <GuideSection title="Players And Safety">
+            Use Players for allowed players, operators, player bans, and IP bans. Turn on whitelist enforcement in Settings before relying on the allowed-player list.
+          </GuideSection>
+          <GuideSection title="Settings That Matter">
+            Server Properties cover MOTD, max players, gamemode, difficulty, PVP, view distance, and whitelist enforcement. Join Address controls what friends paste into Minecraft. JVM settings are for memory and Java flags.
+          </GuideSection>
+          <GuideSection title="When Something Breaks">
+            Check Overview for server status, join addresses, public access, and console logs. Try Restart. If friends still cannot join, compare Minecraft version, loader, mod list, join address, and whitelist status.
+          </GuideSection>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="grid gap-2 text-sm">
+      <span className="control-label">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function Panel({ title, icon: Icon, children }: { title: string; icon: typeof Activity; children: React.ReactNode }) {
+  return (
+    <section className="control-surface">
+      <div className="flex items-center gap-3 border-b border-[#1a1a1a] bg-[#0c0c0c] px-4 py-3">
+        <Icon className="h-4 w-4 text-brand-primary" />
+        <h2 className="text-xs font-bold uppercase tracking-[0.2em] text-neutral-500">{title}</h2>
+      </div>
+      <div className="p-4">{children}</div>
+    </section>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0">
+      <p className="text-[9px] font-bold uppercase tracking-[0.18em] text-neutral-700">{label}</p>
+      <p className="truncate font-mono text-xs font-bold text-white" title={value}>{value}</p>
+    </div>
+  );
+}
+
+function MetricCell({
+  label,
+  value,
+  mono,
+  tone = "default",
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+  tone?: "default" | "primary" | "muted";
+}) {
+  return (
+    <div className="border-b border-r border-[#1a1a1a] p-6 last:border-r-0">
+      <p className="mb-2 text-[10px] font-bold uppercase tracking-widest text-neutral-600">{label}</p>
+      <p
+        className={`truncate text-lg font-black uppercase leading-none tracking-tight ${
+          mono ? "font-mono" : "font-display"
+        } ${
+          tone === "primary" ? "text-brand-primary" : tone === "muted" ? "text-neutral-700" : "text-white"
+        }`}
+        title={value}
+      >
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function AddressBlock({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="control-label">{label}</p>
+      <code className="mt-2 block rounded-none border border-[#1f1f1f] bg-black px-4 py-3 font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-neutral-300 break-all transition hover:border-brand-primary">
+        {value}
+      </code>
+    </div>
+  );
+}
+
+function PlayerPanel({ title, icon: Icon, children }: { title: string; icon: typeof Users; children: React.ReactNode }) {
+  return (
+    <section className="control-surface min-h-[32rem]">
+      <div className="flex items-center gap-3 border-b border-[#1a1a1a] bg-[#0c0c0c] px-4 py-3">
+        <Icon className="h-4 w-4 text-brand-primary" />
+        <h2 className="text-xs font-bold uppercase tracking-[0.2em] text-neutral-500">{title}</h2>
+      </div>
+      <div className="space-y-4 p-4">{children}</div>
+    </section>
+  );
+}
+
+function InlineAdd({
+  value,
+  onChange,
+  onAdd,
+  placeholder,
+  disabled,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  onAdd: () => void;
+  placeholder: string;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
+      <Input
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") onAdd();
+        }}
+        placeholder={placeholder}
+      />
+      <Button variant="outline" className="control-button border-[#1f1f1f] bg-black text-neutral-300 hover:bg-brand-primary hover:text-black" onClick={onAdd} disabled={disabled}>Add</Button>
+    </div>
+  );
+}
+
+function NameList({
+  names,
+  empty,
+  actionLabel,
+  onAction,
+}: {
+  names: string[];
+  empty: string;
+  actionLabel: string;
+  onAction: (name: string) => void;
+}) {
+  if (names.length === 0) return <p className="py-8 text-center text-sm text-[#8E9299]">{empty}</p>;
+  return (
+    <div className="space-y-2">
+      {names.map((name) => (
+        <div key={name} className="flex items-center justify-between gap-3 border border-[#1a1a1a] bg-black p-3">
+          <span className="font-medium text-white">{name}</span>
+          <Button variant="ghost" size="sm" className="rounded-none text-neutral-500 hover:bg-white/5 hover:text-white" onClick={() => onAction(name)}>
+            {actionLabel}
+          </Button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function BanRow({ label, reason, onPardon }: { label: string; reason?: string; onPardon: () => Promise<void> }) {
+  return (
+    <div className="flex items-center justify-between gap-3 border border-[#1a1a1a] bg-black p-3">
+      <div className="min-w-0">
+        <p className="truncate font-medium text-white">{label}</p>
+        {reason && <p className="truncate text-xs text-[#8E9299]">{reason}</p>}
+      </div>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="rounded-none text-brand-primary hover:bg-white/5 hover:text-white"
+        onClick={() => {
+          void onPardon().then(() => toast.success("Pardoned"));
+        }}
+      >
+        <Check className="h-4 w-4" />
+      </Button>
+    </div>
+  );
+}
+
+function UploadButton({
+  label,
+  accept,
+  disabled,
+  onFile,
+}: {
+  label: string;
+  accept: string;
+  disabled?: boolean;
+  onFile: (file: File | undefined) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  return (
+    <>
+      <input
+        ref={inputRef}
+        type="file"
+        accept={accept}
+        className="hidden"
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          event.target.value = "";
+          onFile(file);
+        }}
+      />
+      <Button variant="outline" className="control-button border-[#1f1f1f] bg-black text-neutral-300 hover:bg-white/5 hover:text-white" disabled={disabled} onClick={() => inputRef.current?.click()}>
+        <Upload className="mr-2 h-4 w-4" />
+        {label}
+      </Button>
+    </>
+  );
+}
+
+function RecommendedPlugins({ server, onRefresh }: { server: ServerRow; onRefresh: () => Promise<void> | void }) {
+  const plugins = ["luckperms", "essentialsx", "vault", "worldedit"];
+  const [selected, setSelected] = useState<Record<string, boolean>>({});
+  const [busy, setBusy] = useState(false);
+
+  const install = async () => {
+    const requested = plugins.filter((plugin) => selected[plugin]);
+    if (requested.length === 0) return;
+    setBusy(true);
+    try {
+      const result = await api.installRecommendedPlugins(server.name, requested);
+      if (result.failed?.length) {
+        throw new Error(result.failed.map((entry) => `${entry.plugin}: ${entry.error}`).join("; "));
+      }
+      toast.success(`Installed plugins: ${result.installed.join(", ")}`);
+      setSelected({});
+      await onRefresh();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to install plugins");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 md:grid-cols-2">
+        {plugins.map((plugin) => (
+          <CheckField
+            key={plugin}
+            label={plugin}
+            checked={Boolean(selected[plugin])}
+            onChange={(checked) => setSelected((current) => ({ ...current, [plugin]: checked }))}
+          />
+        ))}
+      </div>
+      <Button variant="outline" className="control-button border-[#1f1f1f] bg-black text-neutral-300 hover:bg-brand-primary hover:text-black" onClick={install} disabled={busy}>
+        Install Selected
+      </Button>
+    </div>
+  );
+}
+
+function CheckField({ label, checked, onChange }: { label: string; checked: boolean; onChange: (checked: boolean) => void }) {
+  return (
+    <label className="flex items-center gap-3 border border-[#1a1a1a] bg-black p-3 text-sm text-white">
+      <Checkbox checked={checked} onCheckedChange={(value) => onChange(Boolean(value))} />
+      <span className="capitalize">{label}</span>
+    </label>
+  );
+}
+
+function MemoryField({
+  label,
+  value,
+  unit,
+  onValue,
+  onUnit,
+}: {
+  label: string;
+  value: number;
+  unit: string;
+  onValue: (value: number) => void;
+  onUnit: (value: string) => void;
+}) {
+  return (
+    <Field label={label}>
+      <div className="grid grid-cols-[1fr_6rem] gap-2">
+        <Input type="number" value={value} onChange={(event) => onValue(Number(event.target.value))} />
+        <Select value={unit} onValueChange={onUnit}>
+          <SelectTrigger><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="M">MB</SelectItem>
+            <SelectItem value="G">GB</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+    </Field>
+  );
+}
+
+function GuideSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="border-b border-[#2C2E33] pb-4 last:border-b-0">
+      <h3 className="text-base font-semibold text-white">{title}</h3>
+      <p className="mt-1">{children}</p>
+    </section>
   );
 }

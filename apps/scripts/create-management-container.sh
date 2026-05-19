@@ -113,7 +113,7 @@ chmod 600 "$ENV_FILE"
   printf 'ADMIN_TOKEN=%s\n' "$ADMIN_TOKEN"
   printf 'ADMIN_AUTH_METHODS=%s\n' "$ADMIN_AUTH_METHODS"
   printf '%s\n' 'PASSKEYS_ENABLED=true'
-  printf '%s\n' 'PASSKEY_RP_NAME=MC LXD Manager'
+  printf '%s\n' 'PASSKEY_RP_NAME=Server Portal'
   printf 'PASSKEY_REGISTRATION_CODES=%s\n' "$PASSKEY_REGISTRATION_CODES"
   printf '%s\n' 'PASSKEY_STORE_FILE=/opt/mc-lxd-manager/passkeys.json'
   printf '%s\n' 'REGISTRY_FILE=/opt/mc-lxd-manager/servers.json'

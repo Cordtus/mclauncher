@@ -2,12 +2,27 @@ import fs from "fs";
 import path from "path";
 import { execFileSync } from "child_process";
 import os from "os";
+import { updateProperties } from "../services/properties-parser.js";
 
-interface WorldInfo {
+type CommandRunner = typeof execFileSync;
+
+export interface WorldInfo {
   name: string;
   size: number;
   lastPlayed: Date;
   isActive: boolean;
+}
+
+export interface GenerateWorldInput {
+  name: string;
+  seed?: string;
+  levelType?: string;
+}
+
+export interface WorldManagerOptions {
+  execFileSync?: CommandRunner;
+  generationTimeoutMs?: number;
+  generationPollMs?: number;
 }
 
 function assertSafePathSegment(value: string, label: string) {
@@ -21,6 +36,29 @@ function assertSafePathSegment(value: string, label: string) {
   ) {
     throw new Error(`Invalid ${label}`);
   }
+}
+
+function assertSafePropertyValue(value: string, label: string) {
+  if (value.includes("\n") || value.includes("\r")) {
+    throw new Error(`Invalid ${label}`);
+  }
+}
+
+function normalizeLevelType(value: string | undefined) {
+  const normalized = (value || "default").trim().toLowerCase();
+  const aliases: Record<string, string> = {
+    default: "minecraft:normal",
+    normal: "minecraft:normal",
+    flat: "minecraft:flat",
+    large_biomes: "minecraft:large_biomes",
+    amplified: "minecraft:amplified",
+    single_biome_surface: "minecraft:single_biome_surface",
+  };
+  const levelType = aliases[normalized] || normalized;
+  if (!/^[a-z0-9_:-]+$/.test(levelType)) {
+    throw new Error("Invalid levelType");
+  }
+  return levelType;
 }
 
 function safeChildPath(root: string, ...segments: string[]) {
@@ -65,10 +103,16 @@ function assertSafeZipEntries(zipPath: string) {
 export class WorldManager {
   private readonly worldsHome: string;
   private readonly worldLink: string;
+  private readonly execFileSync: CommandRunner;
+  private readonly generationTimeoutMs: number;
+  private readonly generationPollMs: number;
 
-  constructor(private mcDir: string = "/opt/minecraft") {
+  constructor(private mcDir: string = "/opt/minecraft", options: WorldManagerOptions = {}) {
     this.worldsHome = path.join(mcDir, "worlds");
     this.worldLink = path.join(mcDir, "world");
+    this.execFileSync = options.execFileSync || execFileSync;
+    this.generationTimeoutMs = options.generationTimeoutMs ?? Number(process.env.WORLD_GENERATION_TIMEOUT_MS || 120_000);
+    this.generationPollMs = options.generationPollMs ?? Number(process.env.WORLD_GENERATION_POLL_MS || 1000);
   }
 
   async initialize(): Promise<void> {
@@ -82,7 +126,7 @@ export class WorldManager {
         const defaultWorld = path.join(this.worldsHome, "default");
 
         fs.mkdirSync(defaultWorld, { recursive: true });
-        execFileSync("rsync", ["-a", "--delete", `${this.worldLink}/`, `${defaultWorld}/`]);
+        this.execFileSync("rsync", ["-a", "--delete", `${this.worldLink}/`, `${defaultWorld}/`]);
         fs.rmSync(this.worldLink, { recursive: true, force: true });
         fs.symlinkSync(defaultWorld, this.worldLink);
 
@@ -152,12 +196,10 @@ export class WorldManager {
     let restarted = false;
 
     try {
-      if (fs.existsSync(this.worldLink)) {
-        fs.unlinkSync(this.worldLink);
-      }
+      this.unlinkWorldLinkIfPresent();
       fs.symlinkSync(worldPath, this.worldLink);
 
-      execFileSync("chown", ["-R", "mc:mc", worldPath]);
+      this.execFileSync("chown", ["-R", "mc:mc", worldPath]);
 
       await this.startServer();
       restarted = true;
@@ -168,6 +210,121 @@ export class WorldManager {
     }
 
     console.log(`Switched to world: ${worldName}`);
+  }
+
+  async generateWorld(input: GenerateWorldInput): Promise<WorldInfo> {
+    const worldName = input.name.trim();
+    assertSafePathSegment(worldName, "worldName");
+    await this.initialize();
+
+    const worldPath = safeChildPath(this.worldsHome, worldName);
+    if (fs.existsSync(worldPath)) {
+      throw new Error(`World '${worldName}' already exists`);
+    }
+
+    const previousWorldTarget = this.readWorldLinkTarget();
+    const wasActive = this.isServerActive();
+    const propertiesPath = path.join(this.mcDir, "server.properties");
+    const originalProperties = fs.existsSync(propertiesPath) ? fs.readFileSync(propertiesPath, "utf8") : null;
+    let generated = false;
+    let serverStarted = false;
+
+    try {
+      fs.mkdirSync(worldPath, { recursive: false });
+      this.execFileSync("chown", ["-R", "mc:mc", worldPath]);
+
+      if (originalProperties !== null) {
+        const seed = input.seed?.trim() || "";
+        if (seed) assertSafePropertyValue(seed, "seed");
+        updateProperties(propertiesPath, {
+          "level-name": "world",
+          "level-seed": seed,
+          "level-type": normalizeLevelType(input.levelType),
+        });
+        this.execFileSync("chown", ["mc:mc", propertiesPath]);
+      }
+
+      if (wasActive) {
+        await this.stopServer();
+      }
+
+      this.unlinkWorldLinkIfPresent();
+      fs.symlinkSync(worldPath, this.worldLink);
+
+      await this.startServer();
+      serverStarted = true;
+      await this.waitForGeneratedWorld(worldPath, this.generationTimeoutMs);
+      generated = true;
+
+      if (!wasActive) {
+        await this.stopServer();
+        serverStarted = false;
+      }
+
+      return {
+        name: worldName,
+        size: this.getDirectorySize(worldPath),
+        lastPlayed: fs.statSync(path.join(worldPath, "level.dat")).mtime,
+        isActive: true,
+      };
+    } finally {
+      const cleanupErrors: unknown[] = [];
+      if (originalProperties !== null) {
+        try {
+          fs.writeFileSync(propertiesPath, originalProperties, "utf8");
+          if (generated) {
+            updateProperties(propertiesPath, {
+              "level-name": "world",
+            });
+          }
+          this.execFileSync("chown", ["mc:mc", propertiesPath]);
+        } catch (err) {
+          cleanupErrors.push(err);
+        }
+      }
+
+      if (!generated) {
+        if (serverStarted) {
+          try {
+            await this.stopServer();
+          } catch {
+            // Restore attempt continues below.
+          }
+        }
+
+        try {
+          this.unlinkWorldLinkIfPresent();
+        } catch (err) {
+          cleanupErrors.push(err);
+        }
+
+        if (previousWorldTarget) {
+          try {
+            fs.symlinkSync(previousWorldTarget, this.worldLink);
+          } catch (err) {
+            cleanupErrors.push(err);
+          }
+
+          if (wasActive) {
+            try {
+              await this.startServer();
+            } catch {
+              // Surface the original generation error.
+            }
+          }
+        }
+
+        try {
+          fs.rmSync(worldPath, { recursive: true, force: true });
+        } catch (err) {
+          cleanupErrors.push(err);
+        }
+      }
+
+      if (cleanupErrors.length > 0) {
+        throw cleanupErrors[0];
+      }
+    }
   }
 
   async deleteWorld(worldName: string, force: boolean = false): Promise<void> {
@@ -205,7 +362,7 @@ export class WorldManager {
 
     const backupFile = safeChildPath(backupDir, `${worldName}-${timestamp}.tar.gz`);
 
-    execFileSync("tar", ["-czf", backupFile, "-C", this.worldsHome, worldName]);
+    this.execFileSync("tar", ["-czf", backupFile, "-C", this.worldsHome, worldName]);
 
     return backupFile;
   }
@@ -222,7 +379,7 @@ export class WorldManager {
 
     try {
       assertSafeZipEntries(zipPath);
-      execFileSync("unzip", ["-q", zipPath, "-d", tempDir]);
+      this.execFileSync("unzip", ["-q", zipPath, "-d", tempDir]);
 
       const levelDat = this.findLevelDat(tempDir);
       if (!levelDat) {
@@ -237,7 +394,7 @@ export class WorldManager {
         force: false,
         errorOnExist: true,
       });
-      execFileSync("chown", ["-R", "mc:mc", worldPath]);
+      this.execFileSync("chown", ["-R", "mc:mc", worldPath]);
 
       console.log(`Imported world: ${name}`);
       return name;
@@ -253,7 +410,7 @@ export class WorldManager {
       throw new Error(`World '${worldName}' does not exist`);
     }
 
-    execFileSync("zip", ["-r", outputPath, worldName], { cwd: this.worldsHome });
+    this.execFileSync("zip", ["-r", outputPath, worldName], { cwd: this.worldsHome });
     console.log(`Exported world to: ${outputPath}`);
   }
 
@@ -294,10 +451,56 @@ export class WorldManager {
   }
 
   private async stopServer(): Promise<void> {
-    execFileSync("systemctl", ["stop", "minecraft"]);
+    this.execFileSync("systemctl", ["stop", "minecraft"]);
   }
 
   private async startServer(): Promise<void> {
-    execFileSync("systemctl", ["start", "minecraft"]);
+    this.execFileSync("systemctl", ["start", "minecraft"]);
+  }
+
+  private isServerActive(): boolean {
+    try {
+      const status = this.execFileSync("systemctl", ["is-active", "minecraft"], { encoding: "utf8" });
+      return status.trim() === "active";
+    } catch {
+      return false;
+    }
+  }
+
+  private readWorldLinkTarget(): string | null {
+    try {
+      if (!fs.lstatSync(this.worldLink).isSymbolicLink()) return null;
+      return fs.readlinkSync(this.worldLink);
+    } catch (err: any) {
+      if (err?.code === "ENOENT") return null;
+      throw err;
+    }
+  }
+
+  private unlinkWorldLinkIfPresent(): void {
+    try {
+      fs.unlinkSync(this.worldLink);
+    } catch (err: any) {
+      if (err?.code !== "ENOENT") throw err;
+    }
+  }
+
+  private async waitForGeneratedWorld(worldPath: string, timeoutMs: number): Promise<void> {
+    const levelDat = path.join(worldPath, "level.dat");
+    const startedAt = Date.now();
+    let previousSize = -1;
+    let previousMtime = -1;
+
+    while (Date.now() - startedAt < timeoutMs) {
+      if (fs.existsSync(levelDat)) {
+        const stats = fs.statSync(levelDat);
+        if (stats.size === previousSize && stats.mtimeMs === previousMtime) return;
+        previousSize = stats.size;
+        previousMtime = stats.mtimeMs;
+      }
+      await new Promise((resolve) => setTimeout(resolve, this.generationPollMs));
+    }
+
+    throw new Error("World generation timed out before level.dat was stable");
   }
 }

@@ -25,10 +25,11 @@ import { VanillaDownloader } from "./downloaders/vanilla.js";
 import { FabricDownloader } from "./downloaders/fabric.js";
 import { ForgeDownloader } from "./downloaders/forge.js";
 import { pingMinecraftServer } from "./utils/mcping.js";
-import { extractModMetadata, extractModIcon } from "./services/jar-metadata.js";
+import { extractModMetadata, extractModIcon, extractPluginMetadata, type PluginMetadata } from "./services/jar-metadata.js";
 import { parseConfigFile, updateConfigFile, listConfigFiles, detectFormat } from "./services/config-parser.js";
 import { resolveUsername } from "./services/mojang.js";
 import { parseProperties, updateProperties, readJsonArray, writeJsonArray } from "./services/properties-parser.js";
+import { assertPluginArtifactFileName, parsePluginToggleEnabled, pluginToggleOperation } from "./services/plugin-files.js";
 
 const PORT = Number(process.env.AGENT_PORT || 9090);
 const MC_DIR = process.env.MC_DIR || "/opt/minecraft";
@@ -971,6 +972,103 @@ app.post("/plugins", uploadSingleFile, (req, res) => {
   }
 });
 
+// List installed plugins with metadata
+app.get("/plugins/list", async (_req, res) => {
+  try {
+    const pluginsDir = path.join(MC_DIR, "plugins");
+    if (!fs.existsSync(pluginsDir)) {
+      return res.json({ plugins: [] });
+    }
+
+    const plugins = [];
+    for (const file of fs.readdirSync(pluginsDir)) {
+      if (!file.endsWith(".jar") && !file.endsWith(".jar.disabled")) {
+        continue;
+      }
+
+      const filePath = safeChildPath(pluginsDir, file);
+      const enabled = file.endsWith(".jar");
+      let metadata: PluginMetadata | null = null;
+      let metadataError: string | undefined;
+      try {
+        metadata = await extractPluginMetadata(filePath);
+      } catch (err: any) {
+        metadataError = err.message || "Plugin metadata could not be read";
+      }
+      plugins.push({
+        fileName: file,
+        pluginId: metadata?.pluginId || file.replace(/\.jar(\.disabled)?$/, ""),
+        name: metadata?.name || file.replace(/\.jar(\.disabled)?$/, ""),
+        version: metadata?.version || "unknown",
+        description: metadata?.description,
+        authors: metadata?.authors || [],
+        main: metadata?.main,
+        apiVersion: metadata?.apiVersion,
+        dependencies: metadata?.dependencies || [],
+        softDependencies: metadata?.softDependencies || [],
+        metadataError,
+        enabled,
+      });
+    }
+
+    res.json({ plugins });
+  } catch (err: any) {
+    res.status(statusForError(err)).json({ error: err.message });
+  }
+});
+
+// Enable/disable plugin
+app.patch("/plugins/:fileName/toggle", (req, res) => {
+  try {
+    const { fileName } = req.params;
+    const enabled = parsePluginToggleEnabled(req.body?.enabled);
+    assertPluginArtifactFileName(fileName);
+
+    const pluginsDir = path.join(MC_DIR, "plugins");
+    const currentPath = safeChildPath(pluginsDir, fileName);
+
+    if (!fs.existsSync(currentPath)) {
+      return res.status(404).json({ error: "Plugin not found" });
+    }
+
+    const operation = pluginToggleOperation(pluginsDir, fileName, enabled);
+    if (!operation.targetFileName) {
+      return res.json({ ok: true, message: "Already in desired state" });
+    }
+    if (operation.targetExists) {
+      return res.status(409).json({ error: `Plugin ${operation.targetFileName} already exists` });
+    }
+
+    const newPath = safeChildPath(pluginsDir, operation.targetFileName);
+    fs.renameSync(currentPath, newPath);
+    res.json({
+      ok: true,
+      message: enabled ? "Plugin enabled" : "Plugin disabled",
+      newFileName: path.basename(newPath),
+    });
+  } catch (err: any) {
+    res.status(statusForError(err)).json({ error: err.message });
+  }
+});
+
+// Delete plugin
+app.delete("/plugins/:fileName", (req, res) => {
+  try {
+    const { fileName } = req.params;
+    assertPluginArtifactFileName(fileName);
+    const filePath = safeChildPath(path.join(MC_DIR, "plugins"), fileName);
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: "Plugin not found" });
+    }
+
+    fs.unlinkSync(filePath);
+    res.json({ ok: true, message: `Plugin ${fileName} removed. Restart server to apply.` });
+  } catch (err: any) {
+    res.status(statusForError(err)).json({ error: err.message });
+  }
+});
+
 // Upload mod
 app.post("/mods", uploadSingleFile, (req, res) => {
   const file = req.file;
@@ -1858,6 +1956,25 @@ app.get("/worlds/current", (_req, res) => {
     res.json({ current });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Generate a new world by letting Minecraft create the level data
+app.post("/worlds/generate", async (req, res) => {
+  const { name, seed, levelType } = req.body || {};
+  if (!name || typeof name !== "string") {
+    return res.status(400).json({ error: "Missing world name" });
+  }
+
+  try {
+    const world = await worldManager.generateWorld({
+      name,
+      seed: typeof seed === "string" ? seed : undefined,
+      levelType: typeof levelType === "string" ? levelType : undefined,
+    });
+    res.json({ ok: true, world, message: `World '${world.name}' generated` });
+  } catch (err: any) {
+    res.status(statusForError(err)).json({ error: err.message });
   }
 });
 

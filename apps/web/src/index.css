@@ -13,8 +13,8 @@
     --popover: 222.2 84% 6%;
     --popover-foreground: 210 40% 98%;
 
-    --primary: 217.2 91% 60%;
-    --primary-foreground: 222.2 47% 11%;
+    --primary: 82 84% 66%;
+    --primary-foreground: 0 0% 0%;
 
     --secondary: 217.2 32.6% 17.9%;
     --secondary-foreground: 210 40% 98%;
@@ -30,7 +30,7 @@
 
     --border: 217.2 32.6% 17.9%;
     --input: 217.2 32.6% 17.9%;
-    --ring: 224.3 76.3% 48%;
+    --ring: 82 84% 66%;
 
     --success: 142 76% 36%;
     --warning: 38 92% 50%;
@@ -42,7 +42,7 @@
   }
 
   body {
-    @apply bg-background text-foreground;
+    @apply bg-black text-foreground antialiased selection:bg-brand-primary selection:text-black;
     font-feature-settings: "rlig" 1, "calt" 1;
   }
 
@@ -71,7 +71,46 @@
   }
 }
 
+@layer components {
+  .control-surface {
+    @apply border border-[#1a1a1a] bg-[#0a0a0a];
+  }
+
+  .control-surface-muted {
+    @apply border border-[#1a1a1a] bg-[#050505];
+  }
+
+  .control-label {
+    @apply text-[10px] font-bold uppercase tracking-[0.22em] text-neutral-600;
+  }
+
+  .control-input {
+    @apply rounded-none border border-[#1f1f1f] bg-black px-4 py-3 text-sm font-bold text-white outline-none transition focus:border-brand-primary disabled:opacity-50 placeholder:text-neutral-800;
+  }
+
+  .control-button {
+    @apply rounded-none text-[10px] font-black uppercase tracking-[0.2em] transition active:scale-[0.98];
+  }
+
+  .status-square {
+    @apply h-2 w-2 shrink-0 bg-neutral-800;
+  }
+}
+
 @layer utilities {
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .pixelated {
+    image-rendering: pixelated;
+  }
+
   .spacing-tight {
     @apply space-y-2;
   }

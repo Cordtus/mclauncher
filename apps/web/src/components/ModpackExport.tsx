@@ -33,13 +33,13 @@ export function ModpackExport({
   const [isOpen, setIsOpen] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  const gatewayOrigin = apiBaseUrl || window.location.origin;
+  const portalOrigin = apiBaseUrl || window.location.origin;
   const encodedServerName = encodeURIComponent(serverName);
   const hasPublicAddress = Boolean(publicAddress);
-  const publicUrl = `${gatewayOrigin}/public/${encodedServerName}/modpack`;
+  const publicUrl = `${portalOrigin}/public/${encodedServerName}/modpack`;
   const connectionAddress = publicAddress || "the configured public server address";
-  const mrpackUrl = `${gatewayOrigin}/public/${encodedServerName}/modpack.mrpack`;
-  const modlistUrl = `${gatewayOrigin}/public/${encodedServerName}/modlist.txt`;
+  const mrpackUrl = `${portalOrigin}/public/${encodedServerName}/modpack.mrpack`;
+  const modlistUrl = `${portalOrigin}/public/${encodedServerName}/modlist.txt`;
 
   async function copyPublicLink() {
     if (!hasPublicAddress) return;
@@ -100,7 +100,7 @@ export function ModpackExport({
             <h3 className="font-semibold text-sm">Public Download Page</h3>
             <p className="text-sm text-muted-foreground">
               {hasPublicAddress
-                ? `Share this link when the gateway exposes public modpack pages. Players connect to ${connectionAddress}.`
+                ? `Share this link so friends can download the required mods. Players connect to ${connectionAddress}.`
                 : "Configure a public server address before sharing player download links."}
             </p>
             <div className="flex gap-2">

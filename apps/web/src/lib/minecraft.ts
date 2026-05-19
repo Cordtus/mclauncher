@@ -60,7 +60,7 @@ export function buildPlayerInviteText(server: ServerConnection) {
     `${server.name} Minecraft server`,
     `Join address: ${address}`,
     `Minecraft version: ${server.mc_version}`,
-    `Server type: ${server.edition}`,
+    `Type: ${server.edition}`,
     "",
     "How to join:",
     "1. Open Minecraft: Java Edition.",

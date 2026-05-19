@@ -330,7 +330,7 @@ export class PasskeyService {
       user: {
         id: userId,
         name: "admin",
-        displayName: "Minecraft Gateway Admin",
+        displayName: "Server Admin",
       },
       pubKeyCredParams: [{ type: "public-key", alg: PASSKEY_COSE_ALG }],
       timeout: this.config.challengeTtlMs,

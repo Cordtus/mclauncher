@@ -66,9 +66,9 @@ restore an archived server.
 
 ### 3. Access Web UI
 
-1. Navigate to `http://<host-ip>:8080`
-2. Open **Admin Access** in the header
-3. If no passkey is registered yet, paste the one-time setup code printed by setup
+1. Navigate to `http://<host-ip>:8080` to see the public, read-only list of running servers that have a public join address.
+2. Open **Admin Access** when you need to create servers, manage worlds, edit players, change mods, read logs, or update settings.
+3. If no passkey is registered yet, paste the one-time setup code printed by setup.
 4. Register a passkey from the same dialog when the gateway is served over HTTPS or localhost. After a passkey is registered, any device that has that synced passkey can sign in without entering a token or setup code.
 
 ## Management
@@ -222,9 +222,11 @@ apps/
 - LXD proxy exposes port 8080 on host
 - Admin routes are safe to place behind a public HTTPS hostname when passkey auth is enabled and token auth is disabled; `ADMIN_REQUIRE_CIDR=true` can still add LAN/VPN CIDR restrictions
 - Optional CIDR filtering uses `ALLOW_CIDRS` (`127.0.0.0/8`, `192.168.0.0/24`, `10.70.48.0/24`, and `10.172.19.0/24` by default)
-- A passkey session is required for server inventory, settings, logs, mod management, and all write operations unless token auth is explicitly enabled
+- Public routes expose only sanitized, read-only information for currently running servers with public join addresses
+- A passkey session is required for admin inventory, settings, logs, player lists, mod management, and all write operations unless token auth is explicitly enabled
 - Admin browser sessions are stored in HttpOnly `SameSite=Strict` cookies; token entry is a fallback exchange and is not persisted in browser storage
 - Passkeys use WebAuthn and require a secure browser context: HTTPS or localhost
+- `npm run dev` keeps normal auth; `npm run dev:admin` explicitly enables a localhost-only temporary admin login for local browser testing
 - Passkey registration uses ES256 P-256/secp256r1 credentials
 - One-time setup codes can pre-approve admins for passkey registration only; codes are stored as SHA-256 hashes in `/opt/mc-lxd-manager/passkeys.json`, consumed codes are marked used, and setup codes cannot manage servers
 - `PASSKEY_REGISTRATION_CODES` can seed setup codes at startup with comma-separated `label:code` or `code` entries; host operators can create additional one-time setup codes with `sudo ./apps/scripts/create-passkey-setup-code.sh --label "Admin name"`
@@ -271,7 +273,7 @@ the WireGuard VPN (`10.172.19.0/24` by default) in `ALLOW_CIDRS`.
 ## Troubleshooting
 
 **Server not appearing in UI:**
-- If the portal says admin access is required, the server inventory is hidden by design; open **Admin Access** and sign in with a passkey, one-time setup code, or enabled admin token.
+- Public users see only running servers with a configured public join address. Open **Admin Access** to see stopped, private, or unhealthy servers.
 - Check agent is running: `lxc exec mc-server-1 -- systemctl status mc-agent`
 - Check registration: `lxc exec mc-manager -- cat /opt/mc-lxd-manager/servers.json`
 - Check network: `lxc list` (verify container IPs)
